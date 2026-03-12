@@ -13,7 +13,7 @@ from flask import Flask, request, jsonify
 from openai import OpenAI
 
 import memory as mem
-from tools import execute_tool, get_tools_description
+from tools import execute_tool, get_tools_description, TOOL_REGISTRY
 import config as cfg
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -73,15 +73,60 @@ After you see the <tool_result>, call another tool or give a final plain text re
 
 
 def _parse_tool_call(reply: str) -> tuple[str, dict] | None:
-    """Extract (name, args) from a <tool_call> block in the reply, or None."""
+    """Extract (name, args) from a reply, guarded by TOOL_REGISTRY.
+
+    Handles:
+      1. <tool_call>...</tool_call>  — clean tagged format (primary)
+      2. <tool_call>...{no close tag} — model truncated output
+      3. ```json ... ``` / ``` ... ``` — markdown-fenced JSON
+      4. Bare JSON anywhere in reply   — model forgot the tags
+    All paths require name in TOOL_REGISTRY to avoid false positives.
+    """
+    tool_names = set(TOOL_REGISTRY.keys())
+
+    def _extract(raw: str):
+        try:
+            parsed = json.loads(raw.strip())
+            name = parsed.get("name", "")
+            if name and name in tool_names:
+                return name, parsed.get("arguments", {})
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        return None
+
+    # 1. Closed <tool_call> tag
     m = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", reply, re.DOTALL)
     if m:
-        try:
-            parsed = json.loads(m.group(1))
-            return parsed.get("name", ""), parsed.get("arguments", {})
-        except json.JSONDecodeError:
-            pass
+        result = _extract(m.group(1))
+        if result:
+            return result
+
+    # 2. Unclosed <tool_call> tag (model output got cut off)
+    m = re.search(r"<tool_call>\s*(\{.*)", reply, re.DOTALL)
+    if m:
+        result = _extract(m.group(1))
+        if result:
+            return result
+
+    # 3. Markdown fenced block: ```json ... ``` or ``` ... ```
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", reply, re.DOTALL)
+    if m:
+        result = _extract(m.group(1))
+        if result:
+            return result
+
+    # 4. Bare JSON anywhere in the reply (model forgot the tags)
+    for m in re.finditer(
+        r'\{[^{}]*"name"\s*:[^{}]*"arguments"\s*:\s*\{[^{}]*\}[^{}]*\}',
+        reply, re.DOTALL
+    ):
+        result = _extract(m.group(0))
+        if result:
+            return result
+
     return None
+
+
 
 
 def get_owner_phone() -> str | None:
