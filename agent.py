@@ -34,7 +34,19 @@ logger = logging.getLogger(__name__)
 mem.init_db()
 cfg.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
-client = OpenAI(api_key=cfg.OPENAI_API_KEY, base_url=cfg.OPENAI_API_BASE)
+# Client is created lazily via _get_client() so it can be reconfigured in-bot
+
+
+def _get_client() -> OpenAI:
+    """Return an OpenAI client, reading key/base from DB config if set."""
+    api_key = mem.get_config("llm_api_key") or cfg.OPENAI_API_KEY
+    api_base = mem.get_config("llm_api_base") or cfg.OPENAI_API_BASE
+    return OpenAI(api_key=api_key, base_url=api_base)
+
+
+def _is_configured() -> bool:
+    """True if an LLM API key is available (env or DB)."""
+    return bool(mem.get_config("llm_api_key") or cfg.OPENAI_API_KEY)
 
 # ── System prompts ────────────────────────────────────────────────────────────
 
@@ -157,7 +169,7 @@ def _maybe_summarize(chat_id: int):
         convo_lines.append(f"{role}: {msg['content'][:500]}")
 
     try:
-        resp = client.chat.completions.create(
+        resp = _get_client().chat.completions.create(
             model=cfg.DEFAULT_MODEL,
             messages=[
                 {"role": "system", "content": SUMMARY_SYSTEM},
@@ -234,7 +246,7 @@ async def run_agent(chat_id: int, user_message: str, model: str) -> str:
 
     for iteration in range(cfg.MAX_TOOL_ITERATIONS):
         try:
-            response = client.chat.completions.create(
+            response = _get_client().chat.completions.create(
                 model=model,
                 messages=messages,
                 temperature=0.7,
@@ -275,19 +287,58 @@ async def run_agent(chat_id: int, user_message: str, model: str) -> str:
 
 # ── Telegram command handlers ─────────────────────────────────────────────────
 
+ONBOARDING_STEP_KEY = "onboarding_step"  # values: "api_key", "api_base", "done"
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+
+    # First time — lock owner
     if get_owner_id() is None:
         mem.set_config("owner_telegram_id", str(user_id))
+        # Decide if we need onboarding (no API key configured)
+        if not _is_configured():
+            mem.set_config(ONBOARDING_STEP_KEY, "api_key")
+            await update.message.reply_text(
+                f"👋 Welcome! I'm *SynthClaw-CoAgent* — your personal AI agent.\n\n"
+                f"🔒 You're now the owner \(ID: `{user_id}`\)\.
+
+"
+                "Let's get you set up in 2 quick steps\.\n\n"
+                "*Step 1 of 2 — LLM API Key*\n"
+                "Send me your API key now\. Example:\n"
+                "`sk-do-xxxx...` \(DigitalOcean Gradient AI\)\n"
+                "`sk-xxxx...` \(OpenAI\)\n\n"
+                "_Your key is stored encrypted on this server and never sent anywhere else\._",
+                parse_mode="MarkdownV2",
+            )
+        else:
+            mem.set_config(ONBOARDING_STEP_KEY, "done")
+            await update.message.reply_text(
+                f"👋 Welcome back\! Owner set to ID `{user_id}`\.\n\n"
+                "✅ LLM API key already configured \(from environment\)\.\n"
+                "I'm ready to go — type anything or use /help\.",
+                parse_mode="MarkdownV2",
+            )
+        return
+
+    # Already has an owner — send to owner only
+    if not is_owner(user_id):
+        await update.message.reply_text("⛔ This agent already has an owner.")
+        return
+
+    step = mem.get_config(ONBOARDING_STEP_KEY, "done")
+    if step == "done":
         await update.message.reply_text(
-            f"👋 Welcome! Owner locked to your ID: `{user_id}`\n\n"
-            "I'm your personal AI agent — I can run code, manage files, call APIs, "
-            "remember things, and run background services on this server.\n\n"
-            "Type anything or use /help.",
-            parse_mode="Markdown",
+            "🟢 Agent is running\. Use /setup to view config or /help for commands\.",
+            parse_mode="MarkdownV2",
         )
     else:
-        await update.message.reply_text("🟢 Agent is running. Type /help for commands.")
+        # Resume interrupted onboarding
+        await update.message.reply_text(
+            "⏸ Onboarding isn't finished yet\. Use /setup to check what's missing\.",
+            parse_mode="MarkdownV2",
+        )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -295,18 +346,26 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "🤖 *SynthClaw\\-CoAgent — Commands*\n\n"
-        "/start — Register as owner\n"
+        "⚙️ *Setup*\n"
+        "/setup — Show configuration status\n"
+        "/setkey \\<key\\> — Set LLM API key\n"
+        "/setbase \\<url\\> — Set LLM API base URL\n\n"
+        "💬 *General*\n"
+        "/start — Register as owner / resume onboarding\n"
         "/help — This message\n"
         "/clear — Wipe conversation history\n"
         "/model \\[name\\] — Show or switch model\n"
         "/models — List all available models\n"
-        "/status — Show running services\n"
-        "/creds — List stored credentials\n"
-        "/memory — Show remembered facts\n"
-        "/run \\<cmd\\> — Run shell command directly\n"
-        "/plan \\<task\\> — Break task into steps \\(no execution\\)\n"
-        "/agent \\<task\\> — Autonomous execution mode\n"
         "/ping — Check if alive\n\n"
+        "🖥 *Server*\n"
+        "/status — Show running services\n"
+        "/run \\<cmd\\> — Run shell command directly\n\n"
+        "🧠 *Memory*\n"
+        "/creds — List stored credentials\n"
+        "/memory — Show remembered facts\n\n"
+        "🤖 *Agent*\n"
+        "/plan \\<task\\> — Break task into steps \\(no execution\\)\n"
+        "/agent \\<task\\> — Autonomous execution mode\n\n"
         "*Just chat normally:*\n"
         "• _What's the best way to set up a cron job?_\n"
         "• _Create a Python price tracker and run it hourly_\n"
@@ -314,6 +373,90 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• _Remember my timezone is UTC\\+5_",
         parse_mode="MarkdownV2",
     )
+
+
+async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show current configuration status and what still needs to be done."""
+    if not is_owner(update.effective_user.id):
+        return
+
+    api_key = mem.get_config("llm_api_key") or cfg.OPENAI_API_KEY
+    api_base = mem.get_config("llm_api_base") or cfg.OPENAI_API_BASE
+    model = get_current_model()
+
+    key_source = "🔐 DB" if mem.get_config("llm_api_key") else ("✅ env" if cfg.OPENAI_API_KEY else "❌ missing")
+    base_source = "🔐 DB" if mem.get_config("llm_api_base") else "✅ env/default"
+    key_preview = f"`{api_key[:8]}...{api_key[-4:]}`" if api_key and len(api_key) > 12 else ("set" if api_key else "**not set**")
+
+    lines = [
+        "⚙️ *SynthClaw Configuration*\n",
+        f"🔑 *API Key:* {key_source} — {key_preview}",
+        f"🌐 *API Base:* {base_source} — `{api_base}`",
+        f"🧠 *Model:* `{model}`",
+        "",
+    ]
+
+    if not api_key:
+        lines.append("❌ *Action needed:* Send `/setkey <your-api-key>` to configure the LLM.")
+    else:
+        lines.append("✅ Ready to chat. Type anything or use /help.")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set the LLM API key (stored encrypted in DB)."""
+    if not is_owner(update.effective_user.id):
+        return
+
+    key = " ".join(context.args).strip()
+    if not key:
+        await update.message.reply_text(
+            "Usage: `/setkey <api-key>`\n\nExample: `/setkey sk-do-xxxxxxxxxxxx`",
+            parse_mode="Markdown",
+        )
+        return
+
+    mem.set_config("llm_api_key", key)
+    preview = f"`{key[:8]}...{key[-4:]}`" if len(key) > 12 else "`set`"
+
+    # Advance onboarding step if still in progress
+    step = mem.get_config(ONBOARDING_STEP_KEY, "done")
+    if step == "api_key":
+        mem.set_config(ONBOARDING_STEP_KEY, "done")
+        await update.message.reply_text(
+            f"✅ API key saved: {preview}\n\n"
+            "🎉 *Setup complete!* You're ready to go.\n\n"
+            "Try chatting with me, or use /help to see all commands.\n\n"
+            "_Optional: use `/setbase <url>` if you're using a non-default API endpoint._",
+            parse_mode="Markdown",
+        )
+    else:
+        await update.message.reply_text(
+            f"✅ API key updated: {preview}", parse_mode="Markdown"
+        )
+
+
+async def cmd_setbase(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set the LLM API base URL."""
+    if not is_owner(update.effective_user.id):
+        return
+
+    base = " ".join(context.args).strip()
+    if not base:
+        current = mem.get_config("llm_api_base") or cfg.OPENAI_API_BASE
+        await update.message.reply_text(
+            f"Current API base: `{current}`\n\n"
+            "Usage: `/setbase <url>`\n\nExamples:\n"
+            "• `https://inference.do-ai.run/v1` (DigitalOcean — default)\n"
+            "• `https://api.openai.com/v1` (OpenAI)\n"
+            "• `http://localhost:11434/v1` (Ollama)",
+            parse_mode="Markdown",
+        )
+        return
+
+    mem.set_config("llm_api_base", base)
+    await update.message.reply_text(f"✅ API base updated: `{base}`", parse_mode="Markdown")
 
 
 async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -416,7 +559,7 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     model = get_current_model()
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     try:
-        response = client.chat.completions.create(
+        response = _get_client().chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": PLAN_PROMPT},
@@ -450,7 +593,7 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         system = AGENT_PROMPT.format(tools=get_tools_description())
         messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
         for iteration in range(cfg.MAX_TOOL_ITERATIONS):
-            response = client.chat.completions.create(
+            response = _get_client().chat.completions.create(
                 model=model, messages=messages, temperature=0.2, max_tokens=2048
             )
             reply = response.choices[0].message.content.strip()
@@ -506,14 +649,14 @@ def main():
     if not cfg.TELEGRAM_TOKEN:
         print("ERROR: TELEGRAM_TOKEN not set. Run `python setup_cli.py` first.")
         sys.exit(1)
-    if not cfg.OPENAI_API_KEY:
-        print("ERROR: OPENAI_API_KEY not set. Run `python setup_cli.py` first.")
-        sys.exit(1)
 
     app = Application.builder().token(cfg.TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start",   cmd_start))
     app.add_handler(CommandHandler("help",    cmd_help))
+    app.add_handler(CommandHandler("setup",   cmd_setup))
+    app.add_handler(CommandHandler("setkey",  cmd_setkey))
+    app.add_handler(CommandHandler("setbase", cmd_setbase))
     app.add_handler(CommandHandler("clear",   cmd_clear))
     app.add_handler(CommandHandler("model",   cmd_model))
     app.add_handler(CommandHandler("models",  cmd_models))
