@@ -128,21 +128,21 @@ Chain as many tool calls as needed. Give a concise summary when done.
 def _parse_tool_call(reply: str) -> tuple[str, dict] | None:
     """Extract (name, args) from a reply, guarded by TOOL_REGISTRY.
 
-    Handles:
-      1. <tool_call>...</tool_call>  — clean tagged format (primary)
-      2. <tool_call>...{no close tag} — model truncated output
-      3. ```json ... ``` / ``` ... ``` — markdown-fenced JSON
-      4. Bare JSON anywhere in reply   — model forgot the tags
-    All paths require name in TOOL_REGISTRY to avoid false positives.
+    Priority order:
+      1. <tool_call>...</tool_call>  — primary tagged format
+      2. <tool_call>...{no close tag} — truncated output fallback
+      3. Bare JSON outside fenced blocks — model forgot the tags
+         (fenced blocks are stripped first to avoid catching code examples)
+    All paths require name in TOOL_REGISTRY to prevent false positives.
     """
     tool_names = set(TOOL_REGISTRY.keys())
 
-    def _extract(raw: str):
+    def _x(raw: str):
         try:
-            parsed = json.loads(raw.strip())
-            name = parsed.get("name", "")
-            if name and name in tool_names:
-                return name, parsed.get("arguments", {})
+            p = json.loads(raw.strip())
+            n = p.get("name", "")
+            if n and n in tool_names:
+                return n, p.get("arguments", {})
         except (json.JSONDecodeError, AttributeError):
             pass
         return None
@@ -150,32 +150,24 @@ def _parse_tool_call(reply: str) -> tuple[str, dict] | None:
     # 1. Closed <tool_call> tag
     m = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", reply, re.DOTALL)
     if m:
-        result = _extract(m.group(1))
-        if result:
-            return result
+        r = _x(m.group(1))
+        if r: return r
 
-    # 2. Unclosed <tool_call> tag (model output got cut off)
+    # 2. Unclosed <tool_call> tag (output truncated)
     m = re.search(r"<tool_call>\s*(\{.*)", reply, re.DOTALL)
     if m:
-        result = _extract(m.group(1))
-        if result:
-            return result
+        r = _x(m.group(1))
+        if r: return r
 
-    # 3. Markdown fenced block: ```json ... ``` or ``` ... ```
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", reply, re.DOTALL)
-    if m:
-        result = _extract(m.group(1))
-        if result:
-            return result
-
-    # 4. Bare JSON anywhere in the reply (model forgot the tags)
+    # 3. Bare JSON — strip ALL fenced code blocks first so we never
+    #    accidentally match JSON inside a code example the model is explaining
+    stripped = re.sub(r"```[\s\S]*?```", "", reply)
     for m in re.finditer(
         r'\{[^{}]*"name"\s*:[^{}]*"arguments"\s*:\s*\{[^{}]*\}[^{}]*\}',
-        reply, re.DOTALL
+        stripped, re.DOTALL
     ):
-        result = _extract(m.group(0))
-        if result:
-            return result
+        r = _x(m.group(0))
+        if r: return r
 
     return None
 
