@@ -1,5 +1,7 @@
 # SynthClaw-CoAgent
 
+![synthclaw-coagent](56771a46-71a7-47c7-a0c5-89c64da22c4e.png)
+
 **Your personal AI agent that lives on a cheap VPS and talks to you through Telegram or WhatsApp.**
 
 SynthClaw-CoAgent is a lightweight, self-hosted AI agent that runs on a single server. It can execute shell commands, manage files, call APIs, run background services, store encrypted credentials, and remember things across conversations — all controlled through natural chat.
