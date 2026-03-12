@@ -1,11 +1,14 @@
 """
 SynthClaw-CoAgent — Persistent Memory Layer
-SQLite database + Fernet encryption for credentials.
+SQLite database + Fernet encryption for credentials + markdown file context.
 """
 import sqlite3
 from pathlib import Path
+from datetime import datetime, date
 from cryptography.fernet import Fernet
 from config import DB_PATH, BASE_DIR
+
+CONTEXT_DIR = BASE_DIR / "context"
 
 KEY_FILE = BASE_DIR / ".fernet_key"
 
@@ -237,3 +240,90 @@ def get_summary(chat_id: int) -> str | None:
     row = c.fetchone()
     conn.close()
     return row[0] if row else None
+
+
+# ── Markdown file context system ─────────────────────────────────────────────
+
+def _chat_dir(chat_id: int) -> Path:
+    d = CONTEXT_DIR / str(chat_id)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _sessions_dir(chat_id: int) -> Path:
+    d = _chat_dir(chat_id) / "sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# -- profile.md: persistent facts about the user --
+
+def get_profile(chat_id: int) -> str:
+    p = _chat_dir(chat_id) / "profile.md"
+    return p.read_text(encoding="utf-8") if p.exists() else ""
+
+
+def save_profile(chat_id: int, content: str):
+    p = _chat_dir(chat_id) / "profile.md"
+    p.write_text(content, encoding="utf-8")
+
+
+def append_to_profile(chat_id: int, line: str):
+    """Add a line if not already present."""
+    profile = get_profile(chat_id)
+    if line.strip() and line.strip() not in profile:
+        new = profile.rstrip() + "\n" + line.strip() + "\n" if profile else line.strip() + "\n"
+        save_profile(chat_id, new)
+
+
+# -- summary.md: rolling conversation summary --
+
+def get_md_summary(chat_id: int) -> str:
+    p = _chat_dir(chat_id) / "summary.md"
+    return p.read_text(encoding="utf-8") if p.exists() else ""
+
+
+def save_md_summary(chat_id: int, content: str):
+    p = _chat_dir(chat_id) / "summary.md"
+    p.write_text(content, encoding="utf-8")
+
+
+# -- sessions/YYYY-MM-DD.md: daily session logs --
+
+def get_today_session(chat_id: int) -> str:
+    p = _sessions_dir(chat_id) / f"{date.today().isoformat()}.md"
+    return p.read_text(encoding="utf-8") if p.exists() else ""
+
+
+def append_to_session(chat_id: int, line: str):
+    p = _sessions_dir(chat_id) / f"{date.today().isoformat()}.md"
+    ts = datetime.now().strftime("%H:%M")
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(f"- [{ts}] {line}\n")
+
+
+def get_recent_sessions(chat_id: int, days: int = 3) -> str:
+    sdir = _sessions_dir(chat_id)
+    parts = []
+    for i in range(days):
+        from datetime import timedelta
+        d = date.today() - timedelta(days=i)
+        p = sdir / f"{d.isoformat()}.md"
+        if p.exists():
+            parts.append(f"### {d.isoformat()}\n{p.read_text(encoding='utf-8')}")
+    return "\n".join(reversed(parts))
+
+
+def get_full_context_md(chat_id: int) -> str:
+    """Bundle profile + summary + recent sessions for system prompt injection."""
+    sections = []
+    profile = get_profile(chat_id)
+    if profile:
+        sections.append(f"## User Profile\n{profile}")
+    summary = get_md_summary(chat_id)
+    if summary:
+        sections.append(f"## Conversation Summary\n{summary}")
+    sessions = get_recent_sessions(chat_id, 3)
+    if sessions:
+        sections.append(f"## Recent Sessions\n{sessions}")
+    return "\n\n".join(sections)

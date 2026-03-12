@@ -97,21 +97,30 @@ def get_current_model() -> str:
     return mem.get_config("current_model", cfg.DEFAULT_MODEL)
 
 
-# ── Smart context ─────────────────────────────────────────────────────────────
+# ── Smart context (MD file system) ────────────────────────────────────────────
 
 SUMMARIZE_THRESHOLD = 30
 RECENT_WINDOW = 15
 SUMMARIZE_BATCH = 15
 
 SUMMARY_SYSTEM = (
-    "You are a summarizer. Condense the following conversation into a brief paragraph "
-    "(3-5 sentences). Capture key facts, decisions, tasks completed, credentials mentioned, "
-    "and any important context. Be factual and concise. Output ONLY the summary."
+    "You are a summarizer. Condense the following conversation into a concise markdown "
+    "summary (bullet points preferred). Capture: key facts about the user, decisions made, "
+    "tasks completed, credentials/services mentioned, preferences learned, and important "
+    "context. If a previous summary exists, merge new info into it. "
+    "Output ONLY the updated markdown summary, nothing else."
+)
+
+PROFILE_EXTRACT_SYSTEM = (
+    "Extract personal facts about the user from this conversation. "
+    "Output a markdown list of facts (name, timezone, preferences, projects, tech stack, etc). "
+    "Only include things the user explicitly stated about themselves. "
+    "If nothing personal was shared, output exactly: NONE"
 )
 
 
 def _maybe_summarize(chat_id: int):
-    """If message count exceeds threshold, summarize oldest batch and prune."""
+    """If message count exceeds threshold, summarize oldest batch into MD files and prune."""
     total = mem.count_messages(chat_id)
     if total <= SUMMARIZE_THRESHOLD:
         return
@@ -120,40 +129,81 @@ def _maybe_summarize(chat_id: int):
     if len(oldest) < 5:
         return
 
-    prev_summary = mem.get_summary(chat_id) or ""
     convo_lines = []
-    if prev_summary:
-        convo_lines.append(f"[Previous summary]: {prev_summary}")
     for msg in oldest:
         role = msg["role"].upper()
         convo_lines.append(f"{role}: {msg['content'][:500]}")
+    convo_text = "\n".join(convo_lines)
+
+    # ── 1. Update summary.md ──
+    prev_summary = mem.get_md_summary(chat_id)
+    summary_input = convo_text
+    if prev_summary:
+        summary_input = f"[Previous summary]:\n{prev_summary}\n\n[New messages]:\n{convo_text}"
 
     try:
         resp = client.chat.completions.create(
             model=cfg.DEFAULT_MODEL,
             messages=[
                 {"role": "system", "content": SUMMARY_SYSTEM},
-                {"role": "user", "content": "\n".join(convo_lines)},
+                {"role": "user", "content": summary_input},
             ],
             temperature=0.3,
-            max_tokens=300,
+            max_tokens=500,
         )
         summary = resp.choices[0].message.content.strip()
         if summary:
+            mem.save_md_summary(chat_id, summary)
             mem.save_summary(chat_id, summary, total)
-            msg_ids = [m["id"] for m in oldest]
-            mem.delete_messages_by_ids(msg_ids)
-            logger.info(f"Summarized {len(oldest)} old messages for chat {chat_id}")
+            logger.info(f"Updated summary.md for chat {chat_id}")
     except Exception as e:
-        logger.error(f"Summarization failed: {e}")
+        logger.error(f"Summary update failed: {e}")
+
+    # ── 2. Extract profile facts ──
+    try:
+        resp = client.chat.completions.create(
+            model=cfg.DEFAULT_MODEL,
+            messages=[
+                {"role": "system", "content": PROFILE_EXTRACT_SYSTEM},
+                {"role": "user", "content": convo_text},
+            ],
+            temperature=0.2,
+            max_tokens=300,
+        )
+        profile_facts = resp.choices[0].message.content.strip()
+        if profile_facts and profile_facts != "NONE":
+            for line in profile_facts.split("\n"):
+                line = line.strip().lstrip("-•* ")
+                if line:
+                    mem.append_to_profile(chat_id, line)
+            logger.info(f"Updated profile.md for chat {chat_id}")
+    except Exception as e:
+        logger.error(f"Profile extraction failed: {e}")
+
+    # ── 3. Log key events to session file ──
+    for msg in oldest:
+        if msg["role"] == "user" and len(msg["content"]) > 10:
+            short = msg["content"][:120].replace("\n", " ")
+            mem.append_to_session(chat_id, f"User: {short}")
+
+    # ── 4. Prune the old messages from DB ──
+    msg_ids = [m["id"] for m in oldest]
+    mem.delete_messages_by_ids(msg_ids)
+    logger.info(f"Summarized + pruned {len(oldest)} messages for chat {chat_id}")
 
 
 def _build_context(chat_id: int) -> list[dict]:
-    """Build the full message list with injected memories, cred names, and summary."""
+    """Build the full message list with MD context, memories, cred names."""
     all_memories = mem.get_all_memory()
     cred_list = mem.list_credentials()
 
     extra_context = []
+
+    # MD file long-term context
+    md_context = mem.get_full_context_md(chat_id)
+    if md_context:
+        extra_context.append(f"\n== LONG-TERM CONTEXT ==\n{md_context}")
+
     if all_memories:
         facts = "; ".join(f"{k}: {v}" for k, v in all_memories.items())
         extra_context.append(f"\n== KNOWN FACTS ABOUT OWNER ==\n{facts}")
@@ -166,13 +216,6 @@ def _build_context(chat_id: int) -> list[dict]:
         system += "\n" + "\n".join(extra_context)
 
     messages = [{"role": "system", "content": system}]
-
-    summary = mem.get_summary(chat_id)
-    if summary:
-        messages.append({
-            "role": "system",
-            "content": f"[Previous conversation summary]: {summary}",
-        })
 
     history = mem.get_history(chat_id, RECENT_WINDOW)
     messages.extend(history)
