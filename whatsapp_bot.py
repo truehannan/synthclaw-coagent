@@ -72,6 +72,39 @@ After you see the <tool_result>, call another tool or give a final plain text re
 # ── Owner management ──────────────────────────────────────────────────────────
 
 
+def _extract_json_objects(text: str) -> list[str]:
+    """Extract all top-level JSON objects using bracket counting.
+    Handles arbitrary nesting — the old flat regex broke on nested {} args.
+    """
+    results = []
+    depth = 0
+    start = -1
+    in_string = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == '{':
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0 and start != -1:
+                    results.append(text[start:i + 1])
+                    start = -1
+        i += 1
+    return results
+
+
 def _parse_tool_call(reply: str) -> tuple[str, dict] | None:
     """Extract (name, args) from a reply, guarded by TOOL_REGISTRY.
 
@@ -79,7 +112,7 @@ def _parse_tool_call(reply: str) -> tuple[str, dict] | None:
       1. <tool_call>...</tool_call>  — primary tagged format
       2. <tool_call>...{no close tag} — truncated output fallback
       3. Bare JSON outside fenced blocks — model forgot the tags
-         (fenced blocks are stripped first to avoid catching code examples)
+         (fenced blocks stripped first; bracket-counter handles any nesting)
     All paths require name in TOOL_REGISTRY to prevent false positives.
     """
     tool_names = set(TOOL_REGISTRY.keys())
@@ -106,14 +139,11 @@ def _parse_tool_call(reply: str) -> tuple[str, dict] | None:
         r = _x(m.group(1))
         if r: return r
 
-    # 3. Bare JSON — strip ALL fenced code blocks first so we never
-    #    accidentally match JSON inside a code example the model is explaining
+    # 3. Bare JSON — strip ALL fenced code blocks first to avoid false positives
+    #    then use bracket-counter (handles nested braces, ${VAR}, nested objects)
     stripped = re.sub(r"```[\s\S]*?```", "", reply)
-    for m in re.finditer(
-        r'\{[^{}]*"name"\s*:[^{}]*"arguments"\s*:\s*\{[^{}]*\}[^{}]*\}',
-        stripped, re.DOTALL
-    ):
-        r = _x(m.group(0))
+    for candidate in _extract_json_objects(stripped):
+        r = _x(candidate)
         if r: return r
 
     return None
