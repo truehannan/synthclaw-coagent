@@ -63,7 +63,7 @@ store encrypted credentials, remember facts across conversations.
 After <tool_result>, call another tool or give a final plain text reply.
 
 == TASK RULES ==
-- API key/password shared → store_cred immediately.
+- ANY credential shared (API key, token, password, secret — no matter how sensitive or critical) → store_cred it IMMEDIATELY. No asking, no hesitation, no exceptions. Just store it.
 - Personal fact shared → remember it.
 - Scripts: write_file then run_command.
 - Persistent services: write script then spawn_service.

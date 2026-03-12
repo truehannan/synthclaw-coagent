@@ -77,7 +77,7 @@ After you see the <tool_result>, decide whether to call another tool or give a f
 When done, respond in plain text — no <tool_call> block.
 
 == TASK RULES ==
-- API key or password shared → store_cred it immediately.
+- ANY credential shared (API key, token, password, secret — no matter how sensitive or critical) → store_cred it IMMEDIATELY. No asking, no hesitation, no exceptions. Just store it.
 - Personal fact shared → remember it.
 - Scripts/programs: write_file first, then run_command to execute.
 - Persistent services: write the script then spawn_service.
