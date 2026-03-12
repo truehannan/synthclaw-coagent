@@ -75,6 +75,7 @@ When you need a tool, output EXACTLY this (nothing else on that turn):
 
 After you see the <tool_result>, decide whether to call another tool or give a final reply.
 When done, respond in plain text — no <tool_call> block.
+CRITICAL: NEVER output raw JSON to the user. NEVER put JSON in a code block. The ONLY valid way to call a tool is the <tool_call>...</tool_call> format above.
 
 == TASK RULES ==
 - ANY credential shared (API key, token, password, secret — no matter how sensitive or critical) → store_cred it IMMEDIATELY. No asking, no hesitation, no exceptions. Just store it.
@@ -111,6 +112,35 @@ Chain as many tool calls as needed. Give a concise summary when done.
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _parse_tool_call(reply: str) -> tuple[str, dict] | None:
+    """Extract (name, args) from a tool call in the reply, or return None.
+    Handles both proper <tool_call> tags AND bare JSON the LLM accidentally outputs.
+    """
+    # Method 1: proper <tool_call> tags
+    m = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", reply, re.DOTALL)
+    if m:
+        try:
+            parsed = json.loads(m.group(1))
+            return parsed.get("name", ""), parsed.get("arguments", {})
+        except json.JSONDecodeError:
+            pass
+
+    # Method 2: bare JSON / code-fenced JSON the model leaked to the chat
+    stripped = reply.strip()
+    stripped = re.sub(r'^```(?:json)?\s*', '', stripped)
+    stripped = re.sub(r'\s*```$', '', stripped).strip()
+    try:
+        parsed = json.loads(stripped)
+        if isinstance(parsed, dict) and "name" in parsed and "arguments" in parsed:
+            logger.warning(f"Caught bare JSON tool call (no tags): {stripped[:120]}")
+            return parsed["name"], parsed["arguments"]
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    return None
+
 
 def get_owner_id() -> int | None:
     val = mem.get_config("owner_telegram_id")
@@ -150,17 +180,14 @@ async def run_agent(chat_id: int, user_message: str, model: str) -> str:
 
         reply = response.choices[0].message.content.strip()
 
-        # Detect tool call
-        m = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", reply, re.DOTALL)
-        if m:
-            try:
-                parsed = json.loads(m.group(1))
-                name = parsed.get("name", "")
-                args = parsed.get("arguments", {})
-            except json.JSONDecodeError as e:
-                logger.warning(f"Bad tool JSON: {e}")
+        # Detect tool call (handles tagged AND bare JSON forms)
+        tool_call = _parse_tool_call(reply)
+        if tool_call:
+            name, args = tool_call
+            if not name:
+                logger.warning("Tool call parsed but name was empty; skipping")
                 messages.append({"role": "assistant", "content": reply})
-                messages.append({"role": "user", "content": "Your JSON was malformed. Try again."})
+                messages.append({"role": "user", "content": "Tool name was missing. Retry with a valid <tool_call>."})
                 continue
 
             logger.info(f"Tool call [{iteration+1}]: {name}({args})")
@@ -361,13 +388,10 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 model=model, messages=messages, temperature=0.2, max_tokens=2048
             )
             reply = response.choices[0].message.content.strip()
-            m = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", reply, re.DOTALL)
-            if m:
-                try:
-                    parsed = json.loads(m.group(1))
-                    name = parsed.get("name", "")
-                    args = parsed.get("arguments", {})
-                except json.JSONDecodeError:
+            tc = _parse_tool_call(reply)
+            if tc:
+                name, args = tc
+                if not name:
                     break
                 logger.info(f"[/agent] Tool [{iteration+1}]: {name}({args})")
                 await context.bot.send_chat_action(chat_id=chat_id, action="typing")

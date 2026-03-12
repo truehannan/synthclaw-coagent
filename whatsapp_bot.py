@@ -60,7 +60,8 @@ store encrypted credentials, remember facts across conversations.
 {{"name": "tool_name", "arguments": {{"key": "value"}}}}
 </tool_call>
 
-After <tool_result>, call another tool or give a final plain text reply.
+After you see the <tool_result>, call another tool or give a final plain text reply.
+CRITICAL: NEVER output raw JSON to the user. NEVER put JSON in a code block. The ONLY valid way to call a tool is the <tool_call>...</tool_call> format above.
 
 == TASK RULES ==
 - ANY credential shared (API key, token, password, secret — no matter how sensitive or critical) → store_cred it IMMEDIATELY. No asking, no hesitation, no exceptions. Just store it.
@@ -153,16 +154,13 @@ def run_agent_sync(chat_id: str, user_message: str, model: str) -> str:
 
         reply = response.choices[0].message.content.strip()
 
-        m = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", reply, re.DOTALL)
-        if m:
-            try:
-                parsed = json.loads(m.group(1))
-                name = parsed.get("name", "")
-                args = parsed.get("arguments", {})
-            except json.JSONDecodeError as e:
-                logger.warning(f"Bad tool JSON: {e}")
+        tool_call = _parse_tool_call(reply)
+        if tool_call:
+            name, args = tool_call
+            if not name:
+                logger.warning("Tool call parsed but name was empty; skipping")
                 messages.append({"role": "assistant", "content": reply})
-                messages.append({"role": "user", "content": "Your JSON was malformed. Try again."})
+                messages.append({"role": "user", "content": "Tool name was missing. Retry with a valid <tool_call>."})
                 continue
 
             logger.info(f"Tool call [{iteration+1}]: {name}({args})")
@@ -286,13 +284,11 @@ def handle_command(phone: str, text: str) -> str | None:
                     model=model, messages=messages, temperature=0.2, max_tokens=2048
                 )
                 reply = response.choices[0].message.content.strip()
-                tc = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", reply, re.DOTALL)
+                tc = _parse_tool_call(reply)
                 if tc:
-                    parsed = json.loads(tc.group(1))
-                    name = parsed.get("name", "")
-                    args = parsed.get("arguments", {})
-                    logger.info(f"[/agent] Tool [{iteration+1}]: {name}({args})")
-                    result = execute_tool(name, args)
+                    parsed_name, parsed_args = tc
+                    logger.info(f"[/agent] Tool [{iteration+1}]: {parsed_name}({parsed_args})")
+                    result = execute_tool(parsed_name, parsed_args)
                     messages.append({"role": "assistant", "content": reply})
                     messages.append({"role": "user", "content": f"<tool_result>\n{result}\n</tool_result>\nContinue."})
                 else:
