@@ -1,4 +1,4 @@
-# SynthClaw-CoAgent
+# 🤖 SynthClaw-CoAgent
 
 ![synthclaw-coagent](56771a46-71a7-47c7-a0c5-89c64da22c4e.png)
 
@@ -8,35 +8,35 @@ SynthClaw-CoAgent is a lightweight, self-hosted AI agent that runs on a single s
 
 ---
 
-## Why SynthClaw?
+## 🎯 Why SynthClaw?
 
-There are big agent frameworks out there (see [comparison below](#synthclaw-vs-zeroclaw)). SynthClaw isn't trying to compete with them. It fills a different gap:
+There are big agent frameworks out there (see [comparison below](#synthclaw-vs-openclaw)). SynthClaw isn't trying to compete with them. It fills a different gap:
 
-- **You want a personal AI assistant**, not an enterprise platform
-- **You want it running in 5 minutes**, not after configuring 47 TOML files
-- **You want it on a $6/month VPS**, not a Kubernetes cluster
-- **You want to chat with it on Telegram/WhatsApp**, not through a CLI or web UI
-- **You want to read and understand the entire codebase** in one sitting (~800 lines of Python)
-
----
-
-## Features
-
-- **Conversational AI** — Not just a task executor. It chats, explains, has opinions, and knows when to use tools vs just talk.
-- **12 Built-in Tools** — Shell commands, file I/O, HTTP requests, systemd services, encrypted credential storage, persistent memory
-- **Telegram + WhatsApp** — Full bot interfaces for both platforms
-- **Any LLM Backend** — Works with any OpenAI-compatible API (DigitalOcean Gradient AI, OpenAI, Ollama, vLLM, etc.)
-- **Multi-Model** — Switch between models on the fly with `/model`
-- **Encrypted Credentials** — Fernet encryption for stored API keys and passwords
-- **Persistent Memory** — Key-value store that survives across conversations
-- **Planning Mode** — `/plan` breaks tasks into steps without executing
-- **Agent Mode** — `/agent` executes tasks autonomously, chaining tools without confirmation
-- **Owner Lock** — First user to `/start` becomes the owner; everyone else is blocked
-- **Interactive Setup** — CLI wizard generates your `.env` configuration
+- 👤 **You want a personal AI assistant**, not an enterprise platform
+- ⚡ **You want it running in 5 minutes**, not after configuring 47 TOML files
+- 💰 **You want it on a $6/month VPS**, not a Kubernetes cluster
+- 📱 **You want to chat with it on Telegram/WhatsApp**, not through a CLI or web UI
+- 📖 **You want to read and understand the entire codebase** in one sitting (~800 lines of Python)
 
 ---
 
-## Quick Start
+## ✨ Features
+
+- 💬 **Conversational AI** — Not just a task executor. It chats, explains, has opinions, and knows when to use tools vs just talk.
+- 🛠️ **12 Built-in Tools** — Shell commands, file I/O, HTTP requests, systemd services, encrypted credential storage, persistent memory
+- 📲 **Telegram + WhatsApp** — Full bot interfaces for both platforms
+- 🔌 **Any LLM Backend** — Works with any OpenAI-compatible API (DigitalOcean Gradient AI, OpenAI, Ollama, vLLM, etc.)
+- 🔄 **Multi-Model** — Switch between models on the fly with `/model`
+- 🔐 **Encrypted Credentials** — Fernet encryption for stored API keys and passwords
+- 🧠 **Persistent Memory** — Key-value store that survives across conversations
+- 📋 **Planning Mode** — `/plan` breaks tasks into steps without executing
+- 🤖 **Agent Mode** — `/agent` executes tasks autonomously, chaining tools without confirmation
+- 🔒 **Owner Lock** — First user to `/start` becomes the owner; everyone else is blocked
+- ⚙️ **Interactive Setup** — CLI wizard generates your `.env` configuration
+
+---
+
+## 🚀 Quick Start
 
 ### 1. Clone
 
@@ -77,7 +77,7 @@ Open Telegram, find your bot, send `/start`. That's it.
 
 ---
 
-## Commands
+## 📋 Commands
 
 | Command | Description |
 |---------|-------------|
@@ -103,7 +103,7 @@ Open Telegram, find your bot, send `/start`. That's it.
 
 ---
 
-## Architecture
+## 🏗️ Architecture
 
 ```
 ┌──────────────┐     ┌──────────────┐
@@ -144,7 +144,7 @@ Open Telegram, find your bot, send `/start`. That's it.
 
 ---
 
-## WhatsApp Setup
+## 💬 WhatsApp Setup
 
 WhatsApp uses the [Meta Cloud API](https://developers.facebook.com/docs/whatsapp/cloud-api/get-started) with webhooks (unlike Telegram's polling).
 
@@ -164,7 +164,7 @@ WhatsApp uses the [Meta Cloud API](https://developers.facebook.com/docs/whatsapp
 
 ---
 
-## LLM Providers
+## 🧠 LLM Providers
 
 SynthClaw works with any OpenAI-compatible API. Set `OPENAI_API_BASE` and `OPENAI_API_KEY` in your `.env`.
 
@@ -179,11 +179,11 @@ SynthClaw works with any OpenAI-compatible API. Set `OPENAI_API_BASE` and `OPENA
 
 ---
 
-## SynthClaw vs ZeroClaw
+## ⚖️ SynthClaw vs OpenClaw
 
-[ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) (formerly OpenClaw) is a massive open-source AI agent infrastructure project — 26K+ stars, 137 contributors, written in Rust. It's impressive engineering. But it solves a different problem.
+[OpenClaw](https://github.com/openclaw-ai/openclaw) is a massive open-source AI agent infrastructure project — 26K+ stars, 137 contributors, written in Rust. It's impressive engineering. But it solves a different problem.
 
-| | **SynthClaw-CoAgent** | **ZeroClaw** |
+| | **SynthClaw-CoAgent** | **OpenClaw** |
 |---|---|---|
 | **Purpose** | Personal assistant for one person | Enterprise agent infrastructure |
 | **Language** | Python (~1300 lines) | Rust (~100K+ lines) |
@@ -198,11 +198,11 @@ SynthClaw works with any OpenAI-compatible API. Set `OPENAI_API_BASE` and `OPENA
 | **License** | Source Available (non-commercial) | MIT + Apache-2.0 |
 | **Who it's for** | Solo developers, personal use | Teams, orgs, production deployments |
 
-**TL;DR:** ZeroClaw is a framework for building agent systems. SynthClaw is a ready-to-use personal agent you deploy in 5 minutes and chat with from your phone.
+**TL;DR:** OpenClaw is a framework for building agent systems. SynthClaw is a ready-to-use personal agent you deploy in 5 minutes and chat with from your phone.
 
 ---
 
-## Environment Variables
+## 🔐 Environment Variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
@@ -221,7 +221,7 @@ SynthClaw works with any OpenAI-compatible API. Set `OPENAI_API_BASE` and `OPENA
 
 ---
 
-## Built-in Tools
+## 🔧 Built-in Tools
 
 The agent has 12 tools it can use autonomously:
 
@@ -242,7 +242,7 @@ The agent has 12 tools it can use autonomously:
 
 ---
 
-## License
+## 📃 License
 
 This project is released under a **Source Available — Non-Commercial** license.
 
@@ -252,7 +252,7 @@ See [LICENSE](LICENSE) for full terms.
 
 ---
 
-## Contributing
+## 🤝 Contributing
 
 Found a bug? Want to add a feature? PRs are welcome.
 

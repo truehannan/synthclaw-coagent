@@ -114,13 +114,7 @@ Chain as many tool calls as needed. Give a concise summary when done.
 
 
 def _parse_tool_call(reply: str) -> tuple[str, dict] | None:
-    """Extract (name, args) from a tool call in the reply, or return None.
-    Handles proper <tool_call> tags. Also catches bare JSON only when the
-    entire reply is nothing but a tool call for a real registered tool.
-    """
-    from tools import TOOL_REGISTRY
-
-    # Method 1: proper <tool_call> tags (always trust these)
+    """Extract (name, args) from a <tool_call> block in the reply, or None."""
     m = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", reply, re.DOTALL)
     if m:
         try:
@@ -128,25 +122,90 @@ def _parse_tool_call(reply: str) -> tuple[str, dict] | None:
             return parsed.get("name", ""), parsed.get("arguments", {})
         except json.JSONDecodeError:
             pass
-
-    # Method 2: bare JSON — ONLY when the entire reply is a single JSON object
-    # AND the name matches a real tool. This prevents catching JSON in normal text.
-    stripped = reply.strip()
-    bare = re.sub(r'^```(?:json)?\s*', '', stripped)
-    bare = re.sub(r'\s*```$', '', bare).strip()
-    if bare == stripped or bare == stripped.strip('`').strip():
-        try:
-            parsed = json.loads(bare)
-            if (isinstance(parsed, dict)
-                    and isinstance(parsed.get("name"), str)
-                    and isinstance(parsed.get("arguments"), dict)
-                    and parsed["name"] in TOOL_REGISTRY):
-                logger.warning(f"Caught bare JSON tool call (no tags): {parsed['name']}")
-                return parsed["name"], parsed["arguments"]
-        except (json.JSONDecodeError, ValueError):
-            pass
-
     return None
+
+
+# ── Smart context ─────────────────────────────────────────────────────────────
+
+SUMMARIZE_THRESHOLD = 30   # total msgs before we summarize
+RECENT_WINDOW = 15         # keep this many recent messages verbatim
+SUMMARIZE_BATCH = 15       # how many old messages to summarize at once
+
+SUMMARY_SYSTEM = (
+    "You are a summarizer. Condense the following conversation into a brief paragraph "
+    "(3-5 sentences). Capture key facts, decisions, tasks completed, credentials mentioned, "
+    "and any important context. Be factual and concise. Output ONLY the summary."
+)
+
+
+def _maybe_summarize(chat_id: int):
+    """If message count exceeds threshold, summarize oldest batch and prune."""
+    total = mem.count_messages(chat_id)
+    if total <= SUMMARIZE_THRESHOLD:
+        return
+
+    oldest = mem.get_oldest_messages(chat_id, SUMMARIZE_BATCH)
+    if len(oldest) < 5:
+        return
+
+    prev_summary = mem.get_summary(chat_id) or ""
+    convo_lines = []
+    if prev_summary:
+        convo_lines.append(f"[Previous summary]: {prev_summary}")
+    for msg in oldest:
+        role = msg["role"].upper()
+        convo_lines.append(f"{role}: {msg['content'][:500]}")
+
+    try:
+        resp = client.chat.completions.create(
+            model=cfg.DEFAULT_MODEL,
+            messages=[
+                {"role": "system", "content": SUMMARY_SYSTEM},
+                {"role": "user", "content": "\n".join(convo_lines)},
+            ],
+            temperature=0.3,
+            max_tokens=300,
+        )
+        summary = resp.choices[0].message.content.strip()
+        if summary:
+            mem.save_summary(chat_id, summary, total)
+            msg_ids = [m["id"] for m in oldest]
+            mem.delete_messages_by_ids(msg_ids)
+            logger.info(f"Summarized {len(oldest)} old messages for chat {chat_id}")
+    except Exception as e:
+        logger.error(f"Summarization failed: {e}")
+
+
+def _build_context(chat_id: int) -> list[dict]:
+    """Build the full message list with injected memories, cred names, and summary."""
+    all_memories = mem.get_all_memory()
+    cred_list = mem.list_credentials()
+
+    extra_context = []
+    if all_memories:
+        facts = "; ".join(f"{k}: {v}" for k, v in all_memories.items())
+        extra_context.append(f"\n== KNOWN FACTS ABOUT OWNER ==\n{facts}")
+    if cred_list:
+        names = ", ".join(c["name"] for c in cred_list)
+        extra_context.append(f"\n== STORED CREDENTIALS (available via get_cred) ==\n{names}")
+
+    system = SYSTEM_PROMPT.format(tools=get_tools_description())
+    if extra_context:
+        system += "\n" + "\n".join(extra_context)
+
+    messages = [{"role": "system", "content": system}]
+
+    summary = mem.get_summary(chat_id)
+    if summary:
+        messages.append({
+            "role": "system",
+            "content": f"[Previous conversation summary]: {summary}",
+        })
+
+    history = mem.get_history(chat_id, RECENT_WINDOW)
+    messages.extend(history)
+
+    return messages
 
 
 def get_owner_id() -> int | None:
@@ -168,10 +227,10 @@ def get_current_model() -> str:
 async def run_agent(chat_id: int, user_message: str, model: str) -> str:
     """Run the full agent loop: LLM → tool calls → final reply."""
     mem.save_message(chat_id, "user", user_message)
-    history = mem.get_history(chat_id, cfg.MAX_HISTORY_MESSAGES)
 
-    system = SYSTEM_PROMPT.format(tools=get_tools_description())
-    messages = [{"role": "system", "content": system}] + history
+    # Smart context: summarize old messages if needed, then build enriched context
+    _maybe_summarize(chat_id)
+    messages = _build_context(chat_id)
 
     for iteration in range(cfg.MAX_TOOL_ITERATIONS):
         try:

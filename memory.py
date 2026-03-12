@@ -49,6 +49,13 @@ def init_db():
             key   TEXT PRIMARY KEY,
             value TEXT
         );
+        CREATE TABLE IF NOT EXISTS conversation_summaries (
+            id        INTEGER PRIMARY KEY,
+            chat_id   INTEGER,
+            summary   TEXT,
+            msg_count INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
     """)
     conn.commit()
     conn.close()
@@ -168,3 +175,65 @@ def set_config(key: str, value: str):
     c.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?,?)", (key, value))
     conn.commit()
     conn.close()
+
+
+# ── Conversation summaries ───────────────────────────────────────────────────
+
+def count_messages(chat_id: int) -> int:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM messages WHERE chat_id=?", (chat_id,))
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+
+def get_oldest_messages(chat_id: int, limit: int) -> list[dict]:
+    """Get the oldest N messages for a chat (for summarization)."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT id, role, content FROM messages WHERE chat_id=? ORDER BY ts ASC LIMIT ?",
+        (chat_id, limit),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [{"id": r[0], "role": r[1], "content": r[2]} for r in rows]
+
+
+def delete_messages_by_ids(msg_ids: list[int]):
+    """Delete messages by their IDs (after summarization)."""
+    if not msg_ids:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    placeholders = ",".join("?" for _ in msg_ids)
+    c.execute(f"DELETE FROM messages WHERE id IN ({placeholders})", msg_ids)
+    conn.commit()
+    conn.close()
+
+
+def save_summary(chat_id: int, summary: str, msg_count: int):
+    """Save a conversation summary (cumulative — replaces previous)."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM conversation_summaries WHERE chat_id=?", (chat_id,))
+    c.execute(
+        "INSERT INTO conversation_summaries (chat_id, summary, msg_count) VALUES (?,?,?)",
+        (chat_id, summary, msg_count),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_summary(chat_id: int) -> str | None:
+    """Get the latest conversation summary for a chat."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT summary FROM conversation_summaries WHERE chat_id=? ORDER BY created_at DESC LIMIT 1",
+        (chat_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None

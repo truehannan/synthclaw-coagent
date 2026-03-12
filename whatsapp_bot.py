@@ -71,6 +71,19 @@ After you see the <tool_result>, call another tool or give a final plain text re
 
 # ── Owner management ──────────────────────────────────────────────────────────
 
+
+def _parse_tool_call(reply: str) -> tuple[str, dict] | None:
+    """Extract (name, args) from a <tool_call> block in the reply, or None."""
+    m = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", reply, re.DOTALL)
+    if m:
+        try:
+            parsed = json.loads(m.group(1))
+            return parsed.get("name", ""), parsed.get("arguments", {})
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
 def get_owner_phone() -> str | None:
     return mem.get_config("owner_whatsapp_phone")
 
@@ -82,6 +95,89 @@ def is_owner(phone: str) -> bool:
 
 def get_current_model() -> str:
     return mem.get_config("current_model", cfg.DEFAULT_MODEL)
+
+
+# ── Smart context ─────────────────────────────────────────────────────────────
+
+SUMMARIZE_THRESHOLD = 30
+RECENT_WINDOW = 15
+SUMMARIZE_BATCH = 15
+
+SUMMARY_SYSTEM = (
+    "You are a summarizer. Condense the following conversation into a brief paragraph "
+    "(3-5 sentences). Capture key facts, decisions, tasks completed, credentials mentioned, "
+    "and any important context. Be factual and concise. Output ONLY the summary."
+)
+
+
+def _maybe_summarize(chat_id: int):
+    """If message count exceeds threshold, summarize oldest batch and prune."""
+    total = mem.count_messages(chat_id)
+    if total <= SUMMARIZE_THRESHOLD:
+        return
+
+    oldest = mem.get_oldest_messages(chat_id, SUMMARIZE_BATCH)
+    if len(oldest) < 5:
+        return
+
+    prev_summary = mem.get_summary(chat_id) or ""
+    convo_lines = []
+    if prev_summary:
+        convo_lines.append(f"[Previous summary]: {prev_summary}")
+    for msg in oldest:
+        role = msg["role"].upper()
+        convo_lines.append(f"{role}: {msg['content'][:500]}")
+
+    try:
+        resp = client.chat.completions.create(
+            model=cfg.DEFAULT_MODEL,
+            messages=[
+                {"role": "system", "content": SUMMARY_SYSTEM},
+                {"role": "user", "content": "\n".join(convo_lines)},
+            ],
+            temperature=0.3,
+            max_tokens=300,
+        )
+        summary = resp.choices[0].message.content.strip()
+        if summary:
+            mem.save_summary(chat_id, summary, total)
+            msg_ids = [m["id"] for m in oldest]
+            mem.delete_messages_by_ids(msg_ids)
+            logger.info(f"Summarized {len(oldest)} old messages for chat {chat_id}")
+    except Exception as e:
+        logger.error(f"Summarization failed: {e}")
+
+
+def _build_context(chat_id: int) -> list[dict]:
+    """Build the full message list with injected memories, cred names, and summary."""
+    all_memories = mem.get_all_memory()
+    cred_list = mem.list_credentials()
+
+    extra_context = []
+    if all_memories:
+        facts = "; ".join(f"{k}: {v}" for k, v in all_memories.items())
+        extra_context.append(f"\n== KNOWN FACTS ABOUT OWNER ==\n{facts}")
+    if cred_list:
+        names = ", ".join(c["name"] for c in cred_list)
+        extra_context.append(f"\n== STORED CREDENTIALS (available via get_cred) ==\n{names}")
+
+    system = SYSTEM_PROMPT.format(tools=get_tools_description())
+    if extra_context:
+        system += "\n" + "\n".join(extra_context)
+
+    messages = [{"role": "system", "content": system}]
+
+    summary = mem.get_summary(chat_id)
+    if summary:
+        messages.append({
+            "role": "system",
+            "content": f"[Previous conversation summary]: {summary}",
+        })
+
+    history = mem.get_history(chat_id, RECENT_WINDOW)
+    messages.extend(history)
+
+    return messages
 
 
 # ── WhatsApp API helpers ──────────────────────────────────────────────────────
@@ -133,11 +229,12 @@ def mark_as_read(message_id: str):
 
 def run_agent_sync(chat_id: str, user_message: str, model: str) -> str:
     """Run the agent loop synchronously."""
-    mem.save_message(hash(chat_id), "user", user_message)
-    history = mem.get_history(hash(chat_id), cfg.MAX_HISTORY_MESSAGES)
+    hashed_id = hash(chat_id)
+    mem.save_message(hashed_id, "user", user_message)
 
-    system = SYSTEM_PROMPT.format(tools=get_tools_description())
-    messages = [{"role": "system", "content": system}] + history
+    # Smart context: summarize old messages if needed, then build enriched context
+    _maybe_summarize(hashed_id)
+    messages = _build_context(hashed_id)
 
     for iteration in range(cfg.MAX_TOOL_ITERATIONS):
         try:
