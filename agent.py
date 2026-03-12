@@ -75,7 +75,6 @@ When you need a tool, output EXACTLY this (nothing else on that turn):
 
 After you see the <tool_result>, decide whether to call another tool or give a final reply.
 When done, respond in plain text — no <tool_call> block.
-CRITICAL: NEVER output raw JSON to the user. NEVER put JSON in a code block. The ONLY valid way to call a tool is the <tool_call>...</tool_call> format above.
 
 == TASK RULES ==
 - ANY credential shared (API key, token, password, secret — no matter how sensitive or critical) → store_cred it IMMEDIATELY. No asking, no hesitation, no exceptions. Just store it.
@@ -116,9 +115,12 @@ Chain as many tool calls as needed. Give a concise summary when done.
 
 def _parse_tool_call(reply: str) -> tuple[str, dict] | None:
     """Extract (name, args) from a tool call in the reply, or return None.
-    Handles both proper <tool_call> tags AND bare JSON the LLM accidentally outputs.
+    Handles proper <tool_call> tags. Also catches bare JSON only when the
+    entire reply is nothing but a tool call for a real registered tool.
     """
-    # Method 1: proper <tool_call> tags
+    from tools import TOOL_REGISTRY
+
+    # Method 1: proper <tool_call> tags (always trust these)
     m = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", reply, re.DOTALL)
     if m:
         try:
@@ -127,17 +129,22 @@ def _parse_tool_call(reply: str) -> tuple[str, dict] | None:
         except json.JSONDecodeError:
             pass
 
-    # Method 2: bare JSON / code-fenced JSON the model leaked to the chat
+    # Method 2: bare JSON — ONLY when the entire reply is a single JSON object
+    # AND the name matches a real tool. This prevents catching JSON in normal text.
     stripped = reply.strip()
-    stripped = re.sub(r'^```(?:json)?\s*', '', stripped)
-    stripped = re.sub(r'\s*```$', '', stripped).strip()
-    try:
-        parsed = json.loads(stripped)
-        if isinstance(parsed, dict) and "name" in parsed and "arguments" in parsed:
-            logger.warning(f"Caught bare JSON tool call (no tags): {stripped[:120]}")
-            return parsed["name"], parsed["arguments"]
-    except (json.JSONDecodeError, ValueError):
-        pass
+    bare = re.sub(r'^```(?:json)?\s*', '', stripped)
+    bare = re.sub(r'\s*```$', '', bare).strip()
+    if bare == stripped or bare == stripped.strip('`').strip():
+        try:
+            parsed = json.loads(bare)
+            if (isinstance(parsed, dict)
+                    and isinstance(parsed.get("name"), str)
+                    and isinstance(parsed.get("arguments"), dict)
+                    and parsed["name"] in TOOL_REGISTRY):
+                logger.warning(f"Caught bare JSON tool call (no tags): {parsed['name']}")
+                return parsed["name"], parsed["arguments"]
+        except (json.JSONDecodeError, ValueError):
+            pass
 
     return None
 
