@@ -43,7 +43,7 @@ AVAILABLE_MODELS = [
 
 # ── Agent settings ────────────────────────────────────────────────────────────
 
-MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "10"))
+MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "40"))
 MAX_HISTORY_MESSAGES = int(os.environ.get("MAX_HISTORY_MESSAGES", "20"))
 
 # ── Interface mode ────────────────────────────────────────────────────────────

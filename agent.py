@@ -387,11 +387,33 @@ async def run_agent(chat_id: int, user_message: str, model: str) -> str:
                            "Continue based on this result. If done, give the final reply.",
             })
         else:
+            # Guardrail: never surface raw <tool_call> payloads to user if parse failed
+            if "<tool_call>" in reply or "</tool_call>" in reply:
+                logger.warning("Tagged tool_call detected but parse failed; asking model to retry valid tool JSON")
+                messages.append({"role": "assistant", "content": reply})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Your last reply looked like a tool call but was invalid/truncated and could not be parsed. "
+                        "Retry with ONLY a valid <tool_call> JSON using a known tool name from the tool list. "
+                        "Do not include extra prose."
+                    ),
+                })
+                continue
+
             # Final reply
             mem.save_message(chat_id, "assistant", reply)
             return reply
 
-    return "⚠️ Reached max tool iterations. Something might need manual attention."
+    return (
+        "⚠️ *Task stopped — too many steps reached (40 tool calls)*\n\n"
+        "The agent ran 40 steps on this task without finishing. "
+        "This usually means it got stuck in a loop or the task is too complex to complete in one go.\n\n"
+        "What you can do:\n"
+        "• /clear — Reset the conversation and try a simpler or shorter instruction\n"
+        "• Break your task into smaller parts and send them one at a time\n"
+        "• If something went partially wrong, check /status and ask me to inspect the workspace"
+    )
 
 
 # ── Telegram command handlers ─────────────────────────────────────────────────

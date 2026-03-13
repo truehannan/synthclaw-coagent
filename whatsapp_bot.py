@@ -379,10 +379,28 @@ def run_agent_sync(chat_id: str, user_message: str, model: str) -> str:
                            "Continue based on this result. If done, give the final reply.",
             })
         else:
+            # Guardrail: never surface raw <tool_call> payloads to user if parse failed
+            if "<tool_call>" in reply or "</tool_call>" in reply:
+                logger.warning("[whatsapp] Tagged tool_call detected but parse failed; asking model to retry")
+                messages.append({"role": "assistant", "content": reply})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Your last reply looked like a tool call but was invalid/truncated and could not be parsed. "
+                        "Retry with ONLY a valid <tool_call> JSON using a known tool name from the tool list. "
+                        "Do not include extra prose."
+                    ),
+                })
+                continue
+
             mem.save_message(hash(chat_id), "assistant", reply)
             return reply
 
-    return "Max tool iterations reached."
+    return (
+        "⚠️ Task stopped — too many steps reached (40 tool calls).\n\n"
+        "The agent ran 40 steps without finishing. It likely got stuck in a loop or the task is too complex.\n\n"
+        "Try sending a simpler or shorter instruction, or break the task into smaller parts."
+    )
 
 
 # ── Command handling ──────────────────────────────────────────────────────────
@@ -501,7 +519,11 @@ def handle_command(phone: str, text: str) -> str | None:
                     return reply or "Done."
             except Exception as e:
                 return f"Error: {e}"
-        return "Max tool iterations reached."
+        return (
+            "⚠️ Task stopped — too many steps reached (40 tool calls).\n\n"
+            "The agent ran 40 steps without finishing. It likely got stuck in a loop or the task is too complex.\n\n"
+            "Try sending a simpler or shorter instruction, or break the task into smaller parts."
+        )
 
     return None  # Not a command
 
