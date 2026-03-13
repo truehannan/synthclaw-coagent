@@ -112,6 +112,29 @@ store encrypted credentials, remember facts across conversations.
 - Media is stored in the workspace/media/ directory with subfolders:
   photos, voice, audio, video, documents, stickers, generated, downloads.
 
+== EFFICIENCY & MULTI-STEP ==
+You can issue MULTIPLE <tool_call> blocks in a single response. They will ALL be
+executed and you'll receive all results at once in one combined <tool_result>.
+Example — two tool calls in one response:
+<tool_call>
+{{"name": "read_file", "arguments": {{"path": "config.py"}}}}
+</tool_call>
+<tool_call>
+{{"name": "read_file", "arguments": {{"path": "main.py"}}}}
+</tool_call>
+
+Use BATCH tools when doing repetitive operations:
+- read_files(paths) → read many files in one call instead of many read_file calls
+- write_files(files) → write many files in one call instead of many write_file calls
+- run_commands(commands) → run many commands in one call
+
+PLAN before acting: figure out what you need to read, batch-read it all, then
+figure out all edits, batch-write them. Minimize round-trips.
+
+You can include a short status message before your tool calls so the user sees
+progress while you work. It will be sent as a separate message.
+Example: "Let me check those config files..." followed by <tool_call>...
+
 == AVAILABLE TOOLS ==
 {tools}
 
@@ -150,10 +173,15 @@ Report what you did when complete.
 
 == HOW TO USE A TOOL ==
 Output EXACTLY this (nothing else on that turn):
+You can include MULTIPLE <tool_call> blocks in one response — they all execute at once.
 
 <tool_call>
 {{"name": "tool_name", "arguments": {{"key": "value"}}}}
 </tool_call>
+
+Use batch tools (read_files, write_files, run_commands) to minimize API round-trips.
+PLAN first: read everything you need, then write everything at once.
+Include a short status message before tool calls so the user sees progress.
 
 Chain as many tool calls as needed. Give a concise summary when done.
 """
@@ -195,17 +223,20 @@ def _extract_json_objects(text: str) -> list[str]:
     return results
 
 
-def _parse_tool_call(reply: str) -> tuple[str, dict] | None:
-    """Extract (name, args) from a reply, guarded by TOOL_REGISTRY.
+def _parse_tool_calls(reply: str) -> list[tuple[str, dict]]:
+    """Extract ALL (name, args) tool calls from a reply.
+
+    Returns a list of (name, args) tuples — supports multiple tool calls
+    in a single LLM response for batched execution.
 
     Priority order:
-      1. <tool_call>...</tool_call>  — primary tagged format
-      2. <tool_call>...{no close tag} — truncated output fallback
+      1. <tool_call>...</tool_call> — ALL tagged tool calls
+      2. <tool_call>...{no close tag} — truncated output fallback (single)
       3. Bare JSON outside fenced blocks — model forgot the tags
-         (fenced blocks stripped first; bracket-counter handles any nesting)
     All paths require name in TOOL_REGISTRY to prevent false positives.
     """
     tool_names = set(TOOL_REGISTRY.keys())
+    results = []
 
     def _x(raw: str):
         try:
@@ -217,26 +248,41 @@ def _parse_tool_call(reply: str) -> tuple[str, dict] | None:
             pass
         return None
 
-    # 1. Closed <tool_call> tag
-    m = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", reply, re.DOTALL)
-    if m:
+    # 1. All closed <tool_call> tags
+    for m in re.finditer(r"<tool_call>\s*(.*?)\s*</tool_call>", reply, re.DOTALL):
         r = _x(m.group(1))
-        if r: return r
+        if r:
+            results.append(r)
+    if results:
+        return results
 
     # 2. Unclosed <tool_call> tag (output truncated)
     m = re.search(r"<tool_call>\s*(\{.*)", reply, re.DOTALL)
     if m:
         r = _x(m.group(1))
-        if r: return r
+        if r:
+            return [r]
 
-    # 3. Bare JSON — strip ALL fenced code blocks first to avoid false positives
-    #    then use bracket-counter (handles nested braces, ${VAR}, nested objects)
+    # 3. Bare JSON — strip fenced code blocks, use bracket-counter
     stripped = re.sub(r"```[\s\S]*?```", "", reply)
     for candidate in _extract_json_objects(stripped):
         r = _x(candidate)
-        if r: return r
+        if r:
+            results.append(r)
 
-    return None
+    return results
+
+
+def _extract_pre_tool_text(reply: str) -> str:
+    """Extract conversational text before the first <tool_call> tag.
+    This text is sent as an intermediate progress message to the user.
+    """
+    idx = reply.find("<tool_call>")
+    if idx <= 0:
+        return ""
+    text = reply[:idx].strip()
+    text = text.rstrip("`\n ")
+    return text if len(text) > 3 else ""
 
 
 # ── Smart context (MD file system) ────────────────────────────────────────────
@@ -382,9 +428,11 @@ def get_current_model() -> str:
 
 # ── Core agent loop ───────────────────────────────────────────────────────────
 
-async def run_agent(chat_id: int, user_message: str, model: str) -> tuple[str, list[dict]]:
+async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -> tuple[str, list[dict]]:
     """Run the full agent loop: LLM → tool calls → final reply.
     Returns (text_reply, list_of_media_to_send).
+
+    send_fn: optional async callable(str) to send intermediate progress messages.
     """
     media_to_send: list[dict] = []
     mem.save_message(chat_id, "user", user_message)
@@ -407,33 +455,48 @@ async def run_agent(chat_id: int, user_message: str, model: str) -> tuple[str, l
 
         reply = response.choices[0].message.content.strip()
 
-        # Detect tool call (handles tagged AND bare JSON forms)
-        tool_call = _parse_tool_call(reply)
-        if tool_call:
-            name, args = tool_call
-            if not name:
-                logger.warning("Tool call parsed but name was empty; skipping")
-                messages.append({"role": "assistant", "content": reply})
-                messages.append({"role": "user", "content": "Tool name was missing. Retry with a valid <tool_call>."})
-                continue
-
-            logger.info(f"Tool call [{iteration+1}]: {name}({args})")
-            result = execute_tool(name, args)
-
-            # Capture media items queued by send_media / generate_image
-            if name in ("send_media", "generate_image"):
+        # Detect tool calls (handles tagged AND bare JSON; supports multiple)
+        tool_calls = _parse_tool_calls(reply)
+        if tool_calls:
+            # Send intermediate progress text before executing tools
+            pre_text = _extract_pre_tool_text(reply)
+            if pre_text and send_fn:
                 try:
-                    result_data = json.loads(result)
-                    if result_data.get("queued"):
-                        media_to_send.append(result_data)
-                except json.JSONDecodeError:
-                    pass
+                    await send_fn(pre_text)
+                except Exception as e:
+                    logger.warning(f"Failed to send intermediate message: {e}")
+
+            # Execute ALL tool calls from this response
+            combined_results = []
+            for name, args in tool_calls:
+                if not name:
+                    continue
+                logger.info(f"Tool call [{iteration+1}]: {name}({args})")
+                result = execute_tool(name, args)
+
+                # Capture media items queued by send_media / generate_image
+                if name in ("send_media", "generate_image"):
+                    try:
+                        result_data = json.loads(result)
+                        if result_data.get("queued"):
+                            media_to_send.append(result_data)
+                    except json.JSONDecodeError:
+                        pass
+
+                combined_results.append(f"[{name}]: {result}")
 
             messages.append({"role": "assistant", "content": reply})
+            if len(combined_results) == 1:
+                result_text = combined_results[0]
+            else:
+                result_text = "\n\n".join(
+                    f"[{i+1}/{len(combined_results)}] {r}"
+                    for i, r in enumerate(combined_results)
+                )
             messages.append({
                 "role": "user",
-                "content": f"<tool_result>\n{result}\n</tool_result>\n"
-                           "Continue based on this result. If done, give the final reply.",
+                "content": f"<tool_result>\n{result_text}\n</tool_result>\n"
+                           "Continue based on these results. If done, give the final reply.",
             })
         else:
             # Guardrail: never surface raw <tool_call> payloads to user if parse failed
@@ -809,25 +872,57 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 model=model, messages=messages, temperature=0.2, max_tokens=2048
             )
             reply = response.choices[0].message.content.strip()
-            tc = _parse_tool_call(reply)
-            if tc:
-                name, args = tc
-                if not name:
-                    break
-                logger.info(f"[/agent] Tool [{iteration+1}]: {name}({args})")
-                await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-                result = execute_tool(name, args)
-                # Capture media items
-                if name in ("send_media", "generate_image"):
-                    try:
-                        rd = json.loads(result)
-                        if rd.get("queued"):
-                            agent_media.append(rd)
-                    except json.JSONDecodeError:
-                        pass
+            tool_calls = _parse_tool_calls(reply)
+            if tool_calls:
+                # Send intermediate progress text
+                pre_text = _extract_pre_tool_text(reply)
+                if pre_text:
+                    for chunk in [pre_text[i:i+4000] for i in range(0, len(pre_text), 4000)]:
+                        await update.message.reply_text(chunk)
+
+                # Execute ALL tool calls
+                combined_results = []
+                for name, args in tool_calls:
+                    if not name:
+                        continue
+                    logger.info(f"[/agent] Tool [{iteration+1}]: {name}({args})")
+                    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+                    result = execute_tool(name, args)
+                    if name in ("send_media", "generate_image"):
+                        try:
+                            rd = json.loads(result)
+                            if rd.get("queued"):
+                                agent_media.append(rd)
+                        except json.JSONDecodeError:
+                            pass
+                    combined_results.append(f"[{name}]: {result}")
+
                 messages.append({"role": "assistant", "content": reply})
-                messages.append({"role": "user", "content": f"<tool_result>\n{result}\n</tool_result>\nContinue."})
+                if len(combined_results) == 1:
+                    result_text = combined_results[0]
+                else:
+                    result_text = "\n\n".join(
+                        f"[{i+1}/{len(combined_results)}] {r}"
+                        for i, r in enumerate(combined_results)
+                    )
+                messages.append({
+                    "role": "user",
+                    "content": f"<tool_result>\n{result_text}\n</tool_result>\nContinue.",
+                })
             else:
+                # Guardrail: never send raw tagged tool payloads to chat
+                if "<tool_call>" in reply or "</tool_call>" in reply:
+                    logger.warning("[/agent] Tagged tool_call detected but parse failed; forcing retry")
+                    messages.append({"role": "assistant", "content": reply})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Your last reply looked like a tool call but was invalid/truncated and could not be parsed. "
+                            "Retry with ONLY a valid <tool_call> JSON using a known tool name from the tool list."
+                        ),
+                    })
+                    continue
+
                 if not reply:
                     reply = "Done."
                 for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
@@ -879,8 +974,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
+    async def _send(text):
+        for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
+            await update.message.reply_text(chunk)
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
     try:
-        reply, media_items = await run_agent(chat_id, update.message.text, model)
+        reply, media_items = await run_agent(chat_id, update.message.text, model, send_fn=_send)
         if not reply or not reply.strip():
             reply = "_(got an empty response — try rephrasing or /clear to reset history)_"
         for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
@@ -962,8 +1062,13 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
+    async def _send(text):
+        for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
+            await update.message.reply_text(chunk)
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
     try:
-        reply, media_items = await run_agent(chat_id, desc, model)
+        reply, media_items = await run_agent(chat_id, desc, model, send_fn=_send)
         if not reply or not reply.strip():
             reply = f"📎 Got your {media_type}! Saved as `{filename}`"
         for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:

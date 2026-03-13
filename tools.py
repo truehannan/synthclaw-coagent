@@ -188,6 +188,63 @@ def recall(key: str = None) -> dict:
         return {"error": str(e)}
 
 
+# ── Batch tools (efficiency) ─────────────────────────────────────────────────
+
+def read_files(paths: list) -> dict:
+    """Read multiple files at once. More efficient than calling read_file many times."""
+    results = {}
+    for path in paths:
+        p_str = str(path)
+        try:
+            p = Path(path) if p_str.startswith("/") else WORKSPACE_DIR / path
+            if not p.exists():
+                results[p_str] = {"error": f"Not found: {path}"}
+            else:
+                text = p.read_text()
+                results[p_str] = {"content": text[:5000], "truncated": len(text) > 5000, "size": len(text)}
+        except Exception as e:
+            results[p_str] = {"error": str(e)}
+    return {"files": results, "count": len(results)}
+
+
+def write_files(files: list) -> dict:
+    """Write multiple files at once. Each item: {"path": "...", "content": "..."}."""
+    results = {}
+    for f_item in files:
+        path = f_item.get("path", "")
+        content = f_item.get("content", "")
+        try:
+            p = Path(path) if path.startswith("/") else WORKSPACE_DIR / path
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+            results[str(p)] = {"success": True}
+        except Exception as e:
+            results[str(p)] = {"error": str(e)}
+    return {"files": results, "count": len(results)}
+
+
+def run_commands(commands: list, timeout: int = 30) -> dict:
+    """Run multiple shell commands sequentially. Returns results for each."""
+    results = []
+    for cmd in commands:
+        try:
+            r = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True,
+                timeout=timeout, cwd=str(WORKSPACE_DIR),
+            )
+            results.append({
+                "command": cmd,
+                "stdout": r.stdout[-3000:],
+                "stderr": r.stderr[-1000:],
+                "returncode": r.returncode,
+            })
+        except subprocess.TimeoutExpired:
+            results.append({"command": cmd, "error": f"Timed out after {timeout}s", "returncode": -1})
+        except Exception as e:
+            results.append({"command": cmd, "error": str(e), "returncode": -1})
+    return {"results": results, "count": len(results)}
+
+
 # ── Media tools ───────────────────────────────────────────────────────────────
 
 def send_media(path: str, media_type: str = "auto", caption: str = "") -> dict:
@@ -377,6 +434,24 @@ TOOL_REGISTRY = {
         "fn": recall,
         "description": "Retrieve one or all stored memory facts",
         "params": {"key": "str (optional — omit for all memories)"},
+    },
+    "read_files": {
+        "fn": read_files,
+        "description": "Read multiple files at once (batch). More efficient than multiple read_file calls.",
+        "params": {"paths": "list[str] — list of file paths to read at once"},
+    },
+    "write_files": {
+        "fn": write_files,
+        "description": "Write multiple files at once (batch). Each item: {path, content}.",
+        "params": {"files": "list[{path: str, content: str}] — list of files to write"},
+    },
+    "run_commands": {
+        "fn": run_commands,
+        "description": "Run multiple shell commands sequentially (batch). Returns all results at once.",
+        "params": {
+            "commands": "list[str] — list of shell commands to run",
+            "timeout": "int (optional, per-command timeout, default 30)",
+        },
     },
     "send_media": {
         "fn": send_media,
