@@ -47,6 +47,11 @@ AVAILABLE_MODELS = [
 MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "40"))
 MAX_HISTORY_MESSAGES = int(os.environ.get("MAX_HISTORY_MESSAGES", "20"))
 
+# ── Command timeout tiers ────────────────────────────────────────────────────
+DEFAULT_CMD_TIMEOUT = int(os.environ.get("DEFAULT_CMD_TIMEOUT", "30"))       # normal shell commands
+INSTALL_CMD_TIMEOUT = int(os.environ.get("INSTALL_CMD_TIMEOUT", "180"))      # pip install, npm install, apt install
+BUILD_CMD_TIMEOUT = int(os.environ.get("BUILD_CMD_TIMEOUT", "300"))          # builds, compiles, docker build, make
+
 # ── Interface mode ────────────────────────────────────────────────────────────
 
 # Which bot(s) to run: "telegram", "whatsapp", or "both"

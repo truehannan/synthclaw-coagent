@@ -3,6 +3,9 @@ SynthClaw-CoAgent — Tool Implementations
 12 tools the agent can invoke: shell, files, HTTP, services, credentials, memory.
 """
 import json
+import logging
+import os
+import re
 import subprocess
 import datetime
 import urllib.parse
@@ -12,25 +15,126 @@ from memory import (
     store_credential, get_credential, list_credentials,
     set_memory, get_memory, get_all_memory,
 )
-from config import WORKSPACE_DIR, MEDIA_DIR
+from config import (
+    WORKSPACE_DIR, MEDIA_DIR,
+    DEFAULT_CMD_TIMEOUT, INSTALL_CMD_TIMEOUT, BUILD_CMD_TIMEOUT,
+)
+
+logger = logging.getLogger(__name__)
+
+# ── Timeout intelligence ─────────────────────────────────────────────────────
+
+_INSTALL_PATTERNS = re.compile(
+    r"\b(pip3?\s+install|npm\s+install|npm\s+i\b|yarn\s+add|yarn\s+install|"
+    r"apt-get\s+install|apt\s+install|cargo\s+install|gem\s+install|"
+    r"go\s+install|go\s+get|composer\s+install|composer\s+require)",
+    re.IGNORECASE,
+)
+
+_BUILD_PATTERNS = re.compile(
+    r"\b(make\b|cmake\b|cargo\s+build|go\s+build|docker\s+build|"
+    r"gradle\b|mvn\b|npm\s+run\s+build|yarn\s+build|webpack\b|"
+    r"gcc\b|g\+\+\b|javac\b|rustc\b|dotnet\s+build|pip3?\s+wheel)",
+    re.IGNORECASE,
+)
+
+_TEST_PATTERNS = re.compile(
+    r"\b(pytest|python3?\s+-m\s+(unittest|pytest)|npm\s+test|npm\s+run\s+test|"
+    r"yarn\s+test|cargo\s+test|go\s+test|mvn\s+test|jest\b)",
+    re.IGNORECASE,
+)
+
+
+def _smart_timeout(command: str, explicit_timeout: int | None) -> int:
+    """Pick the right timeout based on command type.
+    If the caller passed an explicit timeout, respect it.
+    Otherwise, auto-detect from command content.
+    """
+    if explicit_timeout is not None:
+        return explicit_timeout
+    if _BUILD_PATTERNS.search(command):
+        return BUILD_CMD_TIMEOUT
+    if _INSTALL_PATTERNS.search(command) or _TEST_PATTERNS.search(command):
+        return INSTALL_CMD_TIMEOUT
+    return DEFAULT_CMD_TIMEOUT
+
+
+def _smart_truncate(text: str, limit: int = 3000) -> str:
+    """Truncate long output smartly: keep first and last lines + error lines."""
+    if len(text) <= limit:
+        return text
+    lines = text.splitlines()
+    # Always keep error/warning lines
+    error_lines = [
+        l for l in lines
+        if re.search(r"(error|Error|ERROR|failed|FAILED|exception|Exception|traceback|Traceback)", l)
+    ]
+    head = "\n".join(lines[:30])
+    tail = "\n".join(lines[-20:])
+    err_section = ""
+    if error_lines:
+        err_section = "\n... [KEY ERRORS] ...\n" + "\n".join(error_lines[:20])
+    truncated = f"{head}\n\n... [{len(lines)} total lines, truncated] ...{err_section}\n\n{tail}"
+    return truncated[:limit]
 
 
 # ── Tool implementations ─────────────────────────────────────────────────────
 
-def run_command(command: str, timeout: int = 30) -> dict:
-    """Execute a shell command on the server."""
+def run_command(command: str, timeout: int = None) -> dict:
+    """Execute a shell command. Timeout auto-detected for installs/builds (180s/300s)
+    or defaults to 30s. Pass explicit timeout to override."""
+    effective_timeout = _smart_timeout(command, timeout)
     try:
         r = subprocess.run(
             command, shell=True, capture_output=True, text=True,
-            timeout=timeout, cwd=str(WORKSPACE_DIR),
+            timeout=effective_timeout, cwd=str(WORKSPACE_DIR),
         )
-        return {
-            "stdout": r.stdout[-3000:],
-            "stderr": r.stderr[-1000:],
+        result = {
+            "stdout": _smart_truncate(r.stdout),
+            "stderr": _smart_truncate(r.stderr, 1500),
             "returncode": r.returncode,
         }
+        # Auto-verify installs: if it failed, add helpful hints
+        if r.returncode != 0:
+            result["note"] = "⚠️ Command FAILED (non-zero exit code). Do NOT proceed as if it succeeded."
+            stderr_lower = r.stderr.lower()
+            if "no matching distribution" in stderr_lower or "no such package" in stderr_lower:
+                result["hint"] = "Package may not exist or name is wrong. Check the exact package name."
+            elif "permission denied" in stderr_lower:
+                result["hint"] = "Try with sudo or check file permissions."
+            elif "already in use" in stderr_lower or "address already in use" in stderr_lower:
+                result["hint"] = "Port is in use. Find the process: lsof -i :<port> or kill it."
+            elif "modulenotfounderror" in stderr_lower or "no module named" in stderr_lower:
+                pkg_match = re.search(r"no module named ['\'\"\']?(\w+)", stderr_lower)
+                if pkg_match:
+                    result["hint"] = f"Missing module '{pkg_match.group(1)}'. Install it first."
+        return result
     except subprocess.TimeoutExpired:
-        return {"error": f"Timed out after {timeout}s", "returncode": -1}
+        # Auto-retry ONCE with 2x timeout for install/build commands
+        if _INSTALL_PATTERNS.search(command) or _BUILD_PATTERNS.search(command):
+            retry_timeout = effective_timeout * 2
+            logger.warning(f"Command timed out at {effective_timeout}s, retrying with {retry_timeout}s: {command[:100]}")
+            try:
+                r = subprocess.run(
+                    command, shell=True, capture_output=True, text=True,
+                    timeout=retry_timeout, cwd=str(WORKSPACE_DIR),
+                )
+                result = {
+                    "stdout": _smart_truncate(r.stdout),
+                    "stderr": _smart_truncate(r.stderr, 1500),
+                    "returncode": r.returncode,
+                    "note": f"Completed on retry (took >{effective_timeout}s, retried with {retry_timeout}s timeout).",
+                }
+                if r.returncode != 0:
+                    result["note"] += " ⚠️ Command FAILED (non-zero exit code)."
+                return result
+            except subprocess.TimeoutExpired:
+                return {
+                    "error": f"Timed out after {effective_timeout}s + retry at {retry_timeout}s. Command is too slow.",
+                    "returncode": -1,
+                    "hint": "Try breaking this into smaller steps, or run it as a background service with spawn_service.",
+                }
+        return {"error": f"Timed out after {effective_timeout}s", "returncode": -1}
     except Exception as e:
         return {"error": str(e), "returncode": -1}
 
@@ -223,23 +327,27 @@ def write_files(files: list) -> dict:
     return {"files": results, "count": len(results)}
 
 
-def run_commands(commands: list, timeout: int = 30) -> dict:
-    """Run multiple shell commands sequentially. Returns results for each."""
+def run_commands(commands: list, timeout: int = None) -> dict:
+    """Run multiple shell commands sequentially. Timeout auto-detected per command."""
     results = []
     for cmd in commands:
+        cmd_timeout = _smart_timeout(cmd, timeout)
         try:
             r = subprocess.run(
                 cmd, shell=True, capture_output=True, text=True,
-                timeout=timeout, cwd=str(WORKSPACE_DIR),
+                timeout=cmd_timeout, cwd=str(WORKSPACE_DIR),
             )
-            results.append({
+            entry = {
                 "command": cmd,
-                "stdout": r.stdout[-3000:],
-                "stderr": r.stderr[-1000:],
+                "stdout": _smart_truncate(r.stdout),
+                "stderr": _smart_truncate(r.stderr, 1500),
                 "returncode": r.returncode,
-            })
+            }
+            if r.returncode != 0:
+                entry["note"] = "⚠️ FAILED"
+            results.append(entry)
         except subprocess.TimeoutExpired:
-            results.append({"command": cmd, "error": f"Timed out after {timeout}s", "returncode": -1})
+            results.append({"command": cmd, "error": f"Timed out after {cmd_timeout}s", "returncode": -1})
         except Exception as e:
             results.append({"command": cmd, "error": str(e), "returncode": -1})
     return {"results": results, "count": len(results)}
@@ -369,13 +477,104 @@ def generate_image(prompt: str, size: str = "1024x1024", filename: str = "") -> 
         }
 
 
+# ── Utility tools ─────────────────────────────────────────────────────────────
+
+def search_files(pattern: str, path: str = ".", max_results: int = 50) -> dict:
+    """Search for text/regex pattern across files in a directory (recursive grep)."""
+    try:
+        p = Path(path) if path.startswith("/") else WORKSPACE_DIR / path
+        if not p.exists():
+            return {"error": f"Path not found: {path}"}
+        r = subprocess.run(
+            f"grep -rnI --include='*' '{pattern}' '{p}'",
+            shell=True, capture_output=True, text=True,
+            timeout=30, cwd=str(WORKSPACE_DIR),
+        )
+        lines = r.stdout.strip().splitlines()
+        return {
+            "matches": lines[:max_results],
+            "total": len(lines),
+            "truncated": len(lines) > max_results,
+        }
+    except subprocess.TimeoutExpired:
+        return {"error": "Search timed out after 30s. Try a narrower path or simpler pattern."}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def patch_file(path: str, old_text: str, new_text: str) -> dict:
+    """Replace a specific text snippet in a file. More precise than rewriting the whole file.
+    The old_text must match EXACTLY (including whitespace)."""
+    try:
+        p = Path(path) if path.startswith("/") else WORKSPACE_DIR / path
+        if not p.exists():
+            return {"error": f"File not found: {path}"}
+        content = p.read_text()
+        count = content.count(old_text)
+        if count == 0:
+            return {"error": "old_text not found in file. Read the file first to get the exact text."}
+        if count > 1:
+            return {"error": f"old_text matches {count} locations. Make it more specific (include more surrounding lines)."}
+        new_content = content.replace(old_text, new_text, 1)
+        p.write_text(new_content)
+        return {"success": True, "path": str(p), "replacements": 1}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def system_info() -> dict:
+    """Get system information: CPU, memory, disk, OS, uptime in one call."""
+    info = {}
+    try:
+        # OS
+        r = subprocess.run("cat /etc/os-release | head -3", shell=True, capture_output=True, text=True, timeout=5)
+        info["os"] = r.stdout.strip()
+        # Uptime
+        r = subprocess.run("uptime -p", shell=True, capture_output=True, text=True, timeout=5)
+        info["uptime"] = r.stdout.strip()
+        # CPU
+        r = subprocess.run("nproc", shell=True, capture_output=True, text=True, timeout=5)
+        info["cpu_cores"] = r.stdout.strip()
+        r = subprocess.run("cat /proc/loadavg", shell=True, capture_output=True, text=True, timeout=5)
+        info["load_avg"] = r.stdout.strip()
+        # Memory
+        r = subprocess.run("free -h | head -2", shell=True, capture_output=True, text=True, timeout=5)
+        info["memory"] = r.stdout.strip()
+        # Disk
+        r = subprocess.run("df -h / | tail -1", shell=True, capture_output=True, text=True, timeout=5)
+        info["disk"] = r.stdout.strip()
+        # Python & Node versions
+        r = subprocess.run("python3 --version 2>&1; node --version 2>&1", shell=True, capture_output=True, text=True, timeout=5)
+        info["runtimes"] = r.stdout.strip()
+    except Exception as e:
+        info["error"] = str(e)
+    return info
+
+
+def check_port(port: int) -> dict:
+    """Check if a network port is in use. Shows what process is using it."""
+    try:
+        r = subprocess.run(
+            f"ss -tlnp | grep :{port} || echo 'Port {port} is free'",
+            shell=True, capture_output=True, text=True, timeout=10,
+        )
+        in_use = f":{port}" in r.stdout and "free" not in r.stdout
+        return {
+            "port": port,
+            "in_use": in_use,
+            "details": r.stdout.strip(),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── Tool registry ─────────────────────────────────────────────────────────────
 
 TOOL_REGISTRY = {
     "run_command": {
         "fn": run_command,
-        "description": "Execute a shell command on the server",
-        "params": {"command": "str (required)", "timeout": "int (optional, default 30)"},
+        "description": "Execute a shell command. Timeout auto-scales: 30s normal, 180s installs, 300s builds. Override with explicit timeout. Returns returncode (0=success, non-zero=FAILED).",
+        "params": {"command": "str (required)", "timeout": "int (optional, auto-detected if omitted)"},
     },
     "write_file": {
         "fn": write_file,
@@ -447,11 +646,39 @@ TOOL_REGISTRY = {
     },
     "run_commands": {
         "fn": run_commands,
-        "description": "Run multiple shell commands sequentially (batch). Returns all results at once.",
+        "description": "Run multiple shell commands sequentially (batch). Timeout auto-detected per command. Returns all results with returncode (0=success).",
         "params": {
             "commands": "list[str] — list of shell commands to run",
-            "timeout": "int (optional, per-command timeout, default 30)",
+            "timeout": "int (optional, per-command, auto-detected if omitted)",
         },
+    },
+    "search_files": {
+        "fn": search_files,
+        "description": "Search for a text/regex pattern across files recursively (like grep -rn). Use this instead of run_command with grep.",
+        "params": {
+            "pattern": "str — text or regex to search for",
+            "path": "str (optional, default '.' = workspace root)",
+            "max_results": "int (optional, default 50)",
+        },
+    },
+    "patch_file": {
+        "fn": patch_file,
+        "description": "Replace a specific text snippet in a file (find-and-replace). More precise than rewriting the whole file. old_text must match exactly ONE location.",
+        "params": {
+            "path": "str",
+            "old_text": "str — exact text to find (include surrounding lines for uniqueness)",
+            "new_text": "str — replacement text",
+        },
+    },
+    "system_info": {
+        "fn": system_info,
+        "description": "Get system info (CPU, memory, disk, OS, uptime, runtimes) in one call. Use this instead of multiple run_command calls.",
+        "params": {},
+    },
+    "check_port": {
+        "fn": check_port,
+        "description": "Check if a network port is in use and what process is using it",
+        "params": {"port": "int — port number to check"},
     },
     "send_media": {
         "fn": send_media,

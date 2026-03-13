@@ -136,6 +136,16 @@ Multiple tool calls in one response (all execute at once):
 ❌ No raw JSON without tags. ❌ No markdown fences.
 ✅ Always use <tool_call> tags — the only format that works.
 
+== EXIT CODE RULES (CRITICAL) ==
+- returncode 0 = SUCCESS. Proceed.
+- returncode != 0 = FAILED. The command DID NOT WORK.
+  → Do NOT proceed as if it succeeded.
+  → Read the stderr. Diagnose the problem.
+  → Fix the issue (install missing dep, fix typo, correct path) and retry.
+  → If you cannot fix it after 2 attempts, STOP and tell the user what failed and why.
+- NEVER ignore a failed command. NEVER assume it worked when returncode != 0.
+- After ANY install command (pip/npm/apt), CHECK the result before using the package.
+
 == VERIFICATION RULES (CRITICAL) ==
 - pip install <pkg>: FIRST run `pip index versions <pkg>` or `pip install <pkg>==`
   to check it exists and see available versions.
@@ -158,13 +168,23 @@ Smart, direct, slightly informal. Hold real conversations:
 - Concise unless depth is needed. Friendly but not cringe.
 - NEVER reply with empty output.
 
+== FAILURE PROTOCOL ==
+- If a step FAILS, do NOT continue to the next step blindly.
+- Diagnose → Fix → Retry OR report to user.
+- Example: if `pip install X` fails, do NOT proceed to `python script_using_X.py`.
+- If you've tried 2 different approaches and both failed, STOP and explain.
+
 == CAPABILITIES ==
 Full server control: shell commands, file management, background services,
 HTTP APIs, encrypted credential storage, persistent memory.
+Timeouts auto-scale: 30s normal commands, 180s installs, 300s builds.
 
 Media: receive photos/voice/audio/video/docs/stickers (auto-saved to server).
 Send back via send_media. Download via download_url. Browse via list_media.
 Generate images via generate_image. Storage: workspace/media/.
+
+Search files with search_files (grep). Edit parts of files with patch_file.
+Get system info with system_info. Check ports with check_port.
 
 == AVAILABLE TOOLS ==
 {tools}
@@ -173,7 +193,7 @@ Generate images via generate_image. Storage: workspace/media/.
 - Credentials shared → store_cred IMMEDIATELY. No asking.
 - Personal facts → remember.
 - Scripts: write_file then run_command.
-- Services: write script then spawn_service.
+- Services: write script then spawn_service. Check port first with check_port.
 - Show output only when it adds value.
 """
 
@@ -203,6 +223,16 @@ Plan: [numbered steps]
 - Use read_files/write_files/run_commands for bulk operations.
 - Multiple <tool_call> blocks in one response execute at once.
 - Short status text before tool calls = user sees progress.
+
+== EXIT CODES ==
+- returncode 0 = success. Proceed.
+- returncode != 0 = FAILED. Do NOT proceed. Read stderr, diagnose, fix, retry.
+- After any install, VERIFY it worked (check returncode, pip show, which, etc).
+- If 2 attempts fail, STOP and report the error. Do not loop endlessly.
+
+== FAILURE PROTOCOL ==
+- If a step fails, diagnose and fix BEFORE moving to the next step.
+- NEVER skip a failed step. NEVER assume it worked.
 
 == TOOL FORMAT ==
 <tool_call>
@@ -514,6 +544,31 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
 
         # Detect tool calls (handles tagged AND bare JSON; supports multiple)
         tool_calls = _parse_tool_calls(reply)
+
+        # Anti-loop detection: if the model sends the exact same tool calls twice in a row, break
+        if tool_calls and iteration > 0:
+            current_sig = str([(tc[0], json.dumps(tc[1], sort_keys=True)) for tc in tool_calls])
+            if hasattr(run_agent, '_last_tool_sig') and run_agent._last_tool_sig.get(chat_id) == current_sig:
+                logger.warning(f"Anti-loop: identical tool calls detected at iteration {iteration+1}, breaking loop")
+                clean_reply = _strip_think_block(reply)
+                error_msg = (
+                    "⚠️ I detected I was about to repeat the same action. "
+                    "Something isn't working as expected. Here's where I got stuck:\n\n"
+                    + (clean_reply[:500] if clean_reply else "(no text in response)")
+                )
+                mem.save_message(chat_id, "assistant", error_msg)
+                ACTIVE_TASKS.pop(chat_id, None)
+                return error_msg, media_to_send
+            if not hasattr(run_agent, '_last_tool_sig'):
+                run_agent._last_tool_sig = {}
+            run_agent._last_tool_sig[chat_id] = current_sig
+        elif not tool_calls and hasattr(run_agent, '_last_tool_sig'):
+            run_agent._last_tool_sig.pop(chat_id, None)
+
+        logger.info(
+            f"parse_tool_calls -> {len(tool_calls)} tool(s): "
+            + (", ".join(tc[0] for tc in tool_calls) if tool_calls else "None (final reply)")
+        )
         if tool_calls:
             # Send intermediate progress text before executing tools
             pre_text = _extract_pre_tool_text(reply)
@@ -556,9 +611,13 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
                     f"[{i+1}/{len(combined_results)}] {r}"
                     for i, r in enumerate(combined_results)
                 )
+            # Compress tool results if they're too large (save context tokens)
+            if len(result_text) > 6000:
+                result_text = result_text[:5500] + "\n\n... [output truncated to save context] ..."
             messages.append({
                 "role": "user",
                 "content": f"<tool_result>\n{result_text}\n</tool_result>\n"
+                           "Check returncode: 0=success, non-zero=FAILED (do NOT proceed if failed).\n"
                            "Continue based on these results. If done, give the final reply.",
             })
         else:
@@ -1005,9 +1064,14 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"[{i+1}/{len(combined_results)}] {r}"
                         for i, r in enumerate(combined_results)
                     )
+                # Compress tool results if they're too large
+                if len(result_text) > 6000:
+                    result_text = result_text[:5500] + "\n\n... [output truncated to save context] ..."
                 messages.append({
                     "role": "user",
-                    "content": f"<tool_result>\n{result_text}\n</tool_result>\nContinue.",
+                    "content": f"<tool_result>\n{result_text}\n</tool_result>\n"
+                               "Check returncode: 0=success, non-zero=FAILED (do NOT proceed if failed).\n"
+                               "Continue.",
                 })
             else:
                 # Guardrail: never send raw tagged tool payloads to chat
