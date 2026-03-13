@@ -3,11 +3,13 @@ SynthClaw-CoAgent — Telegram Bot Interface
 Main entry point for the Telegram agent.
 """
 import asyncio
+import datetime
 import json
 import logging
 import re
 import sys
 import time
+from pathlib import Path
 from openai import OpenAI
 from telegram import Update
 from telegram.ext import (
@@ -98,6 +100,17 @@ Read the intent carefully before reaching for a tool:
 When the owner needs something done, you have full control:
 run shell commands, manage files, start background services, call APIs,
 store encrypted credentials, remember facts across conversations.
+
+== MEDIA CAPABILITIES ==
+- The owner can send you photos, voice messages, audio, video, documents, and stickers.
+  When they do, you'll see a description like "[User sent a photo: saved as /path/to/file]".
+  The file is already saved on the server — you can reference it, process it, or send it back.
+- Use send_media to send any file from the server back to the user (auto-detects type).
+- Use download_url to download files from the internet to media storage.
+- Use list_media to browse stored media files.
+- Use generate_image to create AI-generated images (if your API provider supports it).
+- Media is stored in the workspace/media/ directory with subfolders:
+  photos, voice, audio, video, documents, stickers, generated, downloads.
 
 == AVAILABLE TOOLS ==
 {tools}
@@ -369,8 +382,11 @@ def get_current_model() -> str:
 
 # ── Core agent loop ───────────────────────────────────────────────────────────
 
-async def run_agent(chat_id: int, user_message: str, model: str) -> str:
-    """Run the full agent loop: LLM → tool calls → final reply."""
+async def run_agent(chat_id: int, user_message: str, model: str) -> tuple[str, list[dict]]:
+    """Run the full agent loop: LLM → tool calls → final reply.
+    Returns (text_reply, list_of_media_to_send).
+    """
+    media_to_send: list[dict] = []
     mem.save_message(chat_id, "user", user_message)
 
     # Smart context: summarize old messages if needed, then build enriched context
@@ -387,7 +403,7 @@ async def run_agent(chat_id: int, user_message: str, model: str) -> str:
             )
         except Exception as e:
             logger.error(f"LLM error: {e}")
-            return f"❌ LLM error: {e}"
+            return f"❌ LLM error: {e}", media_to_send
 
         reply = response.choices[0].message.content.strip()
 
@@ -403,6 +419,15 @@ async def run_agent(chat_id: int, user_message: str, model: str) -> str:
 
             logger.info(f"Tool call [{iteration+1}]: {name}({args})")
             result = execute_tool(name, args)
+
+            # Capture media items queued by send_media / generate_image
+            if name in ("send_media", "generate_image"):
+                try:
+                    result_data = json.loads(result)
+                    if result_data.get("queued"):
+                        media_to_send.append(result_data)
+                except json.JSONDecodeError:
+                    pass
 
             messages.append({"role": "assistant", "content": reply})
             messages.append({
@@ -427,7 +452,7 @@ async def run_agent(chat_id: int, user_message: str, model: str) -> str:
 
             # Final reply
             mem.save_message(chat_id, "assistant", reply)
-            return reply
+            return reply, media_to_send
 
     return (
         "⚠️ *Task stopped — too many steps reached (40 tool calls)*\n\n"
@@ -437,7 +462,7 @@ async def run_agent(chat_id: int, user_message: str, model: str) -> str:
         "• /clear — Reset the conversation and try a simpler or shorter instruction\n"
         "• Break your task into smaller parts and send them one at a time\n"
         "• If something went partially wrong, check /status and ask me to inspect the workspace"
-    )
+    ), media_to_send
 
 
 # ── Telegram command handlers ─────────────────────────────────────────────────
@@ -520,6 +545,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 *Agent*\n"
         "/plan \\<task\\> — Break task into steps \\(no execution\\)\n"
         "/agent \\<task\\> — Autonomous execution mode\n\n"
+        "📎 *Media:* Send me photos, voice, audio, video, or files\\.\n"
+        "I'll save and process them\\. I can also send files back to you\\.\n\n"
         "*Just chat normally:*\n"
         "• _What's the best way to set up a cron job?_\n"
         "• _Create a Python price tracker and run it hourly_\n"
@@ -776,6 +803,7 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         system = AGENT_PROMPT.format(tools=get_tools_description())
         messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
+        agent_media: list[dict] = []
         for iteration in range(cfg.MAX_TOOL_ITERATIONS):
             response = _llm_call(
                 model=model, messages=messages, temperature=0.2, max_tokens=2048
@@ -789,6 +817,14 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"[/agent] Tool [{iteration+1}]: {name}({args})")
                 await context.bot.send_chat_action(chat_id=chat_id, action="typing")
                 result = execute_tool(name, args)
+                # Capture media items
+                if name in ("send_media", "generate_image"):
+                    try:
+                        rd = json.loads(result)
+                        if rd.get("queued"):
+                            agent_media.append(rd)
+                    except json.JSONDecodeError:
+                        pass
                 messages.append({"role": "assistant", "content": reply})
                 messages.append({"role": "user", "content": f"<tool_result>\n{result}\n</tool_result>\nContinue."})
             else:
@@ -796,11 +832,38 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply = "Done."
                 for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
                     await update.message.reply_text(chunk)
+                await _send_queued_media(update, agent_media)
                 return
         await update.message.reply_text("⚠️ Max tool iterations reached.")
+        await _send_queued_media(update, agent_media)
     except Exception as e:
         logger.error(f"cmd_agent error: {e}", exc_info=True)
         await update.message.reply_text(f"❌ {e}")
+
+
+# ── Media helpers ─────────────────────────────────────────────────────────────
+
+async def _send_queued_media(update: Update, media_items: list[dict]):
+    """Send all queued media files to the user after the text reply."""
+    for item in media_items:
+        path = item.get("path", "")
+        media_type = item.get("type", "document")
+        caption = item.get("caption", "")
+        try:
+            with open(path, "rb") as f:
+                if media_type == "photo":
+                    await update.message.reply_photo(f, caption=caption[:1024] or None)
+                elif media_type == "video":
+                    await update.message.reply_video(f, caption=caption[:1024] or None)
+                elif media_type == "audio":
+                    await update.message.reply_audio(f, caption=caption[:1024] or None)
+                elif media_type == "voice":
+                    await update.message.reply_voice(f, caption=caption[:1024] or None)
+                else:
+                    await update.message.reply_document(f, caption=caption[:1024] or None)
+        except Exception as e:
+            logger.error(f"Failed to send media {path}: {e}")
+            await update.message.reply_text(f"⚠️ Couldn't send file: {e}")
 
 
 # ── Message handler ───────────────────────────────────────────────────────────
@@ -817,13 +880,97 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     try:
-        reply = await run_agent(chat_id, update.message.text, model)
+        reply, media_items = await run_agent(chat_id, update.message.text, model)
         if not reply or not reply.strip():
             reply = "_(got an empty response — try rephrasing or /clear to reset history)_"
         for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
             await update.message.reply_text(chunk)
+        await _send_queued_media(update, media_items)
     except Exception as e:
         logger.error(f"handle_message error: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ {e}")
+
+
+async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming media: photos, voice, audio, video, documents, stickers."""
+    user_id = update.effective_user.id
+    if not is_owner(user_id):
+        return
+
+    # Skip if onboarding not done
+    step = mem.get_config(ONBOARDING_STEP_KEY, "done")
+    if step != "done":
+        return
+
+    if not _is_configured():
+        return
+
+    chat_id = update.effective_chat.id
+    model = get_current_model()
+    msg = update.message
+
+    # Determine media type and get Telegram file object
+    original_name = None
+    if msg.photo:
+        tg_file = await msg.photo[-1].get_file()
+        media_type, subfolder, ext = "photo", "photos", ".jpg"
+    elif msg.voice:
+        tg_file = await msg.voice.get_file()
+        media_type, subfolder, ext = "voice message", "voice", ".ogg"
+    elif msg.audio:
+        tg_file = await msg.audio.get_file()
+        media_type, subfolder, ext = "audio", "audio", ".mp3"
+        original_name = msg.audio.file_name
+    elif msg.video:
+        tg_file = await msg.video.get_file()
+        media_type, subfolder, ext = "video", "video", ".mp4"
+    elif msg.video_note:
+        tg_file = await msg.video_note.get_file()
+        media_type, subfolder, ext = "video note", "video", ".mp4"
+    elif msg.document:
+        tg_file = await msg.document.get_file()
+        media_type, subfolder = "document", "documents"
+        original_name = msg.document.file_name
+        ext = Path(original_name).suffix if original_name else ""
+    elif msg.sticker:
+        tg_file = await msg.sticker.get_file()
+        media_type, subfolder, ext = "sticker", "stickers", ".webp"
+    else:
+        return
+
+    # Build filename and save
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_dir = cfg.MEDIA_DIR / subfolder
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    if original_name:
+        filename = f"{ts}_{original_name}"
+    else:
+        filename = f"{media_type.replace(' ', '_')}_{ts}{ext}"
+
+    save_path = save_dir / filename
+    await tg_file.download_to_drive(str(save_path))
+
+    # Build text description for the LLM
+    file_size = save_path.stat().st_size
+    size_str = f"{file_size / 1024:.1f}KB" if file_size < 1048576 else f"{file_size / 1048576:.1f}MB"
+    caption = msg.caption or ""
+
+    desc = f"[User sent a {media_type}: saved as {save_path}, {size_str}]"
+    if caption:
+        desc = f"{caption}\n\n{desc}"
+
+    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+    try:
+        reply, media_items = await run_agent(chat_id, desc, model)
+        if not reply or not reply.strip():
+            reply = f"📎 Got your {media_type}! Saved as `{filename}`"
+        for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
+            await update.message.reply_text(chunk)
+        await _send_queued_media(update, media_items)
+    except Exception as e:
+        logger.error(f"handle_media error: {e}", exc_info=True)
         await update.message.reply_text(f"❌ {e}")
 
 
@@ -853,6 +1000,14 @@ def main():
     app.add_handler(CommandHandler("plan",    cmd_plan))
     app.add_handler(CommandHandler("agent",   cmd_agent))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # Media handlers — receive photos, voice, audio, video, documents, stickers
+    media_filter = (
+        filters.PHOTO | filters.VOICE | filters.AUDIO |
+        filters.VIDEO | filters.VIDEO_NOTE |
+        filters.Document.ALL | filters.Sticker.ALL
+    )
+    app.add_handler(MessageHandler(media_filter, handle_media))
 
     logger.info("🤖 SynthClaw Telegram agent starting (polling)…")
     app.run_polling(drop_pending_updates=True)

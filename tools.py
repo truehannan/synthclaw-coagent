@@ -4,13 +4,15 @@ SynthClaw-CoAgent — Tool Implementations
 """
 import json
 import subprocess
+import datetime
+import urllib.parse
 import requests
 from pathlib import Path
 from memory import (
     store_credential, get_credential, list_credentials,
     set_memory, get_memory, get_all_memory,
 )
-from config import WORKSPACE_DIR
+from config import WORKSPACE_DIR, MEDIA_DIR
 
 
 # ── Tool implementations ─────────────────────────────────────────────────────
@@ -186,6 +188,130 @@ def recall(key: str = None) -> dict:
         return {"error": str(e)}
 
 
+# ── Media tools ───────────────────────────────────────────────────────────────
+
+def send_media(path: str, media_type: str = "auto", caption: str = "") -> dict:
+    """Queue a file to be sent to the user via Telegram.
+    The file will be sent after your text reply.
+    media_type: auto, photo, video, audio, voice, document.
+    """
+    try:
+        p = Path(path) if path.startswith("/") else WORKSPACE_DIR / path
+        if not p.exists():
+            return {"error": f"File not found: {path}"}
+
+        if media_type == "auto":
+            ext = p.suffix.lower()
+            if ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"):
+                media_type = "photo"
+            elif ext in (".mp4", ".avi", ".mkv", ".mov", ".webm"):
+                media_type = "video"
+            elif ext in (".mp3", ".wav", ".flac", ".m4a", ".aac"):
+                media_type = "audio"
+            elif ext in (".ogg", ".opus", ".oga"):
+                media_type = "voice"
+            else:
+                media_type = "document"
+
+        return {
+            "queued": True,
+            "path": str(p),
+            "type": media_type,
+            "caption": caption[:1024],
+            "size": p.stat().st_size,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def list_media(subfolder: str = "") -> dict:
+    """List media files stored on the server.
+    Optional subfolder: photos, voice, audio, video, documents, stickers, generated, downloads.
+    """
+    try:
+        media_path = MEDIA_DIR / subfolder if subfolder else MEDIA_DIR
+        if not media_path.exists():
+            return {"items": [], "path": str(media_path)}
+
+        items = []
+        for f in sorted(media_path.rglob("*")):
+            if f.is_file():
+                items.append({
+                    "name": str(f.relative_to(MEDIA_DIR)),
+                    "size": f.stat().st_size,
+                    "modified": datetime.datetime.fromtimestamp(
+                        f.stat().st_mtime
+                    ).strftime("%Y-%m-%d %H:%M"),
+                })
+        return {"items": items[:100], "total": len(items), "path": str(media_path)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def download_url(url: str, filename: str = "", subfolder: str = "downloads") -> dict:
+    """Download a file from a URL and save to media storage."""
+    try:
+        save_dir = MEDIA_DIR / subfolder
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        if not filename:
+            filename = urllib.parse.urlparse(url).path.split("/")[-1] or "download"
+
+        save_path = save_dir / filename
+
+        resp = requests.get(url, timeout=120, stream=True)
+        resp.raise_for_status()
+        with open(save_path, "wb") as f:
+            for chunk in resp.iter_content(8192):
+                f.write(chunk)
+
+        size = save_path.stat().st_size
+        size_str = f"{size/1024:.1f}KB" if size < 1048576 else f"{size/1048576:.1f}MB"
+        return {"success": True, "path": str(save_path), "size": size_str}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def generate_image(prompt: str, size: str = "1024x1024", filename: str = "") -> dict:
+    """Generate an image using an AI model API.
+    Saves to media/generated/ and queues it for sending.
+    Requires an API provider that supports image generation.
+    """
+    try:
+        import config as cfg
+        from openai import OpenAI
+
+        gen_client = OpenAI(api_key=cfg.OPENAI_API_KEY, base_url=cfg.OPENAI_API_BASE)
+        response = gen_client.images.generate(prompt=prompt, size=size, n=1)
+        image_url = response.data[0].url
+
+        save_dir = MEDIA_DIR / "generated"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        if not filename:
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"gen_{ts}.png"
+
+        save_path = save_dir / filename
+        img_resp = requests.get(image_url, timeout=120)
+        img_resp.raise_for_status()
+        save_path.write_bytes(img_resp.content)
+
+        return {
+            "queued": True,
+            "path": str(save_path),
+            "type": "photo",
+            "caption": prompt[:200],
+            "size": save_path.stat().st_size,
+            "prompt": prompt,
+        }
+    except Exception as e:
+        return {
+            "error": f"Image generation failed: {e}",
+            "hint": "Your API provider may not support image generation. "
+                    "Try switching to an OpenAI-compatible endpoint that does.",
+        }
+
+
 # ── Tool registry ─────────────────────────────────────────────────────────────
 
 TOOL_REGISTRY = {
@@ -251,6 +377,38 @@ TOOL_REGISTRY = {
         "fn": recall,
         "description": "Retrieve one or all stored memory facts",
         "params": {"key": "str (optional — omit for all memories)"},
+    },
+    "send_media": {
+        "fn": send_media,
+        "description": "Send a file from the server to the user (photo, video, audio, document). File is sent after your text reply.",
+        "params": {
+            "path": "str (absolute or relative to workspace)",
+            "media_type": "auto/photo/video/audio/voice/document (default: auto-detect by extension)",
+            "caption": "str (optional, max 1024 chars)",
+        },
+    },
+    "list_media": {
+        "fn": list_media,
+        "description": "List media files stored on the server. Subfolders: photos, voice, audio, video, documents, stickers, generated, downloads",
+        "params": {"subfolder": "str (optional — omit to list all media)"},
+    },
+    "download_url": {
+        "fn": download_url,
+        "description": "Download a file from a URL and save to media storage on the server",
+        "params": {
+            "url": "str (the URL to download)",
+            "filename": "str (optional — auto-detected from URL if omitted)",
+            "subfolder": "str (optional, default 'downloads')",
+        },
+    },
+    "generate_image": {
+        "fn": generate_image,
+        "description": "Generate an image using an AI image model. Saves to media/generated/ and sends it to the user.",
+        "params": {
+            "prompt": "str (description of the image to generate)",
+            "size": "str (optional: 1024x1024, 512x512, 256x256)",
+            "filename": "str (optional)",
+        },
     },
 }
 

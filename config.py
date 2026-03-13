@@ -14,6 +14,7 @@ load_dotenv()
 
 BASE_DIR = Path(os.environ.get("SYNTHCLAW_BASE_DIR", "/opt/agent"))
 WORKSPACE_DIR = BASE_DIR / "workspace"
+MEDIA_DIR = WORKSPACE_DIR / "media"
 DB_PATH = BASE_DIR / "agent.db"
 LOG_PATH = BASE_DIR / "agent.log"
 
