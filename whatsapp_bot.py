@@ -9,6 +9,7 @@ import re
 import sys
 import threading
 import requests
+import time
 from flask import Flask, request, jsonify
 from openai import OpenAI
 
@@ -27,6 +28,30 @@ app = Flask(__name__)
 # ── LLM client ────────────────────────────────────────────────────────────────
 
 client = OpenAI(api_key=cfg.OPENAI_API_KEY, base_url=cfg.OPENAI_API_BASE)
+
+
+def _llm_call(**kwargs):
+    """Wrap every LLM call with exponential-backoff retry on rate-limit errors.
+
+    Retries up to 5 times: 5 → 15 → 30 → 60 → 120 seconds.
+    Non-rate-limit errors are re-raised immediately.
+    """
+    delays = [5, 15, 30, 60, 120]
+    for attempt, delay in enumerate(delays, 1):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except Exception as e:
+            err = str(e).lower()
+            if any(k in err for k in ("rate limit", "ratelimit", "429", "too many requests", "throttle")):
+                logger.warning(
+                    f"⏳ Rate limit hit — attempt {attempt}/{len(delays)}, "
+                    f"waiting {delay}s before retry…"
+                )
+                time.sleep(delay)
+            else:
+                raise
+    return client.chat.completions.create(**kwargs)  # final attempt after all waits
+
 
 # ── System prompt (same as Telegram) ──────────────────────────────────────────
 
@@ -348,7 +373,7 @@ def run_agent_sync(chat_id: str, user_message: str, model: str) -> str:
 
     for iteration in range(cfg.MAX_TOOL_ITERATIONS):
         try:
-            response = client.chat.completions.create(
+            response = _llm_call(
                 model=model,
                 messages=messages,
                 temperature=0.7,
@@ -478,7 +503,7 @@ def handle_command(phone: str, text: str) -> str | None:
         if not arg:
             return "Usage: /plan <describe what you want>"
         try:
-            response = client.chat.completions.create(
+            response = _llm_call(
                 model=get_current_model(),
                 messages=[
                     {"role": "system", "content": "You are a thoughtful planner. Break the request into clear numbered steps. No tools, just a plan."},
@@ -504,7 +529,7 @@ def handle_command(phone: str, text: str) -> str | None:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": arg}]
         for iteration in range(cfg.MAX_TOOL_ITERATIONS):
             try:
-                response = client.chat.completions.create(
+                response = _llm_call(
                     model=model, messages=messages, temperature=0.2, max_tokens=2048
                 )
                 reply = response.choices[0].message.content.strip()

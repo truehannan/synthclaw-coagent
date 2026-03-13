@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import sys
+import time
 from openai import OpenAI
 from telegram import Update
 from telegram.ext import (
@@ -42,6 +43,29 @@ def _get_client() -> OpenAI:
     api_key = mem.get_config("llm_api_key") or cfg.OPENAI_API_KEY
     api_base = mem.get_config("llm_api_base") or cfg.OPENAI_API_BASE
     return OpenAI(api_key=api_key, base_url=api_base)
+
+
+def _llm_call(**kwargs):
+    """Wrap every LLM call with exponential-backoff retry on rate-limit errors.
+
+    Retries up to 5 times: 5 → 15 → 30 → 60 → 120 seconds.
+    Non-rate-limit errors are re-raised immediately.
+    """
+    delays = [5, 15, 30, 60, 120]
+    for attempt, delay in enumerate(delays, 1):
+        try:
+            return _get_client().chat.completions.create(**kwargs)
+        except Exception as e:
+            err = str(e).lower()
+            if any(k in err for k in ("rate limit", "ratelimit", "429", "too many requests", "throttle")):
+                logger.warning(
+                    f"⏳ Rate limit hit — attempt {attempt}/{len(delays)}, "
+                    f"waiting {delay}s before retry…"
+                )
+                time.sleep(delay)
+            else:
+                raise
+    return _get_client().chat.completions.create(**kwargs)  # final attempt after all waits
 
 
 def _is_configured() -> bool:
@@ -248,7 +272,7 @@ def _maybe_summarize(chat_id: int):
         summary_input = f"[Previous summary]:\n{prev_summary}\n\n[New messages]:\n{convo_text}"
 
     try:
-        resp = _get_client().chat.completions.create(
+        resp = _llm_call(
             model=cfg.DEFAULT_MODEL,
             messages=[
                 {"role": "system", "content": SUMMARY_SYSTEM},
@@ -267,7 +291,7 @@ def _maybe_summarize(chat_id: int):
 
     # ── 2. Extract profile facts ──
     try:
-        resp = _get_client().chat.completions.create(
+        resp = _llm_call(
             model=cfg.DEFAULT_MODEL,
             messages=[
                 {"role": "system", "content": PROFILE_EXTRACT_SYSTEM},
@@ -355,7 +379,7 @@ async def run_agent(chat_id: int, user_message: str, model: str) -> str:
 
     for iteration in range(cfg.MAX_TOOL_ITERATIONS):
         try:
-            response = _get_client().chat.completions.create(
+            response = _llm_call(
                 model=model,
                 messages=messages,
                 temperature=0.7,
@@ -432,9 +456,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             mem.set_config(ONBOARDING_STEP_KEY, "api_key")
             await update.message.reply_text(
                 f"👋 Welcome! I'm *SynthClaw-CoAgent* — your personal AI agent.\n\n"
-                f"🔒 You're now the owner \(ID: `{user_id}`\)\.
-
-"
+                f"🔒 You're now the owner \(ID: `{user_id}`\)\.\n\n"
                 "Let's get you set up in 2 quick steps\.\n\n"
                 "*Step 1 of 2 — LLM API Key*\n"
                 "Send me your API key now\. Example:\n"
@@ -690,7 +712,7 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     model = get_current_model()
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     try:
-        response = _get_client().chat.completions.create(
+        response = _llm_call(
             model=model,
             messages=[
                 {"role": "system", "content": PLAN_PROMPT},
@@ -724,7 +746,7 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         system = AGENT_PROMPT.format(tools=get_tools_description())
         messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
         for iteration in range(cfg.MAX_TOOL_ITERATIONS):
-            response = _get_client().chat.completions.create(
+            response = _llm_call(
                 model=model, messages=messages, temperature=0.2, max_tokens=2048
             )
             reply = response.choices[0].message.content.strip()
