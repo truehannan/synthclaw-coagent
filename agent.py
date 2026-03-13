@@ -74,48 +74,58 @@ def _is_configured() -> bool:
     """True if an LLM API key is available (env or DB)."""
     return bool(mem.get_config("llm_api_key") or cfg.OPENAI_API_KEY)
 
+
+# Active task tracking — allows /stop to interrupt a running agent loop
+ACTIVE_TASKS: dict[int, bool] = {}  # chat_id -> is_running
+
 # ── System prompts ────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
-You are a personal AI assistant running on a server.
-You belong to one person — your owner — and you chat with them directly.
+== THINK BEFORE YOU ACT — MANDATORY ==
+Every response that uses a tool MUST begin with a <think> block:
 
-== YOUR PERSONALITY ==
-You are smart, direct, and slightly informal. You hold real conversations:
-- Answer questions, explain concepts, share opinions when asked.
-- Keep replies concise unless the topic needs depth.
-- Don't force every message into a task. If someone asks "what do you think about X?"
-  just answer like a knowledgeable friend would — no tool calls needed.
-- You're not a yes-machine, but you're also not cold. Friendly without being cringe.
-- Light humor is fine where natural. Don't overdo it.
-- NEVER reply with empty output. Always say something, even if just a short answer.
+<think>
+User wants: [restate their FULL message — not just a keyword]
+What I know: [current state, what's already done]
+What to verify: [packages exist? versions valid? files present?]
+Plan: [numbered steps, using batch tools where possible]
+</think>
 
-== WHEN TO USE TOOLS ==
-Read the intent carefully before reaching for a tool:
-- Questions, opinions, explanations, advice → just reply in plain text.
-- "run X", "create a script", "set up Y", "check my CPU", "deploy Z" → use tools.
-- If genuinely unsure, answer conversationally first and offer to execute if wanted.
+The <think> block is internal — the user will never see it.
+After </think>, you may include a short status message (the user sees this),
+then your <tool_call> block(s).
 
-== YOUR SERVER CAPABILITIES ==
-When the owner needs something done, you have full control:
-run shell commands, manage files, start background services, call APIs,
-store encrypted credentials, remember facts across conversations.
+For plain-text replies (no tools), you do NOT need a <think> block.
 
-== MEDIA CAPABILITIES ==
-- The owner can send you photos, voice messages, audio, video, documents, and stickers.
-  When they do, you'll see a description like "[User sent a photo: saved as /path/to/file]".
-  The file is already saved on the server — you can reference it, process it, or send it back.
-- Use send_media to send any file from the server back to the user (auto-detects type).
-- Use download_url to download files from the internet to media storage.
-- Use list_media to browse stored media files.
-- Use generate_image to create AI-generated images (if your API provider supports it).
-- Media is stored in the workspace/media/ directory with subfolders:
-  photos, voice, audio, video, documents, stickers, generated, downloads.
+== MANDATORY WORKFLOW ==
+Before EVERY action, follow this sequence:
 
-== EFFICIENCY & MULTI-STEP ==
-You can issue MULTIPLE <tool_call> blocks in a single response. They will ALL be
-executed and you'll receive all results at once in one combined <tool_result>.
-Example — two tool calls in one response:
+1. UNDERSTAND — Read the user's ENTIRE message. Do NOT react to a single keyword.
+   Restate what they actually want inside <think>. If the message is a question
+   or opinion request, just answer — no tools needed.
+
+2. VERIFY — Before installing, downloading, or using anything:
+   • Check the package/version EXISTS: pip index versions X, npm view X versions,
+     apt-cache show X, or similar.
+   • Check files/paths EXIST before editing (read_file or list_files first).
+   • NEVER guess version numbers — look them up.
+   • NEVER install something without first confirming it exists.
+
+3. PLAN — In <think>, list the exact steps in order. Use batch tools:
+   • read_files(paths) to read many files in ONE call
+   • write_files(files) to write many files in ONE call
+   • run_commands(commands) to run many commands in ONE call
+   • Multiple <tool_call> blocks in one response — all execute at once
+   Group reads together, then writes together. Minimize round-trips.
+
+4. EXECUTE — Only after understanding, verifying, and planning.
+
+== TOOL CALL FORMAT ==
+<tool_call>
+{{"name": "tool_name", "arguments": {{"key": "value"}}}}
+</tool_call>
+
+Multiple tool calls in one response (all execute at once):
 <tool_call>
 {{"name": "read_file", "arguments": {{"path": "config.py"}}}}
 </tool_call>
@@ -123,37 +133,48 @@ Example — two tool calls in one response:
 {{"name": "read_file", "arguments": {{"path": "main.py"}}}}
 </tool_call>
 
-Use BATCH tools when doing repetitive operations:
-- read_files(paths) → read many files in one call instead of many read_file calls
-- write_files(files) → write many files in one call instead of many write_file calls
-- run_commands(commands) → run many commands in one call
+❌ No raw JSON without tags. ❌ No markdown fences.
+✅ Always use <tool_call> tags — the only format that works.
 
-PLAN before acting: figure out what you need to read, batch-read it all, then
-figure out all edits, batch-write them. Minimize round-trips.
+== VERIFICATION RULES (CRITICAL) ==
+- pip install <pkg>: FIRST run `pip index versions <pkg>` or `pip install <pkg>==`
+  to check it exists and see available versions.
+- pip install <pkg>==X.Y.Z: FIRST verify that version exists.
+- npm install <pkg>: FIRST run `npm view <pkg> versions --json` to check.
+- apt install <pkg>: FIRST run `apt-cache show <pkg>` to verify.
+- curl/wget a URL: FIRST check the URL responds (http_request with HEAD/GET).
+- Editing a file: FIRST read it (or use read_files to batch-read).
+- NEVER assume a package name, version, or URL is correct — verify it.
 
-You can include a short status message before your tool calls so the user sees
-progress while you work. It will be sent as a separate message.
-Example: "Let me check those config files..." followed by <tool_call>...
+== WHO YOU ARE ==
+Personal AI assistant running on a server.
+You belong to one person — your owner — chatting via Telegram.
+
+== PERSONALITY ==
+Smart, direct, slightly informal. Hold real conversations:
+- Questions, opinions, advice → plain text, no tools.
+- "run X", "create a script", "deploy Z" → use tools (after thinking).
+- If unsure whether to act, answer conversationally and offer to execute.
+- Concise unless depth is needed. Friendly but not cringe.
+- NEVER reply with empty output.
+
+== CAPABILITIES ==
+Full server control: shell commands, file management, background services,
+HTTP APIs, encrypted credential storage, persistent memory.
+
+Media: receive photos/voice/audio/video/docs/stickers (auto-saved to server).
+Send back via send_media. Download via download_url. Browse via list_media.
+Generate images via generate_image. Storage: workspace/media/.
 
 == AVAILABLE TOOLS ==
 {tools}
 
-== HOW TO USE A TOOL ==
-When you need a tool, output EXACTLY this (nothing else on that turn):
-
-<tool_call>
-{{"name": "tool_name", "arguments": {{"key": "value"}}}}
-</tool_call>
-
-After you see the <tool_result>, decide whether to call another tool or give a final reply.
-When done, respond in plain text — no <tool_call> block.
-
 == TASK RULES ==
-- ANY credential shared (API key, token, password, secret — no matter how sensitive or critical) → store_cred it IMMEDIATELY. No asking, no hesitation, no exceptions. Just store it.
-- Personal fact shared → remember it.
-- Scripts/programs: write_file first, then run_command to execute.
-- Persistent services: write the script then spawn_service.
-- Show command output only when it adds value.
+- Credentials shared → store_cred IMMEDIATELY. No asking.
+- Personal facts → remember.
+- Scripts: write_file then run_command.
+- Services: write script then spawn_service.
+- Show output only when it adds value.
 """
 
 PLAN_PROMPT = """\
@@ -164,26 +185,34 @@ State any assumptions upfront.
 """
 
 AGENT_PROMPT = """\
-You are in AGENT MODE. Execute the user's request autonomously using all available tools.
+You are in AGENT MODE. Execute the user's request autonomously.
 Do not ask for confirmation — make decisions and take action.
-Report what you did when complete.
 
-== AVAILABLE TOOLS ==
-{tools}
+== THINK FIRST ==
+Every response with tool calls MUST start with <think>:
+<think>
+User wants: [full restatement]
+Verify: [what to check first]
+Plan: [numbered steps]
+</think>
 
-== HOW TO USE A TOOL ==
-Output EXACTLY this (nothing else on that turn):
-You can include MULTIPLE <tool_call> blocks in one response — they all execute at once.
+== RULES ==
+- VERIFY before installing (pip index versions, npm view, apt-cache show).
+- NEVER guess versions — look them up.
+- Batch reads together, batch writes together. Minimize round-trips.
+- Use read_files/write_files/run_commands for bulk operations.
+- Multiple <tool_call> blocks in one response execute at once.
+- Short status text before tool calls = user sees progress.
 
+== TOOL FORMAT ==
 <tool_call>
 {{"name": "tool_name", "arguments": {{"key": "value"}}}}
 </tool_call>
 
-Use batch tools (read_files, write_files, run_commands) to minimize API round-trips.
-PLAN first: read everything you need, then write everything at once.
-Include a short status message before tool calls so the user sees progress.
+== AVAILABLE TOOLS ==
+{tools}
 
-Chain as many tool calls as needed. Give a concise summary when done.
+Chain tool calls as needed. Give a concise summary when done.
 """
 
 
@@ -273,14 +302,26 @@ def _parse_tool_calls(reply: str) -> list[tuple[str, dict]]:
     return results
 
 
+def _strip_think_block(text: str) -> str:
+    """Remove <think>...</think> blocks from text. These are internal reasoning."""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
+def _extract_think_block(reply: str) -> str:
+    """Extract the content of the <think> block for logging."""
+    m = re.search(r"<think>(.*?)</think>", reply, re.DOTALL)
+    return m.group(1).strip() if m else ""
+
+
 def _extract_pre_tool_text(reply: str) -> str:
     """Extract conversational text before the first <tool_call> tag.
-    This text is sent as an intermediate progress message to the user.
+    Strips out <think> blocks — those are internal, not for the user.
     """
     idx = reply.find("<tool_call>")
     if idx <= 0:
         return ""
     text = reply[:idx].strip()
+    text = _strip_think_block(text)
     text = text.rstrip("`\n ")
     return text if len(text) > 3 else ""
 
@@ -429,31 +470,47 @@ def get_current_model() -> str:
 # ── Core agent loop ───────────────────────────────────────────────────────────
 
 async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -> tuple[str, list[dict]]:
-    """Run the full agent loop: LLM → tool calls → final reply.
-    Returns (text_reply, list_of_media_to_send).
+    """Core agent loop. Returns (text_reply, list_of_media_to_send).
 
     send_fn: optional async callable(str) to send intermediate progress messages.
     """
     media_to_send: list[dict] = []
     mem.save_message(chat_id, "user", user_message)
 
+    # Mark task as active (can be stopped via /stop)
+    ACTIVE_TASKS[chat_id] = True
+
     # Smart context: summarize old messages if needed, then build enriched context
     _maybe_summarize(chat_id)
     messages = _build_context(chat_id)
 
     for iteration in range(cfg.MAX_TOOL_ITERATIONS):
+        # Check if user sent /stop
+        if not ACTIVE_TASKS.get(chat_id, True):
+            logger.info(f"Task stopped by user at iteration {iteration+1}")
+            mem.save_message(chat_id, "assistant", "🛑 Task stopped by user.")
+            return "🛑 Task stopped.", media_to_send
+
         try:
             response = _llm_call(
                 model=model,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=2048,
+                max_tokens=4096,
             )
         except Exception as e:
             logger.error(f"LLM error: {e}")
+            ACTIVE_TASKS.pop(chat_id, None)
             return f"❌ LLM error: {e}", media_to_send
 
         reply = response.choices[0].message.content.strip()
+
+        # Log think block if present (internal reasoning — never sent to user)
+        think_content = _extract_think_block(reply)
+        if think_content:
+            logger.info(f"🧠 Think [{iteration+1}]: {think_content[:300]}")
+
+        logger.info(f"LLM reply [{iteration+1}]: {_strip_think_block(reply)[:300]!r}")
 
         # Detect tool calls (handles tagged AND bare JSON; supports multiple)
         tool_calls = _parse_tool_calls(reply)
@@ -471,6 +528,12 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
             for name, args in tool_calls:
                 if not name:
                     continue
+                # Re-check stop flag before each tool execution
+                if not ACTIVE_TASKS.get(chat_id, True):
+                    ACTIVE_TASKS.pop(chat_id, None)
+                    mem.save_message(chat_id, "assistant", "🛑 Task stopped by user.")
+                    return "🛑 Task stopped.", media_to_send
+
                 logger.info(f"Tool call [{iteration+1}]: {name}({args})")
                 result = execute_tool(name, args)
 
@@ -513,18 +576,21 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
                 })
                 continue
 
-            # Final reply
-            mem.save_message(chat_id, "assistant", reply)
-            return reply, media_to_send
+            # Final reply — strip any <think> block before sending
+            clean_reply = _strip_think_block(reply)
+            mem.save_message(chat_id, "assistant", clean_reply)
+            ACTIVE_TASKS.pop(chat_id, None)
+            return clean_reply, media_to_send
 
+    ACTIVE_TASKS.pop(chat_id, None)
     return (
         "⚠️ *Task stopped — too many steps reached (40 tool calls)*\n\n"
         "The agent ran 40 steps on this task without finishing. "
         "This usually means it got stuck in a loop or the task is too complex to complete in one go.\n\n"
         "What you can do:\n"
+        "• /stop — Stop the current task\n"
         "• /clear — Reset the conversation and try a simpler or shorter instruction\n"
-        "• Break your task into smaller parts and send them one at a time\n"
-        "• If something went partially wrong, check /status and ask me to inspect the workspace"
+        "• Break your task into smaller parts and send them one at a time"
     ), media_to_send
 
 
@@ -607,7 +673,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/memory — Show remembered facts\n\n"
         "🤖 *Agent*\n"
         "/plan \\<task\\> — Break task into steps \\(no execution\\)\n"
-        "/agent \\<task\\> — Autonomous execution mode\n\n"
+        "/agent \\<task\\> — Autonomous execution mode\n"
+        "/stop — Stop a running task\n\n"
         "📎 *Media:* Send me photos, voice, audio, video, or files\\.\n"
         "I'll save and process them\\. I can also send files back to you\\.\n\n"
         "*Just chat normally:*\n"
@@ -817,6 +884,18 @@ async def cmd_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"```\n{output[:3500]}\n```", parse_mode="Markdown")
 
 
+async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Stop a currently running agent task."""
+    if not is_owner(update.effective_user.id):
+        return
+    chat_id = update.effective_chat.id
+    if ACTIVE_TASKS.get(chat_id):
+        ACTIVE_TASKS[chat_id] = False
+        await update.message.reply_text("🛑 Stopping current task...")
+    else:
+        await update.message.reply_text("No task is currently running.")
+
+
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🟢 Alive!")
 
@@ -867,14 +946,28 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         system = AGENT_PROMPT.format(tools=get_tools_description())
         messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
         agent_media: list[dict] = []
+        ACTIVE_TASKS[chat_id] = True
         for iteration in range(cfg.MAX_TOOL_ITERATIONS):
+            # Check stop flag
+            if not ACTIVE_TASKS.get(chat_id, True):
+                await update.message.reply_text("🛑 Task stopped.")
+                ACTIVE_TASKS.pop(chat_id, None)
+                await _send_queued_media(update, agent_media)
+                return
+
             response = _llm_call(
-                model=model, messages=messages, temperature=0.2, max_tokens=2048
+                model=model, messages=messages, temperature=0.2, max_tokens=4096
             )
             reply = response.choices[0].message.content.strip()
+
+            # Log think block
+            think_content = _extract_think_block(reply)
+            if think_content:
+                logger.info(f"🧠 [/agent] Think [{iteration+1}]: {think_content[:300]}")
+
             tool_calls = _parse_tool_calls(reply)
             if tool_calls:
-                # Send intermediate progress text
+                # Send intermediate progress text (think block stripped)
                 pre_text = _extract_pre_tool_text(reply)
                 if pre_text:
                     for chunk in [pre_text[i:i+4000] for i in range(0, len(pre_text), 4000)]:
@@ -885,6 +978,13 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for name, args in tool_calls:
                     if not name:
                         continue
+                    # Check stop flag before each tool
+                    if not ACTIVE_TASKS.get(chat_id, True):
+                        await update.message.reply_text("🛑 Task stopped.")
+                        ACTIVE_TASKS.pop(chat_id, None)
+                        await _send_queued_media(update, agent_media)
+                        return
+
                     logger.info(f"[/agent] Tool [{iteration+1}]: {name}({args})")
                     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
                     result = execute_tool(name, args)
@@ -923,13 +1023,21 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     })
                     continue
 
-                if not reply:
-                    reply = "Done."
-                for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
+                clean_reply = _strip_think_block(reply) if reply else "Done."
+                if not clean_reply:
+                    clean_reply = "Done."
+                for chunk in [clean_reply[i:i+4000] for i in range(0, len(clean_reply), 4000)]:
                     await update.message.reply_text(chunk)
+                ACTIVE_TASKS.pop(chat_id, None)
                 await _send_queued_media(update, agent_media)
                 return
-        await update.message.reply_text("⚠️ Max tool iterations reached.")
+        ACTIVE_TASKS.pop(chat_id, None)
+        await update.message.reply_text(
+            "⚠️ *Task stopped — too many steps (40 tool calls)*\n\n"
+            "The agent executed 40 steps without finishing.\n"
+            "Use /stop to interrupt, /clear to reset, or break into smaller tasks.",
+            parse_mode="Markdown",
+        )
         await _send_queued_media(update, agent_media)
     except Exception as e:
         logger.error(f"cmd_agent error: {e}", exc_info=True)
@@ -1102,6 +1210,7 @@ def main():
     app.add_handler(CommandHandler("memory",  cmd_memory_cmd))
     app.add_handler(CommandHandler("run",     cmd_run))
     app.add_handler(CommandHandler("ping",    cmd_ping))
+    app.add_handler(CommandHandler("stop",    cmd_stop))
     app.add_handler(CommandHandler("plan",    cmd_plan))
     app.add_handler(CommandHandler("agent",   cmd_agent))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
