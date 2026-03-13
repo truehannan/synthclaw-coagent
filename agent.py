@@ -515,6 +515,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/run \\<cmd\\> — Run shell command directly\n\n"
         "🧠 *Memory*\n"
         "/creds — List stored credentials\n"
+        "/storekey \\<NAME\\> \\<VALUE\\> — Store a key directly \\(bypasses AI\\)\n"
         "/memory — Show remembered facts\n\n"
         "🤖 *Agent*\n"
         "/plan \\<task\\> — Break task into steps \\(no execution\\)\n"
@@ -657,6 +658,36 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = json.loads(execute_tool("service_status", {}))
     output = result.get("output", "No running services.")
     await update.message.reply_text(f"```\n{output[:3500]}\n```", parse_mode="Markdown")
+
+
+async def cmd_storekey(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Directly store a credential — LLM never sees the value."""
+    if not is_owner(update.effective_user.id):
+        return
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage: `/storekey NAME VALUE`\n"
+            "Example: `/storekey OPENAI_KEY sk-abc123`\n\n"
+            "Optional description after `|`:\n"
+            "`/storekey OPENAI_KEY sk-abc123 | my openai key`",
+            parse_mode="Markdown",
+        )
+        return
+    name = context.args[0].upper()
+    rest = " ".join(context.args[1:])
+    if "|" in rest:
+        value, _, description = rest.partition("|")
+        value = value.strip()
+        description = description.strip()
+    else:
+        value = rest.strip()
+        description = ""
+    mem.store_credential(name, value, description)
+    await update.message.reply_text(
+        f"✅ Stored `{name}`" + (f" — _{description}_" if description else "") + "\n"
+        "_(Value never sent to AI — stored directly on server)_",
+        parse_mode="Markdown",
+    )
 
 
 async def cmd_creds(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -814,7 +845,8 @@ def main():
     app.add_handler(CommandHandler("model",   cmd_model))
     app.add_handler(CommandHandler("models",  cmd_models))
     app.add_handler(CommandHandler("status",  cmd_status))
-    app.add_handler(CommandHandler("creds",   cmd_creds))
+    app.add_handler(CommandHandler("creds",    cmd_creds))
+    app.add_handler(CommandHandler("storekey", cmd_storekey))
     app.add_handler(CommandHandler("memory",  cmd_memory_cmd))
     app.add_handler(CommandHandler("run",     cmd_run))
     app.add_handler(CommandHandler("ping",    cmd_ping))
