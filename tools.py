@@ -83,9 +83,26 @@ def _smart_truncate(text: str, limit: int = 3000) -> str:
 
 # ── Tool implementations ─────────────────────────────────────────────────────
 
+# Venv paths — all Python/pip operations must use these
+_VENV_PYTHON = "/opt/agent/venv/bin/python"
+_VENV_PIP    = "/opt/agent/venv/bin/pip"
+
+
+def _fix_pip_path(command: str) -> str:
+    """Rewrite bare pip/pip3/python/python3 calls to the venv binaries.
+    This ensures installs always land in the agent venv, never the system site."""
+    # pip3 install / pip install → venv pip (only when not already an absolute path)
+    command = re.sub(r'(?<![/\w])pip3?\s+', f'{_VENV_PIP} ', command)
+    # python3 / python → venv python (only bare invocations)
+    command = re.sub(r'(?<![/\w])python3?\s+', f'{_VENV_PYTHON} ', command)
+    return command
+
+
 def run_command(command: str, timeout: int = None) -> dict:
     """Execute a shell command. Timeout auto-detected for installs/builds (180s/300s)
-    or defaults to 30s. Pass explicit timeout to override."""
+    or defaults to 30s. Pass explicit timeout to override.
+    pip/pip3 and python/python3 are automatically redirected to the agent venv."""
+    command = _fix_pip_path(command)
     effective_timeout = _smart_timeout(command, timeout)
     try:
         r = subprocess.run(
@@ -102,15 +119,21 @@ def run_command(command: str, timeout: int = None) -> dict:
             result["note"] = "⚠️ Command FAILED (non-zero exit code). Do NOT proceed as if it succeeded."
             stderr_lower = r.stderr.lower()
             if "no matching distribution" in stderr_lower or "no such package" in stderr_lower:
-                result["hint"] = "Package may not exist or name is wrong. Check the exact package name."
+                result["hint"] = f"Package name may be wrong. Run `{_VENV_PIP} index versions <pkg>` to find the correct name, then retry."
             elif "permission denied" in stderr_lower:
-                result["hint"] = "Try with sudo or check file permissions."
+                result["hint"] = "Permission denied. Retry prefixed with sudo, or fix ownership with chown."
             elif "already in use" in stderr_lower or "address already in use" in stderr_lower:
-                result["hint"] = "Port is in use. Find the process: lsof -i :<port> or kill it."
+                result["hint"] = "Port in use. Run kill_process(port=N) or `fuser -k <port>/tcp` to free it, then retry."
             elif "modulenotfounderror" in stderr_lower or "no module named" in stderr_lower:
                 pkg_match = re.search(r"no module named ['\"]?(\w+)", stderr_lower)
                 if pkg_match:
-                    result["hint"] = f"Missing module '{pkg_match.group(1)}'. Install it first."
+                    result["hint"] = f"Module '{pkg_match.group(1)}' missing. Run `{_VENV_PIP} install {pkg_match.group(1)}` then retry."
+            elif "externally-managed-environment" in stderr_lower:
+                result["hint"] = f"System Python is PEP 668 locked. Use the venv: `{_VENV_PIP} install <pkg>`."
+            elif "ssl" in stderr_lower or "certificate" in stderr_lower:
+                result["hint"] = f"SSL error. Retry: `{_VENV_PIP} install --trusted-host pypi.org --trusted-host files.pythonhosted.org <pkg>`."
+            elif "could not find a version" in stderr_lower:
+                result["hint"] = f"Version not found. Run `{_VENV_PIP} index versions <pkg>` to list valid versions, then retry."
         return result
     except subprocess.TimeoutExpired:
         # Auto-retry ONCE with 2x timeout for install/build commands
