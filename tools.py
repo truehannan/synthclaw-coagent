@@ -64,6 +64,8 @@ def _smart_timeout(command: str, explicit_timeout: int | None) -> int:
 
 def _smart_truncate(text: str, limit: int = 3000) -> str:
     """Truncate long output smartly: keep first and last lines + error lines."""
+    if text is None:          # Fix #3: guard against None input
+        return ""
     if len(text) <= limit:
         return text
     lines = text.splitlines()
@@ -110,8 +112,8 @@ def run_command(command: str, timeout: int = None) -> dict:
             timeout=effective_timeout, cwd=str(WORKSPACE_DIR),
         )
         result = {
-            "stdout": _smart_truncate(r.stdout),
-            "stderr": _smart_truncate(r.stderr, 1500),
+            "stdout": _smart_truncate(r.stdout or ""),   # Fix #4: guard None stdout
+            "stderr": _smart_truncate(r.stderr or "", 1500),  # Fix #4: guard None stderr
             "returncode": r.returncode,
         }
         # Auto-verify installs: if it failed, add helpful hints
@@ -146,10 +148,11 @@ def run_command(command: str, timeout: int = None) -> dict:
                     timeout=retry_timeout, cwd=str(WORKSPACE_DIR),
                 )
                 result = {
-                    "stdout": _smart_truncate(r.stdout),
-                    "stderr": _smart_truncate(r.stderr, 1500),
+                    "stdout": _smart_truncate(r.stdout or ""),   # Fix #4
+                    "stderr": _smart_truncate(r.stderr or "", 1500),
                     "returncode": r.returncode,
                     "note": f"Completed on retry (took >{effective_timeout}s, retried with {retry_timeout}s timeout).",
+                    "timeout_retry": True,   # Fix #8: flag so LLM can handle slow cmds differently
                 }
                 if r.returncode != 0:
                     result["note"] += " ⚠️ Command FAILED (non-zero exit code)."
@@ -182,7 +185,9 @@ def read_file(path: str) -> dict:
         p = Path(path) if path.startswith("/") else WORKSPACE_DIR / path
         if not p.exists():
             return {"error": f"Not found: {path}"}
-        text = p.read_text()
+        text = p.read_text(errors="replace")
+        if not text:                        # Fix #9: guard empty/unreadable file
+            return {"error": f"File is empty: {path}", "size": 0}
         return {"content": text[:5000], "truncated": len(text) > 5000, "size": len(text)}
     except Exception as e:
         return {"error": str(e)}
@@ -452,6 +457,8 @@ def download_url(url: str, filename: str = "", subfolder: str = "downloads") -> 
 
         resp = requests.get(url, timeout=120, stream=True)
         resp.raise_for_status()
+        if resp.status_code >= 400:          # Fix #6
+            return {"error": f"HTTP {resp.status_code} downloading {url}"}
         with open(save_path, "wb") as f:
             for chunk in resp.iter_content(8192):
                 f.write(chunk)
@@ -460,6 +467,7 @@ def download_url(url: str, filename: str = "", subfolder: str = "downloads") -> 
         size_str = f"{size/1024:.1f}KB" if size < 1048576 else f"{size/1048576:.1f}MB"
         return {"success": True, "path": str(save_path), "size": size_str}
     except Exception as e:
+        save_path.unlink(missing_ok=True)    # Fix #20: delete partial/corrupt file on failure
         return {"error": str(e)}
 
 
@@ -622,6 +630,8 @@ def scrape_page(url: str, max_chars: int = 8000) -> dict:
         headers = {"User-Agent": "Mozilla/5.0 (compatible; AgentBot/1.0)"}
         resp = requests.get(url, headers=headers, timeout=20)
         resp.raise_for_status()
+        if resp.status_code >= 400:          # Fix #6: explicit HTTP error check
+            return {"error": f"HTTP {resp.status_code} from {url}"}
         soup = BeautifulSoup(resp.text, "html.parser")
         for tag in soup(["script", "style", "nav", "header", "footer", "aside", "iframe"]):
             tag.decompose()
@@ -648,6 +658,8 @@ def scrape_selector(url: str, selector: str, max_results: int = 20) -> dict:
         headers = {"User-Agent": "Mozilla/5.0 (compatible; AgentBot/1.0)"}
         resp = requests.get(url, headers=headers, timeout=20)
         resp.raise_for_status()
+        if resp.status_code >= 400:          # Fix #6
+            return {"error": f"HTTP {resp.status_code} from {url}"}
         soup = BeautifulSoup(resp.text, "html.parser")
         elements = soup.select(selector)[:max_results]
         results = [el.get_text(strip=True) for el in elements]

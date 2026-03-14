@@ -59,7 +59,11 @@ def _llm_call(**kwargs):
                 time.sleep(delay)
             else:
                 raise
-    return client.chat.completions.create(**kwargs)  # final attempt after all waits
+    try:                                     # Fix #10: wrap final attempt — don't crash on last retry
+        return client.chat.completions.create(**kwargs)
+    except Exception as e:
+        logger.error(f"LLM final retry failed: {e}")
+        raise
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────
@@ -359,11 +363,15 @@ def _parse_tool_calls(reply: str) -> list[tuple[str, dict]]:
 
 def _strip_think_block(text: str) -> str:
     """Remove <think>...</think> blocks from text. These are internal reasoning."""
+    if not text:                             # Fix #18: guard None/empty input
+        return ""
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
 def _extract_think_block(reply: str) -> str:
     """Extract the content of the <think> block for logging."""
+    if not reply:                            # Fix #18: guard None/empty
+        return ""
     m = re.search(r"<think>(.*?)</think>", reply, re.DOTALL)
     return m.group(1).strip() if m else ""
 
@@ -536,14 +544,21 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
     send_fn: optional async callable(str) to send intermediate progress messages.
     """
     media_to_send: list[dict] = []
-    mem.save_message(chat_id, "user", user_message)
+    try:                                     # Fix #16: guard memory write failure
+        mem.save_message(chat_id, "user", user_message)
+    except Exception as me:
+        logger.error(f"mem.save_message (user) failed: {me}")
 
     # Mark task as active (can be stopped via /stop)
     ACTIVE_TASKS[chat_id] = True
 
     # Smart context: summarize old messages if needed, then build enriched context
-    _maybe_summarize(chat_id)
-    messages = _build_context(chat_id)
+    try:                                     # Fix #16: guard summarize/context build
+        _maybe_summarize(chat_id)
+        messages = _build_context(chat_id)
+    except Exception as me:
+        logger.error(f"Context build failed: {me}")
+        messages = [{"role": "system", "content": SYSTEM_PROMPT.format(tools=get_tools_description())}]
 
     for iteration in range(cfg.MAX_TOOL_ITERATIONS):
         # Check if user sent /stop
@@ -564,7 +579,7 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
             ACTIVE_TASKS.pop(chat_id, None)
             return f"❌ LLM error: {e}", media_to_send
 
-        reply = response.choices[0].message.content.strip()
+        reply = (response.choices[0].message.content or "").strip()  # Fix #14: guard None content
 
         # Log think block if present (internal reasoning — never sent to user)
         think_content = _extract_think_block(reply)
@@ -629,8 +644,8 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
                         result_data = json.loads(result)
                         if result_data.get("queued"):
                             media_to_send.append(result_data)
-                    except json.JSONDecodeError:
-                        pass
+                    except json.JSONDecodeError as jde:   # Fix #5: log instead of silent pass
+                        logger.warning(f"JSON decode error capturing media from {name}: {jde} | raw: {result[:200]}")
 
                 # Detect ask_user signal — pause loop and send question to user
                 if name == "ask_user":
@@ -641,8 +656,8 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
                             mem.save_message(chat_id, "assistant", question)
                             ACTIVE_TASKS.pop(chat_id, None)
                             return question, media_to_send
-                    except json.JSONDecodeError:
-                        pass
+                    except json.JSONDecodeError as jde:   # Fix #5
+                        logger.warning(f"JSON decode error in ask_user: {jde} | raw: {result[:200]}")
 
                 combined_results.append(f"[{name}]: {result}")
 
@@ -654,14 +669,17 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
                     f"[{i+1}/{len(combined_results)}] {r}"
                     for i, r in enumerate(combined_results)
                 )
+            if not result_text:              # Fix #11: guard empty result_text
+                result_text = "(tool returned no output)"
             # Compress tool results if they're too large (save context tokens)
             if len(result_text) > 6000:
                 result_text = result_text[:5500] + "\n\n... [output truncated to save context] ..."
             messages.append({
                 "role": "user",
                 "content": f"<tool_result>\n{result_text}\n</tool_result>\n"
-                           "Check returncode: 0=success, non-zero=FAILED (do NOT proceed if failed).\n"
-                           "Continue based on these results. If done, give the final reply.",
+                           "CRITICAL: returncode 0=success. returncode != 0 means FAILED — stop and diagnose, "
+                           "do NOT continue to next step. If \"error\" key is present, fix it before continuing.\n"
+                           "Continue based on these results. If everything succeeded, give the final reply.",
             })
         else:
             # Guardrail: never surface raw <tool_call> payloads to user if parse failed
@@ -680,7 +698,12 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
 
             # Final reply — strip any <think> block before sending
             clean_reply = _strip_think_block(reply)
-            mem.save_message(chat_id, "assistant", clean_reply)
+            if not clean_reply:              # Fix #11/#14: guard empty final reply
+                clean_reply = "Done."
+            try:                             # Fix #16: guard memory write failure
+                mem.save_message(chat_id, "assistant", clean_reply)
+            except Exception as me:
+                logger.error(f"mem.save_message failed: {me}")
             ACTIVE_TASKS.pop(chat_id, None)
             return clean_reply, media_to_send
 
@@ -894,7 +917,7 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             temperature=0.7,
             max_tokens=2048,
         )
-        reply = response.choices[0].message.content.strip()
+        reply = (response.choices[0].message.content or "").strip()  # Fix #14
         if not reply:
             reply = "(model returned empty plan)"
         await update.message.reply_text(f"📋 *Plan:* {task}\n\n{reply}", parse_mode="Markdown")
@@ -931,7 +954,9 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response = _llm_call(
                 model=model, messages=messages, temperature=0.2, max_tokens=4096
             )
-            reply = response.choices[0].message.content.strip()
+            reply = (response.choices[0].message.content or "").strip()  # Fix #14
+            if not reply:
+                reply = "Done."
 
             # Log think block
             think_content = _extract_think_block(reply)
