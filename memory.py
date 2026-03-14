@@ -1,16 +1,12 @@
-"""
-SynthClaw-CoAgent — Persistent Memory Layer
-SQLite database + Fernet encryption for credentials + markdown file context.
-"""
 import sqlite3
+import json
 from pathlib import Path
 from datetime import datetime, date
 from cryptography.fernet import Fernet
 from config import DB_PATH, BASE_DIR
 
-CONTEXT_DIR = BASE_DIR / "context"
-
 KEY_FILE = BASE_DIR / ".fernet_key"
+CONTEXT_DIR = BASE_DIR / "context"
 
 
 def get_fernet() -> Fernet:
@@ -58,6 +54,13 @@ def init_db():
             summary   TEXT,
             msg_count INTEGER,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS model_usage (
+            id            INTEGER PRIMARY KEY,
+            model         TEXT NOT NULL,
+            input_tokens  INTEGER DEFAULT 0,
+            output_tokens INTEGER DEFAULT 0,
+            ts            DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     """)
     conn.commit()
@@ -220,6 +223,7 @@ def save_summary(chat_id: int, summary: str, msg_count: int):
     """Save a conversation summary (cumulative — replaces previous)."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # Keep only one summary per chat — replace on update
     c.execute("DELETE FROM conversation_summaries WHERE chat_id=?", (chat_id,))
     c.execute(
         "INSERT INTO conversation_summaries (chat_id, summary, msg_count) VALUES (?,?,?)",
@@ -242,7 +246,15 @@ def get_summary(chat_id: int) -> str | None:
     return row[0] if row else None
 
 
-# ── Markdown file context system ─────────────────────────────────────────────
+# ── Markdown context files ───────────────────────────────────────────────────
+# Persistent long-term context stored as .md files on disk.
+#
+#   context/<chat_id>/
+#     profile.md      — owner facts, preferences, identity
+#     summary.md      — running conversation summary (auto-updated)
+#     sessions/
+#       YYYY-MM-DD.md — per-day session log with key events
+#
 
 def _chat_dir(chat_id: int) -> Path:
     d = CONTEXT_DIR / str(chat_id)
@@ -256,74 +268,132 @@ def _sessions_dir(chat_id: int) -> Path:
     return d
 
 
-# -- profile.md: persistent facts about the user --
+# ── Profile ──
 
 def get_profile(chat_id: int) -> str:
+    """Read the owner profile markdown."""
     p = _chat_dir(chat_id) / "profile.md"
-    return p.read_text(encoding="utf-8") if p.exists() else ""
+    if p.exists():
+        return p.read_text(encoding="utf-8")
+    return ""
 
 
 def save_profile(chat_id: int, content: str):
+    """Overwrite the owner profile markdown."""
     p = _chat_dir(chat_id) / "profile.md"
     p.write_text(content, encoding="utf-8")
 
 
 def append_to_profile(chat_id: int, line: str):
-    """Add a line if not already present."""
-    profile = get_profile(chat_id)
-    if line.strip() and line.strip() not in profile:
-        new = profile.rstrip() + "\n" + line.strip() + "\n" if profile else line.strip() + "\n"
-        save_profile(chat_id, new)
+    """Add a line to the profile if it's not already there."""
+    p = _chat_dir(chat_id) / "profile.md"
+    existing = p.read_text(encoding="utf-8") if p.exists() else ""
+    if line.strip() not in existing:
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(f"\n- {line.strip()}\n")
 
 
-# -- summary.md: rolling conversation summary --
+# ── Summary ──
 
 def get_md_summary(chat_id: int) -> str:
+    """Read the running conversation summary."""
     p = _chat_dir(chat_id) / "summary.md"
-    return p.read_text(encoding="utf-8") if p.exists() else ""
+    if p.exists():
+        return p.read_text(encoding="utf-8")
+    return ""
 
 
 def save_md_summary(chat_id: int, content: str):
+    """Overwrite the running summary markdown."""
     p = _chat_dir(chat_id) / "summary.md"
     p.write_text(content, encoding="utf-8")
 
 
-# -- sessions/YYYY-MM-DD.md: daily session logs --
+# ── Session logs ──
 
 def get_today_session(chat_id: int) -> str:
+    """Read today's session log."""
     p = _sessions_dir(chat_id) / f"{date.today().isoformat()}.md"
-    return p.read_text(encoding="utf-8") if p.exists() else ""
+    if p.exists():
+        return p.read_text(encoding="utf-8")
+    return ""
 
 
-def append_to_session(chat_id: int, line: str):
+def append_to_session(chat_id: int, entry: str):
+    """Append an entry to today's session log."""
     p = _sessions_dir(chat_id) / f"{date.today().isoformat()}.md"
-    ts = datetime.now().strftime("%H:%M")
+    now = datetime.now().strftime("%H:%M")
     with open(p, "a", encoding="utf-8") as f:
-        f.write(f"- [{ts}] {line}\n")
+        if not p.exists() or p.stat().st_size == 0:
+            f.write(f"# Session {date.today().isoformat()}\n\n")
+        f.write(f"- **{now}** {entry}\n")
 
 
 def get_recent_sessions(chat_id: int, days: int = 3) -> str:
+    """Read the last N days of session logs concatenated."""
     sdir = _sessions_dir(chat_id)
+    files = sorted(sdir.glob("*.md"), reverse=True)[:days]
     parts = []
-    for i in range(days):
-        from datetime import timedelta
-        d = date.today() - timedelta(days=i)
-        p = sdir / f"{d.isoformat()}.md"
-        if p.exists():
-            parts.append(f"### {d.isoformat()}\n{p.read_text(encoding='utf-8')}")
-    return "\n".join(reversed(parts))
+    for f in reversed(files):  # chronological order
+        parts.append(f.read_text(encoding="utf-8"))
+    return "\n---\n".join(parts)
 
+
+# ── Model usage tracking ──
+
+def record_model_usage(model: str, input_tokens: int, output_tokens: int):
+    """Persist token usage for one LLM call."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO model_usage (model, input_tokens, output_tokens) VALUES (?,?,?)",
+            (model, input_tokens or 0, output_tokens or 0),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"record_model_usage failed: {e}")
+
+
+def get_model_usage_summary() -> dict[str, dict]:
+    """Return {model: {input_tokens, output_tokens, calls}} for all recorded usage."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute(
+            "SELECT model, SUM(input_tokens), SUM(output_tokens), COUNT(*) "
+            "FROM model_usage GROUP BY model ORDER BY model"
+        )
+        rows = c.fetchall()
+        conn.close()
+        return {
+            row[0]: {"input_tokens": row[1] or 0, "output_tokens": row[2] or 0, "calls": row[3] or 0}
+            for row in rows
+        }
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"get_model_usage_summary failed: {e}")
+        return {}
+
+
+# ── Full context bundle ──
 
 def get_full_context_md(chat_id: int) -> str:
-    """Bundle profile + summary + recent sessions for system prompt injection."""
+    """Build a single context string from all MD files for injection into system prompt."""
     sections = []
+
     profile = get_profile(chat_id)
     if profile:
-        sections.append(f"## User Profile\n{profile}")
-    summary = get_md_summary(chat_id)
-    if summary:
-        sections.append(f"## Conversation Summary\n{summary}")
-    sessions = get_recent_sessions(chat_id, 3)
+        sections.append(f"## Owner Profile\n{profile}")
+
+    md_summary = get_md_summary(chat_id)
+    if md_summary:
+        sections.append(f"## Conversation Summary\n{md_summary}")
+
+    sessions = get_recent_sessions(chat_id, days=3)
     if sessions:
         sections.append(f"## Recent Sessions\n{sessions}")
+
     return "\n\n".join(sections)

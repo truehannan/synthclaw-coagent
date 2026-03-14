@@ -588,6 +588,14 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
             ACTIVE_TASKS.pop(chat_id, None)
             return f"❌ LLM error: {e}", media_to_send
 
+        # Track token usage per model
+        try:
+            usage = response.usage
+            if usage:
+                mem.record_model_usage(model, usage.prompt_tokens, usage.completion_tokens)
+        except Exception as ue:
+            logger.debug(f"Usage tracking error: {ue}")
+
         reply = (response.choices[0].message.content or "").strip()  # Fix #14: guard None content
 
         # Log think block if present (internal reasoning — never sent to user)
@@ -815,25 +823,60 @@ async def cmd_models(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id):
         return
     current = get_current_model()
+    usage_summary = mem.get_model_usage_summary()
+
     groups = {
         "🌊 DigitalOcean": [],
         "🟣 Anthropic": [],
         "🟢 OpenAI": [],
     }
+
     for m in cfg.AVAILABLE_MODELS:
-        marker = "▶️ " if m == current else "    "
-        entry = f"{marker}`{m}`"
+        marker = "▶️" if m == current else "  "
+        pricing = cfg.MODEL_PRICING.get(m)
+        if pricing:
+            price_str = f"${pricing[0]:.2f}/${pricing[1]:.2f}"
+        else:
+            price_str = "?/?"
+
+        u = usage_summary.get(m)
+        if u and u["calls"] > 0:
+            in_k  = u["input_tokens"] / 1000
+            out_k = u["output_tokens"] / 1000
+            if pricing:
+                cost = (u["input_tokens"] * pricing[0] + u["output_tokens"] * pricing[1]) / 1_000_000
+                usage_str = f"{in_k:.0f}K/{out_k:.0f}K tok · ${cost:.4f}"
+            else:
+                usage_str = f"{in_k:.0f}K/{out_k:.0f}K tok"
+        else:
+            usage_str = "no usage"
+
+        entry = f"{marker} `{m}`\n      💰 {price_str}/M  📊 {usage_str}"
+
         if m.startswith("anthropic-"):
             groups["🟣 Anthropic"].append(entry)
         elif m.startswith("openai-"):
             groups["🟢 OpenAI"].append(entry)
         else:
             groups["🌊 DigitalOcean"].append(entry)
-    lines = []
+
+    lines = ["💰 = input/output per 1M tokens  📊 = your total usage"]
     for provider, models in groups.items():
         if models:
             lines.append(f"\n*{provider}*")
             lines.extend(models)
+
+    # Totals
+    total_cost = 0.0
+    has_cost = False
+    for m, u in usage_summary.items():
+        p = cfg.MODEL_PRICING.get(m)
+        if p and u["calls"] > 0:
+            total_cost += (u["input_tokens"] * p[0] + u["output_tokens"] * p[1]) / 1_000_000
+            has_cost = True
+    if has_cost:
+        lines.append(f"\n*Total estimated spend: ${total_cost:.4f}*")
+
     await update.message.reply_text(
         f"*Available Models* ({len(cfg.AVAILABLE_MODELS)} total):\n" + "\n".join(lines),
         parse_mode="Markdown",
@@ -989,6 +1032,14 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response = _llm_call(
                 model=model, messages=messages, temperature=0.2, max_tokens=4096
             )
+            # Track token usage per model
+            try:
+                usage = response.usage
+                if usage:
+                    mem.record_model_usage(model, usage.prompt_tokens, usage.completion_tokens)
+            except Exception as ue:
+                logger.debug(f"[/agent] Usage tracking error: {ue}")
+
             reply = (response.choices[0].message.content or "").strip()  # Fix #14
             if not reply:
                 reply = "Done."
