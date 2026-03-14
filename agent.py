@@ -7,9 +7,9 @@ import sys
 import time
 from pathlib import Path
 from openai import OpenAI
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     filters, ContextTypes,
 )
 import memory as mem
@@ -825,6 +825,7 @@ async def cmd_models(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current = get_current_model()
     usage_summary = mem.get_model_usage_summary()
 
+    # Build grouped buttons
     groups = {
         "🌊 DigitalOcean": [],
         "🟣 Anthropic": [],
@@ -832,55 +833,107 @@ async def cmd_models(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     for m in cfg.AVAILABLE_MODELS:
-        marker = "▶️" if m == current else "  "
-        pricing = cfg.MODEL_PRICING.get(m)
-        if pricing:
-            price_str = f"${pricing[0]:.2f}/${pricing[1]:.2f}"
+        pricing = cfg.MODEL_PRICING.get(m, (None, None))
+        confirmed = m in cfg.CONFIRMED_MODELS
+        
+        if pricing[0] is not None:
+            price_marker = "" if confirmed else "~"
+            price_str = f"{price_marker}${pricing[0]:.2f}/${pricing[1]:.2f}"
         else:
-            price_str = "?/?"
+            price_str = "?/?"    # Should not happen now
 
         u = usage_summary.get(m)
         if u and u["calls"] > 0:
-            in_k  = u["input_tokens"] / 1000
+            in_k = u["input_tokens"] / 1000
             out_k = u["output_tokens"] / 1000
-            if pricing:
+            if pricing[0] is not None:
                 cost = (u["input_tokens"] * pricing[0] + u["output_tokens"] * pricing[1]) / 1_000_000
-                usage_str = f"{in_k:.0f}K/{out_k:.0f}K tok · ${cost:.4f}"
+                usage_str = f"{in_k:.0f}K|{out_k:.0f}K · ${cost:.4f}"
             else:
-                usage_str = f"{in_k:.0f}K/{out_k:.0f}K tok"
+                usage_str = f"{in_k:.0f}K|{out_k:.0f}K"
         else:
-            usage_str = "no usage"
+            usage_str = ""
 
-        entry = f"{marker} `{m}`\n      💰 {price_str}/M  📊 {usage_str}"
+        # Button label: model name + marker + prices + usage
+        if current == m:
+            label = f"✅ {m.split('-')[-1]}  {price_str}"
+        else:
+            label = f"{m.split('-')[-1]}  {price_str}"
+        
+        if usage_str:
+            label += f"  {usage_str}"
 
+        btn = InlineKeyboardButton(label, callback_data=f"model_{m}")
+        
         if m.startswith("anthropic-"):
-            groups["🟣 Anthropic"].append(entry)
+            groups["🟣 Anthropic"].append(btn)
         elif m.startswith("openai-"):
-            groups["🟢 OpenAI"].append(entry)
+            groups["🟢 OpenAI"].append(btn)
         else:
-            groups["🌊 DigitalOcean"].append(entry)
+            groups["🌊 DigitalOcean"].append(btn)
 
-    lines = ["💰 = input/output per 1M tokens  📊 = your total usage"]
-    for provider, models in groups.items():
-        if models:
-            lines.append(f"\n*{provider}*")
-            lines.extend(models)
+    # Build keyboard with grouped buttons (2 per row)
+    keyboard = []
+    for provider, buttons in groups.items():
+        keyboard.append([InlineKeyboardButton(provider, callback_data="noop")])
+        for i in range(0, len(buttons), 2):
+            row = buttons[i:i+2]
+            keyboard.append(row)
+
+    # Legend
+    text = (
+        f"*Available Models ({len(cfg.AVAILABLE_MODELS)} total)*\n\n"
+        f"💰 = price/M tokens (input|output)\n"
+        f"~ = estimated pricing (not yet confirmed on DO)\n"
+        f"✅ = currently active\n\n"
+        f"Click any model to switch instantly."
+    )
 
     # Totals
     total_cost = 0.0
-    has_cost = False
     for m, u in usage_summary.items():
-        p = cfg.MODEL_PRICING.get(m)
-        if p and u["calls"] > 0:
+        p = cfg.MODEL_PRICING.get(m, (None, None))
+        if p[0] is not None and u["calls"] > 0:
             total_cost += (u["input_tokens"] * p[0] + u["output_tokens"] * p[1]) / 1_000_000
-            has_cost = True
-    if has_cost:
-        lines.append(f"\n*Total estimated spend: ${total_cost:.4f}*")
+    if total_cost > 0:
+        text += f"\n\n*Total estimated spend: ${total_cost:.4f}*"
 
     await update.message.reply_text(
-        f"*Available Models* ({len(cfg.AVAILABLE_MODELS)} total):\n" + "\n".join(lines),
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown",
     )
+
+
+async def handle_model_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline button clicks for model switching."""
+    query = update.callback_query
+    if not is_owner(query.from_user.id):
+        await query.answer("Unauthorized", show_alert=True)
+        return
+
+    if not query.data.startswith("model_"):
+        await query.answer()
+        return
+
+    model_name = query.data.replace("model_", "")
+    if model_name not in cfg.AVAILABLE_MODELS:
+        await query.answer(f"Model not found: {model_name}", show_alert=True)
+        return
+
+    current = get_current_model()
+    if model_name == current:
+        await query.answer(f"Already using {model_name}", show_alert=False)
+        return
+
+    mem.set_config("current_model", model_name)
+    await query.answer(f"✅ Switched to {model_name}", show_alert=False)
+
+    # Update the message to show the new active model
+    try:
+        await cmd_models(update, context)
+    except Exception as e:
+        logger.warning(f"cmd_models re-call failed: {e}")
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1294,6 +1347,7 @@ def main():
     app.add_handler(CommandHandler("stop",    cmd_stop))
     app.add_handler(CommandHandler("plan",    cmd_plan))
     app.add_handler(CommandHandler("agent",   cmd_agent))
+    app.add_handler(CallbackQueryHandler(handle_model_button, pattern="^model_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Media handlers — receive photos, voice, audio, video, documents, stickers

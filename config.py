@@ -54,25 +54,25 @@ MAX_TOOL_ITERATIONS = 200
 MAX_HISTORY_MESSAGES = 20
 
 # ── Model pricing (USD per 1M tokens) ──────────────────────────────────────
+# (in, out) = confirmed pricing from DO docs / provider published rates
+# ~(in, out) = educated estimates based on model size, capability, provider pricing patterns
 # Source: https://docs.digitalocean.com/products/gradient-ai-platform/details/pricing/
-# and each provider's published rates (DO aligns with them per their docs).
-# None = pricing not yet confirmed from DO docs or provider — shown as ? in /models.
-MODEL_PRICING: dict[str, tuple[float, float] | None] = {
+MODEL_PRICING: dict[str, tuple[float, float]] = {
     # ── DigitalOcean-hosted open source ────────────────────────────────
-    # Llama & Mistral: DO published starter rates
     "llama3-8b-instruct":           (0.10, 0.10),
     "llama3.3-70b-instruct":        (0.60, 0.60),
     "mistral-nemo-instruct-2407":   (0.15, 0.15),
-    # Alibaba: confirmed from DO docs page
     "alibaba-qwen3-32b":            (0.25, 0.55),
-    # DeepSeek / others: not yet confirmed on DO pricing page
-    "deepseek-r1-distill-llama-70b": None,
-    "glm-5":                        None,
-    "kimi-k2.5":                    None,
-    "minimax-m2.5":                 None,
-    "openai-gpt-oss-20b":           None,
-    "openai-gpt-oss-120b":          None,
-    # ── Anthropic (all tiers confirmed from DO pricing page) ───────────
+    # DeepSeek R1 ~ educated guess: reasoning model, similar tier to o1-mini
+    "deepseek-r1-distill-llama-70b": (3.00, 12.00),
+    # GLM-5, Kimi, MiniMax ~ Chinese models, similar capability tier to claude-sonnet
+    "glm-5":                        (2.00, 8.00),
+    "kimi-k2.5":                    (2.00, 8.00),
+    "minimax-m2.5":                 (1.50, 6.00),
+    # OpenAI OSS ~ open source tier pricing
+    "openai-gpt-oss-20b":           (0.20, 0.40),
+    "openai-gpt-oss-120b":          (1.00, 3.00),
+    # ── Anthropic (confirmed from DO pricing page) ───────────
     "anthropic-claude-haiku-4.5":   (0.80,  4.00),
     "anthropic-claude-sonnet-4":    (3.00, 15.00),
     "anthropic-claude-4.5-sonnet":  (3.00, 15.00),
@@ -84,18 +84,40 @@ MODEL_PRICING: dict[str, tuple[float, float] | None] = {
     # ── OpenAI (provider published rates; DO aligns per docs) ──────────
     "openai-gpt-4o-mini":           (0.15,  0.60),
     "openai-gpt-4o":                (2.50, 10.00),
-    "openai-gpt-4.1":               None,   # post-cutoff, unconfirmed
-    "openai-gpt-5-nano":            None,
-    "openai-gpt-5-mini":            None,
-    "openai-gpt-5":                 None,
-    "openai-gpt-5.2":               None,
-    "openai-gpt-5.2-pro":           None,
-    "openai-gpt-5.3-codex":         None,
-    "openai-gpt-5.4":               None,
-    "openai-gpt-5.1-codex-max":     None,
+    # GPT-5 series ~ educated guesses: frontier reasoning models, similar tier to gpt-4o or higher
+    "openai-gpt-4.1":               (5.00, 20.00),
+    "openai-gpt-5-nano":            (0.80,  3.20),
+    "openai-gpt-5-mini":            (1.50,  6.00),
+    "openai-gpt-5":                 (8.00, 32.00),
+    "openai-gpt-5.2":               (10.00, 40.00),
+    "openai-gpt-5.2-pro":           (15.00, 60.00),
+    "openai-gpt-5.3-codex":         (12.00, 48.00),
+    "openai-gpt-5.4":               (12.00, 48.00),
+    "openai-gpt-5.1-codex-max":     (15.00, 60.00),
     "openai-o1":                    (15.00, 60.00),
     "openai-o3-mini":               (1.10,  4.40),
     "openai-o3":                    (10.00, 40.00),
+}
+
+# Marker to know which models have confirmed vs estimated pricing
+CONFIRMED_MODELS = {
+    "llama3-8b-instruct",
+    "llama3.3-70b-instruct",
+    "mistral-nemo-instruct-2407",
+    "alibaba-qwen3-32b",
+    "anthropic-claude-haiku-4.5",
+    "anthropic-claude-sonnet-4",
+    "anthropic-claude-4.5-sonnet",
+    "anthropic-claude-4.6-sonnet",
+    "anthropic-claude-opus-4",
+    "anthropic-claude-opus-4.5",
+    "anthropic-claude-opus-4.6",
+    "anthropic-claude-4.1-opus",
+    "openai-gpt-4o-mini",
+    "openai-gpt-4o",
+    "openai-o1",
+    "openai-o3-mini",
+    "openai-o3",
 }
 
 # ── Command timeout tiers ────────────────────────────────────────────────────
