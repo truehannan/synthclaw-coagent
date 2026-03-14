@@ -1,7 +1,3 @@
-"""
-SynthClaw-CoAgent — Telegram Bot Interface
-Main entry point for the Telegram agent.
-"""
 import asyncio
 import datetime
 import json
@@ -37,14 +33,10 @@ logger = logging.getLogger(__name__)
 mem.init_db()
 cfg.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Client is created lazily via _get_client() so it can be reconfigured in-bot
+client = OpenAI(api_key=cfg.OPENAI_API_KEY, base_url=cfg.OPENAI_API_BASE)
 
-
-def _get_client() -> OpenAI:
-    """Return an OpenAI client, reading key/base from DB config if set."""
-    api_key = mem.get_config("llm_api_key") or cfg.OPENAI_API_KEY
-    api_base = mem.get_config("llm_api_base") or cfg.OPENAI_API_BASE
-    return OpenAI(api_key=api_key, base_url=api_base)
+# Active task tracking — allows /stop to interrupt a running agent loop
+ACTIVE_TASKS: dict[int, bool] = {}  # chat_id -> is_running
 
 
 def _llm_call(**kwargs):
@@ -56,7 +48,7 @@ def _llm_call(**kwargs):
     delays = [5, 15, 30, 60, 120]
     for attempt, delay in enumerate(delays, 1):
         try:
-            return _get_client().chat.completions.create(**kwargs)
+            return client.chat.completions.create(**kwargs)
         except Exception as e:
             err = str(e).lower()
             if any(k in err for k in ("rate limit", "ratelimit", "429", "too many requests", "throttle")):
@@ -67,18 +59,10 @@ def _llm_call(**kwargs):
                 time.sleep(delay)
             else:
                 raise
-    return _get_client().chat.completions.create(**kwargs)  # final attempt after all waits
+    return client.chat.completions.create(**kwargs)  # final attempt after all waits
 
 
-def _is_configured() -> bool:
-    """True if an LLM API key is available (env or DB)."""
-    return bool(mem.get_config("llm_api_key") or cfg.OPENAI_API_KEY)
-
-
-# Active task tracking — allows /stop to interrupt a running agent loop
-ACTIVE_TASKS: dict[int, bool] = {}  # chat_id -> is_running
-
-# ── System prompts ────────────────────────────────────────────────────────────
+# ── System prompt ─────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
 == THINK BEFORE YOU ACT — MANDATORY ==
@@ -156,8 +140,14 @@ Multiple tool calls in one response (all execute at once):
 - Editing a file: FIRST read it (or use read_files to batch-read).
 - NEVER assume a package name, version, or URL is correct — verify it.
 
+== FAILURE PROTOCOL ==
+- If a step FAILS, do NOT continue to the next step blindly.
+- Diagnose → Fix → Retry OR report to user.
+- Example: if `pip install X` fails, do NOT proceed to `python script_using_X.py`.
+- If you've tried 2 different approaches and both failed, STOP and explain.
+
 == WHO YOU ARE ==
-Personal AI assistant running on a server.
+Personal AI assistant on a DigitalOcean droplet (Singapore).
 You belong to one person — your owner — chatting via Telegram.
 
 == DO NOT NARRATE — JUST ACT (CRITICAL) ==
@@ -177,12 +167,6 @@ Smart, direct, slightly informal. Hold real conversations:
 - Concise. Friendly but not cringe.
 - NEVER reply with empty output.
 
-== FAILURE PROTOCOL ==
-- If a step FAILS, do NOT continue to the next step blindly.
-- Diagnose → Fix → Retry OR report to user.
-- Example: if `pip install X` fails, do NOT proceed to `python script_using_X.py`.
-- If you've tried 2 different approaches and both failed, STOP and explain.
-
 == CAPABILITIES ==
 Full server control: shell commands, file management, background services,
 HTTP APIs, encrypted credential storage, persistent memory.
@@ -190,7 +174,7 @@ Timeouts auto-scale: 30s normal commands, 180s installs, 300s builds.
 
 Media: receive photos/voice/audio/video/docs/stickers (auto-saved to server).
 Send back via send_media. Download via download_url. Browse via list_media.
-Generate images via generate_image. Storage: workspace/media/.
+Generate images via generate_image. Storage: /opt/agent/workspace/media/.
 
 Search files with search_files (grep). Edit parts of files with patch_file.
 Get system info with system_info. Check ports with check_port.
@@ -265,10 +249,9 @@ Chain tool calls as needed. Final reply: result only, no narration.
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-
 def _extract_json_objects(text: str) -> list[str]:
-    """Extract all top-level JSON objects using bracket counting.
-    Handles arbitrary nesting — the old flat regex broke on nested {} args.
+    """Extract all top-level JSON objects from text using bracket counting.
+    Handles arbitrary nesting depth — the old regex broke on nested {}.
     """
     results = []
     depth = 0
@@ -279,7 +262,7 @@ def _extract_json_objects(text: str) -> list[str]:
         ch = text[i]
         if in_string:
             if ch == '\\':
-                i += 2
+                i += 2   # skip escaped char
                 continue
             if ch == '"':
                 in_string = False
@@ -431,6 +414,7 @@ def _maybe_summarize(chat_id: int):
         summary = resp.choices[0].message.content.strip()
         if summary:
             mem.save_md_summary(chat_id, summary)
+            # Also save in DB for backward compat
             mem.save_summary(chat_id, summary, total)
             logger.info(f"Updated summary.md for chat {chat_id}")
     except Exception as e:
@@ -460,6 +444,7 @@ def _maybe_summarize(chat_id: int):
     # ── 3. Log key events to session file ──
     for msg in oldest:
         if msg["role"] == "user" and len(msg["content"]) > 10:
+            # Log meaningful user messages
             short = msg["content"][:120].replace("\n", " ")
             mem.append_to_session(chat_id, f"User: {short}")
 
@@ -471,9 +456,11 @@ def _maybe_summarize(chat_id: int):
 
 def _build_context(chat_id: int) -> list[dict]:
     """Build the full message list with MD context, memories, cred names."""
+    # 1. Get stored memories and credential names
     all_memories = mem.get_all_memory()
     cred_list = mem.list_credentials()
 
+    # 2. Build enriched system prompt
     extra_context = []
 
     # MD file long-term context
@@ -481,6 +468,7 @@ def _build_context(chat_id: int) -> list[dict]:
     if md_context:
         extra_context.append(f"\n== LONG-TERM CONTEXT ==\n{md_context}")
 
+    # Key-value memories
     if all_memories:
         facts = "; ".join(f"{k}: {v}" for k, v in all_memories.items())
         extra_context.append(f"\n== KNOWN FACTS ABOUT OWNER ==\n{facts}")
@@ -494,6 +482,7 @@ def _build_context(chat_id: int) -> list[dict]:
 
     messages = [{"role": "system", "content": system}]
 
+    # Recent messages (the actual conversation window)
     history = mem.get_history(chat_id, RECENT_WINDOW)
     messages.extend(history)
 
@@ -618,6 +607,18 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
                     except json.JSONDecodeError:
                         pass
 
+                # Detect ask_user signal — pause loop and send question to user
+                if name == "ask_user":
+                    try:
+                        result_data = json.loads(result)
+                        if result_data.get("ask_user") and result_data.get("question"):
+                            question = result_data["question"]
+                            mem.save_message(chat_id, "assistant", question)
+                            ACTIVE_TASKS.pop(chat_id, None)
+                            return question, media_to_send
+                    except json.JSONDecodeError:
+                        pass
+
                 combined_results.append(f"[{name}]: {result}")
 
             messages.append({"role": "assistant", "content": reply})
@@ -672,86 +673,41 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
 
 # ── Telegram command handlers ─────────────────────────────────────────────────
 
-ONBOARDING_STEP_KEY = "onboarding_step"  # values: "api_key", "api_base", "done"
-
-
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-
-    # First time — lock owner
     if get_owner_id() is None:
         mem.set_config("owner_telegram_id", str(user_id))
-        # Decide if we need onboarding (no API key configured)
-        if not _is_configured():
-            mem.set_config(ONBOARDING_STEP_KEY, "api_key")
-            await update.message.reply_text(
-                f"👋 Welcome! I'm *SynthClaw-CoAgent* — your personal AI agent.\n\n"
-                f"🔒 You're now the owner \(ID: `{user_id}`\)\.\n\n"
-                "Let's get you set up in 2 quick steps\.\n\n"
-                "*Step 1 of 2 — LLM API Key*\n"
-                "Send me your API key now\. Example:\n"
-                "`sk-do-xxxx...` \(DigitalOcean Gradient AI\)\n"
-                "`sk-xxxx...` \(OpenAI\)\n\n"
-                "_Your key is stored encrypted on this server and never sent anywhere else\._",
-                parse_mode="MarkdownV2",
-            )
-        else:
-            mem.set_config(ONBOARDING_STEP_KEY, "done")
-            await update.message.reply_text(
-                f"👋 Welcome back\! Owner set to ID `{user_id}`\.\n\n"
-                "✅ LLM API key already configured \(from environment\)\.\n"
-                "I'm ready to go — type anything or use /help\.",
-                parse_mode="MarkdownV2",
-            )
-        return
-
-    # Already has an owner — send to owner only
-    if not is_owner(user_id):
-        await update.message.reply_text("⛔ This agent already has an owner.")
-        return
-
-    step = mem.get_config(ONBOARDING_STEP_KEY, "done")
-    if step == "done":
         await update.message.reply_text(
-            "🟢 Agent is running\. Use /setup to view config or /help for commands\.",
-            parse_mode="MarkdownV2",
+            f"👋 Welcome! Owner locked to your ID: `{user_id}`\n\n"
+            "I'm your personal AI agent — I can run code, manage files, call APIs, "
+            "remember things, and run background services on this droplet.\n\n"
+            "Type anything or use /help.",
+            parse_mode="Markdown",
         )
     else:
-        # Resume interrupted onboarding
-        await update.message.reply_text(
-            "⏸ Onboarding isn't finished yet\. Use /setup to check what's missing\.",
-            parse_mode="MarkdownV2",
-        )
+        await update.message.reply_text("🟢 Agent is running. Type /help for commands.")
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id):
         return
     await update.message.reply_text(
-        "🤖 *SynthClaw\\-CoAgent — Commands*\n\n"
-        "⚙️ *Setup*\n"
-        "/setup — Show configuration status\n"
-        "/setkey \\<key\\> — Set LLM API key\n"
-        "/setbase \\<url\\> — Set LLM API base URL\n\n"
-        "💬 *General*\n"
-        "/start — Register as owner / resume onboarding\n"
+        "🤖 *Personal AI Agent — Commands*\n\n"
+        "/start — Register as owner\n"
         "/help — This message\n"
         "/clear — Wipe conversation history\n"
         "/model \\[name\\] — Show or switch model\n"
         "/models — List all available models\n"
-        "/ping — Check if alive\n\n"
-        "🖥 *Server*\n"
         "/status — Show running services\n"
-        "/run \\<cmd\\> — Run shell command directly\n\n"
-        "🧠 *Memory*\n"
         "/creds — List stored credentials\n"
         "/storekey \\<NAME\\> \\<VALUE\\> — Store a key directly \\(bypasses AI\\)\n"
-        "/memory — Show remembered facts\n\n"
-        "🤖 *Agent*\n"
+        "/memory — Show remembered facts\n"
+        "/run \\<cmd\\> — Run shell command directly\n"
         "/plan \\<task\\> — Break task into steps \\(no execution\\)\n"
         "/agent \\<task\\> — Autonomous execution mode\n"
-        "/stop — Stop a running task\n\n"
-        "📎 *Media:* Send me photos, voice, audio, video, or files\\.\n"
+        "/stop — Stop a running task\n"
+        "/ping — Check if alive\n\n"
+        "*Media:* Send me photos, voice, audio, video, or files\\. "
         "I'll save and process them\\. I can also send files back to you\\.\n\n"
         "*Just chat normally:*\n"
         "• _What's the best way to set up a cron job?_\n"
@@ -760,90 +716,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• _Remember my timezone is UTC\\+5_",
         parse_mode="MarkdownV2",
     )
-
-
-async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show current configuration status and what still needs to be done."""
-    if not is_owner(update.effective_user.id):
-        return
-
-    api_key = mem.get_config("llm_api_key") or cfg.OPENAI_API_KEY
-    api_base = mem.get_config("llm_api_base") or cfg.OPENAI_API_BASE
-    model = get_current_model()
-
-    key_source = "🔐 DB" if mem.get_config("llm_api_key") else ("✅ env" if cfg.OPENAI_API_KEY else "❌ missing")
-    base_source = "🔐 DB" if mem.get_config("llm_api_base") else "✅ env/default"
-    key_preview = f"`{api_key[:8]}...{api_key[-4:]}`" if api_key and len(api_key) > 12 else ("set" if api_key else "**not set**")
-
-    lines = [
-        "⚙️ *SynthClaw Configuration*\n",
-        f"🔑 *API Key:* {key_source} — {key_preview}",
-        f"🌐 *API Base:* {base_source} — `{api_base}`",
-        f"🧠 *Model:* `{model}`",
-        "",
-    ]
-
-    if not api_key:
-        lines.append("❌ *Action needed:* Send `/setkey <your-api-key>` to configure the LLM.")
-    else:
-        lines.append("✅ Ready to chat. Type anything or use /help.")
-
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
-async def cmd_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set the LLM API key (stored encrypted in DB)."""
-    if not is_owner(update.effective_user.id):
-        return
-
-    key = " ".join(context.args).strip()
-    if not key:
-        await update.message.reply_text(
-            "Usage: `/setkey <api-key>`\n\nExample: `/setkey sk-do-xxxxxxxxxxxx`",
-            parse_mode="Markdown",
-        )
-        return
-
-    mem.set_config("llm_api_key", key)
-    preview = f"`{key[:8]}...{key[-4:]}`" if len(key) > 12 else "`set`"
-
-    # Advance onboarding step if still in progress
-    step = mem.get_config(ONBOARDING_STEP_KEY, "done")
-    if step == "api_key":
-        mem.set_config(ONBOARDING_STEP_KEY, "done")
-        await update.message.reply_text(
-            f"✅ API key saved: {preview}\n\n"
-            "🎉 *Setup complete!* You're ready to go.\n\n"
-            "Try chatting with me, or use /help to see all commands.\n\n"
-            "_Optional: use `/setbase <url>` if you're using a non-default API endpoint._",
-            parse_mode="Markdown",
-        )
-    else:
-        await update.message.reply_text(
-            f"✅ API key updated: {preview}", parse_mode="Markdown"
-        )
-
-
-async def cmd_setbase(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set the LLM API base URL."""
-    if not is_owner(update.effective_user.id):
-        return
-
-    base = " ".join(context.args).strip()
-    if not base:
-        current = mem.get_config("llm_api_base") or cfg.OPENAI_API_BASE
-        await update.message.reply_text(
-            f"Current API base: `{current}`\n\n"
-            "Usage: `/setbase <url>`\n\nExamples:\n"
-            "• `https://inference.do-ai.run/v1` (DigitalOcean — default)\n"
-            "• `https://api.openai.com/v1` (OpenAI)\n"
-            "• `http://localhost:11434/v1` (Ollama)",
-            parse_mode="Markdown",
-        )
-        return
-
-    mem.set_config("llm_api_base", base)
-    await update.message.reply_text(f"✅ API base updated: `{base}`", parse_mode="Markdown")
 
 
 async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1081,14 +953,12 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"[{i+1}/{len(combined_results)}] {r}"
                         for i, r in enumerate(combined_results)
                     )
-                # Compress tool results if they're too large
                 if len(result_text) > 6000:
-                    result_text = result_text[:5500] + "\n\n... [output truncated to save context] ..."
+                    result_text = result_text[:5500] + "\n\n... [output truncated] ..."
                 messages.append({
                     "role": "user",
                     "content": f"<tool_result>\n{result_text}\n</tool_result>\n"
-                               "Check returncode: 0=success, non-zero=FAILED (do NOT proceed if failed).\n"
-                               "Continue.",
+                               "Check returncode: 0=success, non-zero=FAILED. Continue.",
                 })
             else:
                 # Guardrail: never send raw tagged tool payloads to chat
@@ -1172,8 +1042,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply, media_items = await run_agent(chat_id, update.message.text, model, send_fn=_send)
         if not reply or not reply.strip():
             reply = "_(got an empty response — try rephrasing or /clear to reset history)_"
+        # Telegram message limit is 4096 chars
         for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
             await update.message.reply_text(chunk)
+        # Send any queued media
         await _send_queued_media(update, media_items)
     except Exception as e:
         logger.error(f"handle_message error: {e}", exc_info=True)
@@ -1186,14 +1058,6 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(user_id):
         return
 
-    # Skip if onboarding not done
-    step = mem.get_config(ONBOARDING_STEP_KEY, "done")
-    if step != "done":
-        return
-
-    if not _is_configured():
-        return
-
     chat_id = update.effective_chat.id
     model = get_current_model()
     msg = update.message
@@ -1201,7 +1065,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Determine media type and get Telegram file object
     original_name = None
     if msg.photo:
-        tg_file = await msg.photo[-1].get_file()
+        tg_file = await msg.photo[-1].get_file()  # highest resolution
         media_type, subfolder, ext = "photo", "photos", ".jpg"
     elif msg.voice:
         tg_file = await msg.voice.get_file()
@@ -1271,17 +1135,10 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    if not cfg.TELEGRAM_TOKEN:
-        print("ERROR: TELEGRAM_TOKEN not set. Run `python setup_cli.py` first.")
-        sys.exit(1)
-
     app = Application.builder().token(cfg.TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start",   cmd_start))
     app.add_handler(CommandHandler("help",    cmd_help))
-    app.add_handler(CommandHandler("setup",   cmd_setup))
-    app.add_handler(CommandHandler("setkey",  cmd_setkey))
-    app.add_handler(CommandHandler("setbase", cmd_setbase))
     app.add_handler(CommandHandler("clear",   cmd_clear))
     app.add_handler(CommandHandler("model",   cmd_model))
     app.add_handler(CommandHandler("models",  cmd_models))
@@ -1304,7 +1161,7 @@ def main():
     )
     app.add_handler(MessageHandler(media_filter, handle_media))
 
-    logger.info("🤖 SynthClaw Telegram agent starting (polling)…")
+    logger.info("🤖 Agent starting (polling)…")
     app.run_polling(drop_pending_updates=True)
 
 
