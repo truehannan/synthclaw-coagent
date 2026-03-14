@@ -815,12 +815,28 @@ async def cmd_models(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id):
         return
     current = get_current_model()
-    lines = [
-        ("▶️ " if m == current else "   ") + f"`{m}`"
-        for m in cfg.AVAILABLE_MODELS
-    ]
+    groups = {
+        "🌊 DigitalOcean": [],
+        "🟣 Anthropic": [],
+        "🟢 OpenAI": [],
+    }
+    for m in cfg.AVAILABLE_MODELS:
+        marker = "▶️ " if m == current else "    "
+        entry = f"{marker}`{m}`"
+        if m.startswith("anthropic-"):
+            groups["🟣 Anthropic"].append(entry)
+        elif m.startswith("openai-"):
+            groups["🟢 OpenAI"].append(entry)
+        else:
+            groups["🌊 DigitalOcean"].append(entry)
+    lines = []
+    for provider, models in groups.items():
+        if models:
+            lines.append(f"\n*{provider}*")
+            lines.extend(models)
     await update.message.reply_text(
-        "*Available Models:*\n" + "\n".join(lines), parse_mode="Markdown"
+        f"*Available Models* ({len(cfg.AVAILABLE_MODELS)} total):\n" + "\n".join(lines),
+        parse_mode="Markdown",
     )
 
 
