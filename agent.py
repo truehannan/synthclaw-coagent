@@ -391,8 +391,8 @@ def _extract_pre_tool_text(reply: str) -> str:
 
 # ── Smart context (MD file system) ────────────────────────────────────────────
 
-SUMMARIZE_THRESHOLD = 30   # total msgs before we summarize + prune
-RECENT_WINDOW = 15         # keep this many recent messages verbatim
+SUMMARIZE_THRESHOLD = 20   # total msgs before we summarize + prune
+RECENT_WINDOW = 30         # keep this many recent messages verbatim
 SUMMARIZE_BATCH = 15       # how many old messages to summarize at once
 
 SUMMARY_SYSTEM = (
@@ -500,6 +500,15 @@ def _build_context(chat_id: int) -> list[dict]:
     md_context = mem.get_full_context_md(chat_id)
     if md_context:
         extra_context.append(f"\n== LONG-TERM CONTEXT ==\n{md_context}")
+    else:
+        # No MD context yet — inject basic session info so agent knows convo is ongoing
+        msg_count = mem.count_messages(chat_id)
+        if msg_count > 0:
+            extra_context.append(
+                f"\n== SESSION INFO ==\nActive conversation. "
+                f"Messages logged so far: {msg_count}. "
+                "Long-term memory context not yet built (accumulates after first summarization)."
+            )
 
     # Key-value memories
     if all_memories:
@@ -624,41 +633,51 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
                 except Exception as e:
                     logger.warning(f"Failed to send intermediate message: {e}")
 
-            # Execute ALL tool calls from this response
+            # Execute ALL tool calls — parallel for independent tools, sequential for ask_user
             combined_results = []
-            for name, args in tool_calls:
-                if not name:
-                    continue
-                # Re-check stop flag before each tool execution
-                if not ACTIVE_TASKS.get(chat_id, True):
-                    ACTIVE_TASKS.pop(chat_id, None)
-                    mem.save_message(chat_id, "assistant", "🛑 Task stopped by user.")
-                    return "🛑 Task stopped.", media_to_send
 
+            # Stop check before firing any tools
+            if not ACTIVE_TASKS.get(chat_id, True):
+                ACTIVE_TASKS.pop(chat_id, None)
+                mem.save_message(chat_id, "assistant", "🛑 Task stopped by user.")
+                return "🛑 Task stopped.", media_to_send
+
+            regular_calls = [(n, a) for n, a in tool_calls if n and n != "ask_user"]
+            ask_calls     = [(n, a) for n, a in tool_calls if n == "ask_user"]
+
+            if regular_calls:
+                _loop = asyncio.get_running_loop()
+
+                async def _run_tool_parallel(idx, tname, targs):
+                    logger.info(f"Tool call [{iteration+1}][{idx}]: {tname}({targs})")
+                    return tname, await _loop.run_in_executor(None, execute_tool, tname, targs)
+
+                tool_results = await asyncio.gather(
+                    *[_run_tool_parallel(i + 1, n, a) for i, (n, a) in enumerate(regular_calls)]
+                )
+                for tname, result in tool_results:
+                    if tname in ("send_media", "generate_image"):
+                        try:
+                            result_data = json.loads(result)
+                            if result_data.get("queued"):
+                                media_to_send.append(result_data)
+                        except json.JSONDecodeError as jde:
+                            logger.warning(f"JSON decode error capturing media from {tname}: {jde} | raw: {result[:200]}")
+                    combined_results.append(f"[{tname}]: {result}")
+
+            # ask_user calls handled sequentially (they pause the loop)
+            for name, args in ask_calls:
                 logger.info(f"Tool call [{iteration+1}]: {name}({args})")
                 result = execute_tool(name, args)
-
-                # Capture media items queued by send_media / generate_image
-                if name in ("send_media", "generate_image"):
-                    try:
-                        result_data = json.loads(result)
-                        if result_data.get("queued"):
-                            media_to_send.append(result_data)
-                    except json.JSONDecodeError as jde:   # Fix #5: log instead of silent pass
-                        logger.warning(f"JSON decode error capturing media from {name}: {jde} | raw: {result[:200]}")
-
-                # Detect ask_user signal — pause loop and send question to user
-                if name == "ask_user":
-                    try:
-                        result_data = json.loads(result)
-                        if result_data.get("ask_user") and result_data.get("question"):
-                            question = result_data["question"]
-                            mem.save_message(chat_id, "assistant", question)
-                            ACTIVE_TASKS.pop(chat_id, None)
-                            return question, media_to_send
-                    except json.JSONDecodeError as jde:   # Fix #5
-                        logger.warning(f"JSON decode error in ask_user: {jde} | raw: {result[:200]}")
-
+                try:
+                    result_data = json.loads(result)
+                    if result_data.get("ask_user") and result_data.get("question"):
+                        question = result_data["question"]
+                        mem.save_message(chat_id, "assistant", question)
+                        ACTIVE_TASKS.pop(chat_id, None)
+                        return question, media_to_send
+                except json.JSONDecodeError as jde:   # Fix #5
+                    logger.warning(f"JSON decode error in ask_user: {jde} | raw: {result[:200]}")
                 combined_results.append(f"[{name}]: {result}")
 
             messages.append({"role": "assistant", "content": reply})
@@ -971,29 +990,36 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     for chunk in [pre_text[i:i+4000] for i in range(0, len(pre_text), 4000)]:
                         await update.message.reply_text(chunk)
 
-                # Execute ALL tool calls
+                # Execute ALL tool calls — parallel for independent tools
                 combined_results = []
-                for name, args in tool_calls:
-                    if not name:
-                        continue
-                    # Check stop flag before each tool
-                    if not ACTIVE_TASKS.get(chat_id, True):
-                        await update.message.reply_text("🛑 Task stopped.")
-                        ACTIVE_TASKS.pop(chat_id, None)
-                        await _send_queued_media(update, agent_media)
-                        return
 
-                    logger.info(f"[/agent] Tool [{iteration+1}]: {name}({args})")
-                    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-                    result = execute_tool(name, args)
-                    if name in ("send_media", "generate_image"):
+                # Stop check before firing tools
+                if not ACTIVE_TASKS.get(chat_id, True):
+                    await update.message.reply_text("🛑 Task stopped.")
+                    ACTIVE_TASKS.pop(chat_id, None)
+                    await _send_queued_media(update, agent_media)
+                    return
+
+                await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+                valid_calls = [(n, a) for n, a in tool_calls if n]
+                _aloop = asyncio.get_running_loop()
+
+                async def _agent_run_tool(idx, tname, targs):
+                    logger.info(f"[/agent] Tool [{iteration+1}][{idx}]: {tname}({targs})")
+                    return tname, await _aloop.run_in_executor(None, execute_tool, tname, targs)
+
+                a_results = await asyncio.gather(
+                    *[_agent_run_tool(i + 1, n, a) for i, (n, a) in enumerate(valid_calls)]
+                )
+                for tname, result in a_results:
+                    if tname in ("send_media", "generate_image"):
                         try:
                             rd = json.loads(result)
                             if rd.get("queued"):
                                 agent_media.append(rd)
                         except json.JSONDecodeError:
                             pass
-                    combined_results.append(f"[{name}]: {result}")
+                    combined_results.append(f"[{tname}]: {result}")
 
                 messages.append({"role": "assistant", "content": reply})
                 if len(combined_results) == 1:
