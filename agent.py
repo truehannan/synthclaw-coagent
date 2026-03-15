@@ -39,31 +39,37 @@ client = OpenAI(api_key=cfg.OPENAI_API_KEY, base_url=cfg.OPENAI_API_BASE)
 ACTIVE_TASKS: dict[int, bool] = {}  # chat_id -> is_running
 
 
-def _llm_call(**kwargs):
-    """Wrap every LLM call with exponential-backoff retry on rate-limit errors.
+async def _llm_call(**kwargs):
+    """Async LLM call with *infinite* retry and exponential backoff.
 
-    Retries up to 5 times: 5 → 15 → 30 → 60 → 120 seconds.
-    Non-rate-limit errors are re-raised immediately.
+    - Runs the blocking SDK call in a thread (asyncio.to_thread) so the event
+      loop stays free for /stop and other messages during retries.
+    - Transient errors (timeouts, rate-limits, 5xx, network) → retry forever,
+      backoff doubles each attempt: 5 → 10 → 30 → 60 → 300 s (cap).
+    - Permanent errors (401 Unauthorized, 403 Forbidden, 404 Not Found) →
+      raised immediately — retrying won't help.
     """
-    delays = [5, 15, 30, 60, 120]
-    for attempt, delay in enumerate(delays, 1):
+    NON_RETRYABLE = {401, 403, 404}
+    backoff = 5
+    attempt = 0
+    while True:
+        attempt += 1
         try:
-            return client.chat.completions.create(**kwargs)
+            return await asyncio.to_thread(client.chat.completions.create, **kwargs)
         except Exception as e:
-            err = str(e).lower()
-            if any(k in err for k in ("rate limit", "ratelimit", "429", "too many requests", "throttle")):
-                logger.warning(
-                    f"⏳ Rate limit hit — attempt {attempt}/{len(delays)}, "
-                    f"waiting {delay}s before retry…"
-                )
-                time.sleep(delay)
-            else:
+            status = (
+                getattr(e, "status_code", None)
+                or getattr(getattr(e, "response", None), "status_code", None)
+            )
+            if status in NON_RETRYABLE:
+                logger.error(f"Non-retryable LLM error (HTTP {status}): {e}")
                 raise
-    try:                                     # Fix #10: wrap final attempt — don't crash on last retry
-        return client.chat.completions.create(**kwargs)
-    except Exception as e:
-        logger.error(f"LLM final retry failed: {e}")
-        raise
+            logger.warning(
+                f"⏳ LLM error (attempt {attempt}), retrying in {backoff}s — "
+                f"{type(e).__name__}: {e}"
+            )
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 300)
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────
@@ -577,7 +583,7 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
             return "🛑 Task stopped.", media_to_send
 
         try:
-            response = _llm_call(
+            response = await _llm_call(
                 model=model,
                 messages=messages,
                 temperature=0.7,
@@ -772,7 +778,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help — This message\n"
         "/clear — Wipe conversation history\n"
         "/model \\[name\\] — Show or switch model\n"
-        "/models — List all available models\n"
+        "/models — Switch model via buttons\n"
+        "/usage — Per\\-model pricing & token usage\n"
         "/status — Show running services\n"
         "/creds — List stored credentials\n"
         "/storekey \\<NAME\\> \\<VALUE\\> — Store a key directly \\(bypasses AI\\)\n"
@@ -819,52 +826,17 @@ async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Switched to `{new_model}`", parse_mode="Markdown")
 
 
-async def cmd_models(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update.effective_user.id):
-        return
-    current = get_current_model()
-    usage_summary = mem.get_model_usage_summary()
-
-    # Build grouped buttons
-    groups = {
+def _build_models_keyboard(current: str) -> InlineKeyboardMarkup:
+    """Build the model-selection inline keyboard. Reused by cmd_models + handle_model_button."""
+    groups: dict[str, list[InlineKeyboardButton]] = {
         "🌊 DigitalOcean": [],
         "🟣 Anthropic": [],
         "🟢 OpenAI": [],
     }
-
     for m in cfg.AVAILABLE_MODELS:
-        pricing = cfg.MODEL_PRICING.get(m, (None, None))
-        confirmed = m in cfg.CONFIRMED_MODELS
-        
-        if pricing[0] is not None:
-            price_marker = "" if confirmed else "~"
-            price_str = f"{price_marker}${pricing[0]:.2f}/${pricing[1]:.2f}"
-        else:
-            price_str = "?/?"    # Should not happen now
-
-        u = usage_summary.get(m)
-        if u and u["calls"] > 0:
-            in_k = u["input_tokens"] / 1000
-            out_k = u["output_tokens"] / 1000
-            if pricing[0] is not None:
-                cost = (u["input_tokens"] * pricing[0] + u["output_tokens"] * pricing[1]) / 1_000_000
-                usage_str = f"{in_k:.0f}K|{out_k:.0f}K · ${cost:.4f}"
-            else:
-                usage_str = f"{in_k:.0f}K|{out_k:.0f}K"
-        else:
-            usage_str = ""
-
-        # Button label: model name + marker + prices + usage
-        if current == m:
-            label = f"✅ {m.split('-')[-1]}  {price_str}"
-        else:
-            label = f"{m.split('-')[-1]}  {price_str}"
-        
-        if usage_str:
-            label += f"  {usage_str}"
-
+        short = m.replace("anthropic-", "").replace("openai-", "")
+        label = ("✅ " if m == current else "") + short
         btn = InlineKeyboardButton(label, callback_data=f"model_{m}")
-        
         if m.startswith("anthropic-"):
             groups["🟣 Anthropic"].append(btn)
         elif m.startswith("openai-"):
@@ -872,37 +844,84 @@ async def cmd_models(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             groups["🌊 DigitalOcean"].append(btn)
 
-    # Build keyboard with grouped buttons (2 per row)
-    keyboard = []
+    keyboard: list[list[InlineKeyboardButton]] = []
     for provider, buttons in groups.items():
         keyboard.append([InlineKeyboardButton(provider, callback_data="noop")])
         for i in range(0, len(buttons), 2):
-            row = buttons[i:i+2]
-            keyboard.append(row)
+            keyboard.append(buttons[i:i+2])
+    return InlineKeyboardMarkup(keyboard)
 
-    # Legend
-    text = (
-        f"*Available Models ({len(cfg.AVAILABLE_MODELS)} total)*\n\n"
-        f"💰 = price/M tokens (input|output)\n"
-        f"~ = estimated pricing (not yet confirmed on DO)\n"
-        f"✅ = currently active\n\n"
-        f"Click any model to switch instantly."
-    )
 
-    # Totals
-    total_cost = 0.0
-    for m, u in usage_summary.items():
-        p = cfg.MODEL_PRICING.get(m, (None, None))
-        if p[0] is not None and u["calls"] > 0:
-            total_cost += (u["input_tokens"] * p[0] + u["output_tokens"] * p[1]) / 1_000_000
-    if total_cost > 0:
-        text += f"\n\n*Total estimated spend: ${total_cost:.4f}*"
-
+async def cmd_models(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update.effective_user.id):
+        return
+    current = get_current_model()
     await update.message.reply_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        f"*Select a model* — ✅ = active\n\nCurrent: `{current}`\n\nSee /usage for pricing & token stats.",
+        reply_markup=_build_models_keyboard(current),
         parse_mode="Markdown",
     )
+
+
+async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show per-model pricing and accumulated token usage."""
+    if not is_owner(update.effective_user.id):
+        return
+    usage_summary = mem.get_model_usage_summary()
+
+    groups: dict[str, list[str]] = {
+        "🌊 DigitalOcean": [],
+        "🟣 Anthropic": [],
+        "🟢 OpenAI": [],
+    }
+    total_cost = 0.0
+    total_in = 0
+    total_out = 0
+
+    for m in cfg.AVAILABLE_MODELS:
+        pricing = cfg.MODEL_PRICING.get(m, (None, None))
+        confirmed = m in cfg.CONFIRMED_MODELS
+        price_tag = ("" if confirmed else "~") + (
+            f"${pricing[0]:.2f}/${pricing[1]:.2f}/M" if pricing[0] is not None else "?/?"
+        )
+
+        u = usage_summary.get(m)
+        if u and u["calls"] > 0:
+            in_k  = u["input_tokens"]  / 1000
+            out_k = u["output_tokens"] / 1000
+            total_in  += u["input_tokens"]
+            total_out += u["output_tokens"]
+            if pricing[0] is not None:
+                cost = (u["input_tokens"] * pricing[0] + u["output_tokens"] * pricing[1]) / 1_000_000
+                total_cost += cost
+                usage_line = f"{in_k:.0f}K/{out_k:.0f}K tok · *${cost:.4f}*"
+            else:
+                usage_line = f"{in_k:.0f}K/{out_k:.0f}K tok"
+            entry = f"`{m}`\n  {price_tag}  ·  {usage_line}"
+        else:
+            entry = f"`{m}`\n  {price_tag}  ·  _no usage_"
+
+        if m.startswith("anthropic-"):
+            groups["🟣 Anthropic"].append(entry)
+        elif m.startswith("openai-"):
+            groups["🟢 OpenAI"].append(entry)
+        else:
+            groups["🌊 DigitalOcean"].append(entry)
+
+    lines = ["*📊 Model Pricing & Usage*\n"]
+    for provider, entries in groups.items():
+        lines.append(f"*{provider}*")
+        lines.extend(entries)
+        lines.append("")
+
+    lines.append(f"💰 *Total estimated spend: ${total_cost:.4f}*")
+    if total_in or total_out:
+        lines.append(f"📤 {total_in/1000:.0f}K in · {total_out/1000:.0f}K out tokens")
+    lines.append("\n_~ = estimated price, not yet confirmed on DO docs_")
+
+    text = "\n".join(lines)
+    for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
+        await update.message.reply_text(chunk, parse_mode="Markdown")
 
 
 async def handle_model_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -929,11 +948,15 @@ async def handle_model_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     mem.set_config("current_model", model_name)
     await query.answer(f"✅ Switched to {model_name}", show_alert=False)
 
-    # Update the message to show the new active model
+    # Edit the existing message in-place to reflect the new active model
     try:
-        await cmd_models(update, context)
+        await query.edit_message_text(
+            f"*Select a model* — ✅ = active\n\nCurrent: `{model_name}`\n\nSee /usage for pricing & token stats.",
+            reply_markup=_build_models_keyboard(model_name),
+            parse_mode="Markdown",
+        )
     except Exception as e:
-        logger.warning(f"cmd_models re-call failed: {e}")
+        logger.warning(f"handle_model_button edit failed: {e}")
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1039,7 +1062,7 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     model = get_current_model()
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     try:
-        response = _llm_call(
+        response = await _llm_call(
             model=model,
             messages=[
                 {"role": "system", "content": PLAN_PROMPT},
@@ -1082,7 +1105,7 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await _send_queued_media(update, agent_media)
                 return
 
-            response = _llm_call(
+            response = await _llm_call(
                 model=model, messages=messages, temperature=0.2, max_tokens=4096
             )
             # Track token usage per model
@@ -1347,6 +1370,7 @@ def main():
     app.add_handler(CommandHandler("stop",    cmd_stop))
     app.add_handler(CommandHandler("plan",    cmd_plan))
     app.add_handler(CommandHandler("agent",   cmd_agent))
+    app.add_handler(CommandHandler("usage",   cmd_usage))
     app.add_handler(CallbackQueryHandler(handle_model_button, pattern="^model_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
