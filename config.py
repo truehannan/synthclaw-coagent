@@ -52,6 +52,7 @@ AVAILABLE_MODELS = [
 
 MAX_TOOL_ITERATIONS = 200
 MAX_HISTORY_MESSAGES = 20
+CHECKPOINT_EVERY = 25          # save state + show Continue button after this many loop iterations
 
 # ── Model pricing (USD per 1M tokens) ──────────────────────────────────────
 # (in, out) = confirmed pricing from DO docs / provider published rates

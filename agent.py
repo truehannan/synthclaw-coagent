@@ -38,22 +38,20 @@ client = OpenAI(api_key=cfg.OPENAI_API_KEY, base_url=cfg.OPENAI_API_BASE)
 # Active task tracking — allows /stop to interrupt a running agent loop
 ACTIVE_TASKS: dict[int, bool] = {}  # chat_id -> is_running
 
+# Sentinel returned by run_agent when it saves state and pauses for user input
+CHECKPOINT_SIGNAL = "__CHECKPOINT__"
+
 
 async def _llm_call(**kwargs):
-    """Async LLM call with *infinite* retry and exponential backoff.
+    """Async LLM call — runs in a thread so the event loop stays free.
 
-    - Runs the blocking SDK call in a thread (asyncio.to_thread) so the event
-      loop stays free for /stop and other messages during retries.
-    - Transient errors (timeouts, rate-limits, 5xx, network) → retry forever,
-      backoff doubles each attempt: 5 → 10 → 30 → 60 → 300 s (cap).
-    - Permanent errors (401 Unauthorized, 403 Forbidden, 404 Not Found) →
-      raised immediately — retrying won't help.
+    Retries up to 4 times on transient errors (timeouts, rate-limits, 5xx)
+    with doubling backoff: 5 → 15 → 30 → 60 s.
+    Hard-fails immediately on 401 / 403 / 404 (auth / not-found).
     """
     NON_RETRYABLE = {401, 403, 404}
-    backoff = 5
-    attempt = 0
-    while True:
-        attempt += 1
+    delays = [5, 15, 30, 60]
+    for attempt, delay in enumerate(delays, 1):
         try:
             return await asyncio.to_thread(client.chat.completions.create, **kwargs)
         except Exception as e:
@@ -64,12 +62,14 @@ async def _llm_call(**kwargs):
             if status in NON_RETRYABLE:
                 logger.error(f"Non-retryable LLM error (HTTP {status}): {e}")
                 raise
+            if attempt == len(delays):
+                logger.error(f"LLM failed after {attempt} attempts: {e}")
+                raise
             logger.warning(
-                f"⏳ LLM error (attempt {attempt}), retrying in {backoff}s — "
+                f"⏳ LLM error (attempt {attempt}/{len(delays)}), retrying in {delay}s — "
                 f"{type(e).__name__}: {e}"
             )
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 300)
+            await asyncio.sleep(delay)
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────
@@ -553,27 +553,45 @@ def get_current_model() -> str:
 
 # ── Core agent loop ───────────────────────────────────────────────────────────
 
-async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -> tuple[str, list[dict]]:
+async def run_agent(
+    chat_id: int,
+    user_message: str,
+    model: str,
+    send_fn=None,
+    resume_messages: list | None = None,
+    resume_step: int = 0,
+    resume_media: list | None = None,
+) -> tuple[str, list[dict]]:
     """Core agent loop. Returns (text_reply, list_of_media_to_send).
 
-    send_fn: optional async callable(str) to send intermediate progress messages.
+    send_fn: optional async callable(str) for intermediate progress messages.
+    resume_*: when set, skip context rebuild and continue from a checkpoint.
+    Returns CHECKPOINT_SIGNAL as text when the loop pauses for a Continue button.
     """
-    media_to_send: list[dict] = []
-    try:                                     # Fix #16: guard memory write failure
-        mem.save_message(chat_id, "user", user_message)
-    except Exception as me:
-        logger.error(f"mem.save_message (user) failed: {me}")
+    media_to_send: list[dict] = list(resume_media) if resume_media else []
+
+    if resume_messages is not None:
+        # Resuming from a checkpoint — use saved message history directly
+        messages = list(resume_messages)
+        mem.clear_task_state(chat_id)
+    else:
+        # Fresh start: save user message, build context
+        try:
+            mem.save_message(chat_id, "user", user_message)
+        except Exception as me:
+            logger.error(f"mem.save_message (user) failed: {me}")
+        mem.clear_task_state(chat_id)   # discard any stale checkpoint
+
+        # Smart context: summarize old messages if needed, then build enriched context
+        try:
+            _maybe_summarize(chat_id)
+            messages = _build_context(chat_id)
+        except Exception as me:
+            logger.error(f"Context build failed: {me}")
+            messages = [{"role": "system", "content": SYSTEM_PROMPT.format(tools=get_tools_description())}]
 
     # Mark task as active (can be stopped via /stop)
     ACTIVE_TASKS[chat_id] = True
-
-    # Smart context: summarize old messages if needed, then build enriched context
-    try:                                     # Fix #16: guard summarize/context build
-        _maybe_summarize(chat_id)
-        messages = _build_context(chat_id)
-    except Exception as me:
-        logger.error(f"Context build failed: {me}")
-        messages = [{"role": "system", "content": SYSTEM_PROMPT.format(tools=get_tools_description())}]
 
     for iteration in range(cfg.MAX_TOOL_ITERATIONS):
         # Check if user sent /stop
@@ -581,6 +599,15 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
             logger.info(f"Task stopped by user at iteration {iteration+1}")
             mem.save_message(chat_id, "assistant", "🛑 Task stopped by user.")
             return "🛑 Task stopped.", media_to_send
+
+        # ── Checkpoint: pause and offer Continue button ────────────────────────────
+        global_step = resume_step + iteration
+        if iteration > 0 and global_step % cfg.CHECKPOINT_EVERY == 0:
+            mem.save_task_state(chat_id, messages, media_to_send, model, global_step)
+            ACTIVE_TASKS.pop(chat_id, None)
+            logger.info(f"Checkpoint reached at global step {global_step} for chat {chat_id}")
+            return CHECKPOINT_SIGNAL, media_to_send
+        # ─────────────────────────────────────────────────────────────────
 
         try:
             response = await _llm_call(
@@ -590,8 +617,12 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
                 max_tokens=4096,
             )
         except Exception as e:
-            logger.error(f"LLM error: {e}")
+            logger.error(f"LLM error at step {global_step}: {e}")
             ACTIVE_TASKS.pop(chat_id, None)
+            # If we've done some work already, save state so user can Continue
+            if iteration > 0:
+                mem.save_task_state(chat_id, messages, media_to_send, model, global_step)
+                return CHECKPOINT_SIGNAL, media_to_send
             return f"❌ LLM error: {e}", media_to_send
 
         # Track token usage per model
@@ -740,19 +771,47 @@ async def run_agent(chat_id: int, user_message: str, model: str, send_fn=None) -
             ACTIVE_TASKS.pop(chat_id, None)
             return clean_reply, media_to_send
 
+    # Hit MAX_TOOL_ITERATIONS — save state so user can Continue
+    mem.save_task_state(chat_id, messages, media_to_send, model, resume_step + cfg.MAX_TOOL_ITERATIONS)
     ACTIVE_TASKS.pop(chat_id, None)
-    return (
-        "⚠️ *Task stopped — too many steps reached (40 tool calls)*\n\n"
-        "The agent ran 40 steps on this task without finishing. "
-        "This usually means it got stuck in a loop or the task is too complex to complete in one go.\n\n"
-        "What you can do:\n"
-        "• /stop — Stop the current task\n"
-        "• /clear — Reset the conversation and try a simpler or shorter instruction\n"
-        "• Break your task into smaller parts and send them one at a time"
-    ), media_to_send
+    return CHECKPOINT_SIGNAL, media_to_send
 
 
 # ── Telegram command handlers ─────────────────────────────────────────────────
+async def _send_media_to_chat(context: ContextTypes.DEFAULT_TYPE, chat_id: int, media_items: list[dict]):
+    """Send queued media using context.bot directly (for callback / non-message contexts)."""
+    for item in media_items:
+        path = item.get("path")
+        if not path or not Path(path).exists():
+            continue
+        media_type = item.get("type", "document")
+        caption = item.get("caption", "")
+        try:
+            with open(path, "rb") as f:
+                if media_type == "photo":
+                    await context.bot.send_photo(chat_id, f, caption=caption[:1024] or None)
+                elif media_type == "video":
+                    await context.bot.send_video(chat_id, f, caption=caption[:1024] or None)
+                elif media_type == "audio":
+                    await context.bot.send_audio(chat_id, f, caption=caption[:1024] or None)
+                elif media_type == "voice":
+                    await context.bot.send_voice(chat_id, f, caption=caption[:1024] or None)
+                else:
+                    await context.bot.send_document(chat_id, f, caption=caption[:1024] or None)
+        except Exception as e:
+            logger.error(f"Failed to send media {path}: {e}")
+            await context.bot.send_message(chat_id, f"⚠️ Couldn't send file: {e}")
+
+
+def _continue_button(chat_id: int, step: int) -> InlineKeyboardMarkup:
+    """Build the Continue inline keyboard for a checkpoint."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            f"▶️ Continue (step {step} done)",
+            callback_data=f"cont_{chat_id}",
+        )
+    ]])
+
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -922,6 +981,58 @@ async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "\n".join(lines)
     for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
         await update.message.reply_text(chunk, parse_mode="Markdown")
+
+
+async def handle_continue_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Resume an agent task that was paused at a checkpoint."""
+    query = update.callback_query
+    if not is_owner(query.from_user.id):
+        await query.answer("Unauthorized", show_alert=True)
+        return
+
+    chat_id = query.message.chat_id
+    state = mem.load_task_state(chat_id)
+    if not state:
+        await query.answer("No paused task found.", show_alert=True)
+        return
+
+    await query.answer()
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)  # remove Continue button
+    except Exception:
+        pass
+
+    model    = state["model"]
+    msgs     = state["messages"]
+    step     = state["step_count"]
+    saved_media = state["media"]
+
+    await context.bot.send_message(chat_id, f"▶️ Resuming from step {step}…")
+    await context.bot.send_chat_action(chat_id, "typing")
+
+    async def _send(text):
+        for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
+            await context.bot.send_message(chat_id, chunk)
+        await context.bot.send_chat_action(chat_id, "typing")
+
+    reply, media_items = await run_agent(
+        chat_id, "", model, send_fn=_send,
+        resume_messages=msgs, resume_step=step, resume_media=saved_media,
+    )
+
+    if reply == CHECKPOINT_SIGNAL:
+        new_state = mem.load_task_state(chat_id)
+        new_step = new_state["step_count"] if new_state else step + cfg.CHECKPOINT_EVERY
+        await context.bot.send_message(
+            chat_id,
+            f"⏸️ Paused at step {new_step} — tap to keep going.",
+            reply_markup=_continue_button(chat_id, new_step),
+        )
+    elif reply and reply.strip():
+        for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
+            await context.bot.send_message(chat_id, chunk)
+
+    await _send_media_to_chat(context, chat_id, media_items)
 
 
 async def handle_model_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1217,6 +1328,11 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Media helpers ─────────────────────────────────────────────────────────────
 
 async def _send_queued_media(update: Update, media_items: list[dict]):
+    """Send media queued by tools. Uses update.message.reply_* (for message contexts)."""
+    await _send_media_to_chat_by_update(update, media_items)
+
+
+async def _send_media_to_chat_by_update(update: Update, media_items: list[dict]):
     """Send all queued media files to the user after the text reply."""
     for item in media_items:
         path = item.get("path", "")
@@ -1259,12 +1375,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         reply, media_items = await run_agent(chat_id, update.message.text, model, send_fn=_send)
-        if not reply or not reply.strip():
-            reply = "_(got an empty response — try rephrasing or /clear to reset history)_"
-        # Telegram message limit is 4096 chars
-        for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
-            await update.message.reply_text(chunk)
-        # Send any queued media
+        if reply == CHECKPOINT_SIGNAL:
+            state = mem.load_task_state(chat_id)
+            step = state["step_count"] if state else "?"
+            await update.message.reply_text(
+                f"⏸️ Task paused after {step} steps — tap the button to keep going.",
+                reply_markup=_continue_button(chat_id, step),
+            )
+        else:
+            if not reply or not reply.strip():
+                reply = "_(got an empty response — try rephrasing or /clear to reset history)_"
+            for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
+                await update.message.reply_text(chunk)
         await _send_queued_media(update, media_items)
     except Exception as e:
         logger.error(f"handle_message error: {e}", exc_info=True)
@@ -1341,10 +1463,18 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         reply, media_items = await run_agent(chat_id, desc, model, send_fn=_send)
-        if not reply or not reply.strip():
-            reply = f"📎 Got your {media_type}! Saved as `{filename}`"
-        for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
-            await update.message.reply_text(chunk)
+        if reply == CHECKPOINT_SIGNAL:
+            state = mem.load_task_state(chat_id)
+            step = state["step_count"] if state else "?"
+            await update.message.reply_text(
+                f"⏸️ Task paused after {step} steps — tap Continue to resume.",
+                reply_markup=_continue_button(chat_id, step),
+            )
+        else:
+            if not reply or not reply.strip():
+                reply = f"📎 Got your {media_type}! Saved as `{filename}`"
+            for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
+                await update.message.reply_text(chunk)
         await _send_queued_media(update, media_items)
     except Exception as e:
         logger.error(f"handle_media error: {e}", exc_info=True)
@@ -1371,6 +1501,7 @@ def main():
     app.add_handler(CommandHandler("plan",    cmd_plan))
     app.add_handler(CommandHandler("agent",   cmd_agent))
     app.add_handler(CommandHandler("usage",   cmd_usage))
+    app.add_handler(CallbackQueryHandler(handle_continue_button, pattern=r"^cont_"))
     app.add_handler(CallbackQueryHandler(handle_model_button, pattern="^model_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 

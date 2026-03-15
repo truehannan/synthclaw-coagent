@@ -62,6 +62,14 @@ def init_db():
             output_tokens INTEGER DEFAULT 0,
             ts            DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS task_state (
+            chat_id    INTEGER PRIMARY KEY,
+            messages   TEXT NOT NULL,
+            media      TEXT NOT NULL,
+            model      TEXT NOT NULL,
+            step_count INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
     """)
     conn.commit()
     conn.close()
@@ -96,6 +104,50 @@ def clear_history(chat_id: int):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("DELETE FROM messages WHERE chat_id=?", (chat_id,))
+    conn.commit()
+    conn.close()
+
+
+# ── Task state (checkpoint / resume) ──────────────────────────────────────
+
+def save_task_state(chat_id: int, messages: list, media: list, model: str, step_count: int):
+    """Persist an in-progress agent loop so it can be resumed after a checkpoint."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR REPLACE INTO task_state (chat_id, messages, media, model, step_count)"
+        " VALUES (?,?,?,?,?)",
+        (chat_id, json.dumps(messages), json.dumps(media), model, step_count),
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_task_state(chat_id: int) -> dict | None:
+    """Return saved task state or None if nothing is saved for this chat."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT messages, media, model, step_count FROM task_state WHERE chat_id=?",
+        (chat_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "messages":   json.loads(row[0]),
+        "media":      json.loads(row[1]),
+        "model":      row[2],
+        "step_count": row[3],
+    }
+
+
+def clear_task_state(chat_id: int):
+    """Remove any saved checkpoint for this chat (called on fresh start or successful finish)."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM task_state WHERE chat_id=?", (chat_id,))
     conn.commit()
     conn.close()
 
