@@ -45,12 +45,12 @@ CHECKPOINT_SIGNAL = "__CHECKPOINT__"
 async def _llm_call(**kwargs):
     """Async LLM call — runs in a thread so the event loop stays free.
 
-    Retries up to 4 times on transient errors (timeouts, rate-limits, 5xx)
-    with doubling backoff: 5 → 15 → 30 → 60 s.
+    Retries transient errors (timeouts, rate-limits, 5xx) with bounded backoff.
+    Schedule: 5 → 15 → 30 → 60 → 120 → 180 s.
     Hard-fails immediately on 401 / 403 / 404 (auth / not-found).
     """
     NON_RETRYABLE = {401, 403, 404}
-    delays = [5, 15, 30, 60]
+    delays = [5, 15, 30, 60, 120, 180]
     for attempt, delay in enumerate(delays, 1):
         try:
             return await asyncio.to_thread(client.chat.completions.create, **kwargs)
@@ -680,8 +680,8 @@ async def run_agent(
         except Exception as e:
             logger.error(f"LLM error at step {global_step}: {e}")
             ACTIVE_TASKS.pop(chat_id, None)
-            # If we've done some work already, save state so user can Continue
-            if iteration > 0:
+            # If we've done some work already (including resumed tasks), save state so user can Continue
+            if iteration > 0 or resume_step > 0:
                 mem.save_task_state(chat_id, messages, media_to_send, model, global_step)
                 return CHECKPOINT_SIGNAL, media_to_send
             return f"❌ LLM error: {e}", media_to_send
@@ -720,7 +720,7 @@ async def run_agent(
                 )
 
                 # Give the model a chance to recover strategy before pausing
-                if count <= 3:
+                if count <= 8:
                     messages.append({"role": "assistant", "content": reply})
                     messages.append({
                         "role": "user",
@@ -728,7 +728,9 @@ async def run_agent(
                             "You just repeated the exact same tool call payload. "
                             "Do NOT repeat identical arguments again. "
                             "Analyze the last tool_result, explain the failure briefly, "
-                            "then choose a different next action or ask a concise clarification."
+                            "then choose a different next action. "
+                            "For large code/file tasks, continue in strict order and split work into smaller chunks "
+                            "instead of resending the same full payload."
                         ),
                     })
                     continue
