@@ -332,15 +332,41 @@ def _parse_tool_calls(reply: str) -> list[tuple[str, dict]]:
     tool_names = set(TOOL_REGISTRY.keys())
     results = []
 
-    def _x(raw: str):
+    def _normalize_name(name: str) -> str:
+        if not name:
+            return ""
+        name = name.strip()
+        if name.startswith("functions."):
+            name = name.split(".", 1)[1]
+        if ":" in name:
+            name = name.split(":", 1)[0]
+        return name
+
+    def _x(raw: str, explicit_name: str | None = None):
         try:
             p = json.loads(raw.strip())
-            n = p.get("name", "")
+            n = _normalize_name(explicit_name or p.get("name", ""))
             if n and n in tool_names:
                 return n, p.get("arguments", {})
         except (json.JSONDecodeError, AttributeError):
             pass
         return None
+
+    # 0. Tokenized tool-call format (e.g. <|tool_call_begin|> functions.xxx:1 ...)
+    token_pattern = re.compile(
+        r"<\|tool_call_begin\|>\s*([^\s]+)\s*"
+        r"<\|tool_call_argument_begin\|>\s*(\{[\s\S]*?\})\s*"
+        r"<\|tool_call_end\|>",
+        re.DOTALL,
+    )
+    for m in token_pattern.finditer(reply):
+        name_raw = m.group(1)
+        args_raw = m.group(2)
+        r = _x(args_raw, explicit_name=name_raw)
+        if r:
+            results.append(r)
+    if results:
+        return results
 
     # 1. All closed <tool_call> tags
     for m in re.finditer(r"<tool_call>\s*(.*?)\s*</tool_call>", reply, re.DOTALL):
@@ -386,13 +412,32 @@ def _extract_pre_tool_text(reply: str) -> str:
     """Extract conversational text before the first <tool_call> tag.
     Strips out <think> blocks — those are internal, not for the user.
     """
-    idx = reply.find("<tool_call>")
+    idx_candidates = [i for i in (
+        reply.find("<tool_call>"),
+        reply.find("<|tool_call_begin|>"),
+        reply.find("<|tool_calls_section_begin|>"),
+    ) if i >= 0]
+    idx = min(idx_candidates) if idx_candidates else -1
     if idx <= 0:
         return ""
     text = reply[:idx].strip()
     text = _strip_think_block(text)
     text = text.rstrip("`\n ")
     return text if len(text) > 3 else ""
+
+
+def _contains_tool_markup(reply: str) -> bool:
+    if not reply:
+        return False
+    markers = (
+        "<tool_call>",
+        "</tool_call>",
+        "<|tool_call_begin|>",
+        "<|tool_call_argument_begin|>",
+        "<|tool_calls_section_begin|>",
+        "<|tool_calls_section_end|>",
+    )
+    return any(m in reply for m in markers)
 
 
 # ── Smart context (MD file system) ────────────────────────────────────────────
@@ -747,14 +792,14 @@ async def run_agent(
             })
         else:
             # Guardrail: never surface raw <tool_call> payloads to user if parse failed
-            if "<tool_call>" in reply or "</tool_call>" in reply:
+            if _contains_tool_markup(reply):
                 logger.warning("Tagged tool_call detected but parse failed; asking model to retry valid tool JSON")
                 messages.append({"role": "assistant", "content": reply})
                 messages.append({
                     "role": "user",
                     "content": (
                         "Your last reply looked like a tool call but was invalid/truncated and could not be parsed. "
-                        "Retry with ONLY a valid <tool_call> JSON using a known tool name from the tool list. "
+                        "Retry with ONLY a valid tool call JSON using a known tool name from the tool list. "
                         "Do not include extra prose."
                     ),
                 })
@@ -1292,14 +1337,14 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 })
             else:
                 # Guardrail: never send raw tagged tool payloads to chat
-                if "<tool_call>" in reply or "</tool_call>" in reply:
+                if _contains_tool_markup(reply):
                     logger.warning("[/agent] Tagged tool_call detected but parse failed; forcing retry")
                     messages.append({"role": "assistant", "content": reply})
                     messages.append({
                         "role": "user",
                         "content": (
                             "Your last reply looked like a tool call but was invalid/truncated and could not be parsed. "
-                            "Retry with ONLY a valid <tool_call> JSON using a known tool name from the tool list."
+                            "Retry with ONLY a valid tool call JSON using a known tool name from the tool list."
                         ),
                     })
                     continue
