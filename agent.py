@@ -400,6 +400,22 @@ def _strip_think_block(text: str) -> str:
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
+def _strip_internal_markup(text: str) -> str:
+    """Remove internal tool-call markup so it never leaks to the user."""
+    if not text:
+        return ""
+    cleaned = _strip_think_block(text)
+    cleaned = re.sub(r"<tool_call>.*?</tool_call>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<\|tool_call_begin\|>[\s\S]*?<\|tool_call_end\|>", "", cleaned, flags=re.DOTALL)
+    cleaned = cleaned.replace("<|tool_calls_section_begin|>", "")
+    cleaned = cleaned.replace("<|tool_calls_section_end|>", "")
+    cleaned = cleaned.replace("<|tool_call_begin|>", "")
+    cleaned = cleaned.replace("<|tool_call_argument_begin|>", "")
+    cleaned = cleaned.replace("<|tool_call_end|>", "")
+    return cleaned.strip()
+
+
 def _extract_think_block(reply: str) -> str:
     """Extract the content of the <think> block for logging."""
     if not reply:                            # Fix #18: guard None/empty
@@ -685,30 +701,51 @@ async def run_agent(
         if think_content:
             logger.info(f"🧠 Think [{iteration+1}]: {think_content[:300]}")
 
-        logger.info(f"LLM reply [{iteration+1}]: {_strip_think_block(reply)[:300]!r}")
+        logger.info(f"LLM reply [{iteration+1}]: {_strip_internal_markup(reply)[:300]!r}")
 
         # Detect tool calls (handles tagged AND bare JSON; supports multiple)
         tool_calls = _parse_tool_calls(reply)
 
-        # Anti-loop detection: if the model sends the exact same tool calls twice in a row, break
+        # Anti-loop detection: if identical tool calls repeat, steer model first; pause only after repeated duplicates
         if tool_calls and iteration > 0:
             current_sig = str([(tc[0], json.dumps(tc[1], sort_keys=True)) for tc in tool_calls])
             if hasattr(run_agent, '_last_tool_sig') and run_agent._last_tool_sig.get(chat_id) == current_sig:
-                logger.warning(f"Anti-loop: identical tool calls detected at iteration {iteration+1}, breaking loop")
-                clean_reply = _strip_think_block(reply)
-                error_msg = (
-                    "⚠️ I detected I was about to repeat the same action. "
-                    "Something isn't working as expected. Here's where I got stuck:\n\n"
-                    + (clean_reply[:500] if clean_reply else "(no text in response)")
+                if not hasattr(run_agent, '_repeat_tool_sig_count'):
+                    run_agent._repeat_tool_sig_count = {}
+                count = run_agent._repeat_tool_sig_count.get(chat_id, 1) + 1
+                run_agent._repeat_tool_sig_count[chat_id] = count
+                logger.warning(
+                    f"Anti-loop: identical tool calls detected at iteration {iteration+1} "
+                    f"(repeat {count})"
                 )
-                mem.save_message(chat_id, "assistant", error_msg)
+
+                # Give the model a chance to recover strategy before pausing
+                if count <= 3:
+                    messages.append({"role": "assistant", "content": reply})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You just repeated the exact same tool call payload. "
+                            "Do NOT repeat identical arguments again. "
+                            "Analyze the last tool_result, explain the failure briefly, "
+                            "then choose a different next action or ask a concise clarification."
+                        ),
+                    })
+                    continue
+
+                # Still looping after steering -> checkpoint pause (safe, resumable, no payload leak)
+                mem.save_task_state(chat_id, messages, media_to_send, model, global_step)
                 ACTIVE_TASKS.pop(chat_id, None)
-                return error_msg, media_to_send
+                return CHECKPOINT_SIGNAL, media_to_send
             if not hasattr(run_agent, '_last_tool_sig'):
                 run_agent._last_tool_sig = {}
             run_agent._last_tool_sig[chat_id] = current_sig
+            if hasattr(run_agent, '_repeat_tool_sig_count'):
+                run_agent._repeat_tool_sig_count[chat_id] = 1
         elif not tool_calls and hasattr(run_agent, '_last_tool_sig'):
             run_agent._last_tool_sig.pop(chat_id, None)
+            if hasattr(run_agent, '_repeat_tool_sig_count'):
+                run_agent._repeat_tool_sig_count.pop(chat_id, None)
 
         logger.info(
             f"parse_tool_calls -> {len(tool_calls)} tool(s): "
@@ -806,7 +843,7 @@ async def run_agent(
                 continue
 
             # Final reply — strip any <think> block before sending
-            clean_reply = _strip_think_block(reply)
+            clean_reply = _strip_internal_markup(reply)
             if not clean_reply:              # Fix #11/#14: guard empty final reply
                 clean_reply = "Done."
             try:                             # Fix #16: guard memory write failure
@@ -1349,7 +1386,7 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     })
                     continue
 
-                clean_reply = _strip_think_block(reply) if reply else "Done."
+                clean_reply = _strip_internal_markup(reply) if reply else "Done."
                 if not clean_reply:
                     clean_reply = "Done."
                 for chunk in [clean_reply[i:i+4000] for i in range(0, len(clean_reply), 4000)]:
