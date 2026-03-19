@@ -50,9 +50,13 @@ PENDING_PROVIDER_KEY_PREFIX = "pending_provider_key_"
 
 PROVIDER_META = {
     "DigitalOcean": {"slug": "do", "emoji": "🌊"},
+    "Anthropic": {"slug": "an", "emoji": "🟣"},
+    "OpenAI": {"slug": "oa", "emoji": "🟢"},
     "OpenRouter": {"slug": "or", "emoji": "🧭"},
     "GitHub": {"slug": "gh", "emoji": "🐙"},
 }
+OPENAI_DIRECT_API_BASE = "https://api.openai.com/v1"
+DO_MODELS_CACHE: dict[str, object] = {"ts": 0.0, "models": set()}
 
 
 def _provider_from_model(model: str) -> str:
@@ -60,6 +64,10 @@ def _provider_from_model(model: str) -> str:
         return "OpenRouter"
     if model.startswith("github:"):
         return "GitHub"
+    if model.startswith("anthropic-"):
+        return "Anthropic"
+    if model.startswith("openai-"):
+        return "OpenAI"
     return "DigitalOcean"
 
 
@@ -68,6 +76,10 @@ def _provider_key_name(provider: str) -> str:
         return "OPENROUTER_API_KEY"
     if provider == "GitHub":
         return "GITHUB_MODELS_API_KEY"
+    if provider == "OpenAI":
+        return "OPENAI_PROVIDER_API_KEY"
+    if provider == "Anthropic":
+        return "ANTHROPIC_API_KEY"
     return "OPENAI_API_KEY"
 
 
@@ -76,13 +88,44 @@ def _provider_base_url(provider: str) -> str:
         return cfg.OPENROUTER_API_BASE
     if provider == "GitHub":
         return cfg.GITHUB_MODELS_API_BASE
+    if provider == "OpenAI":
+        return OPENAI_DIRECT_API_BASE
     return cfg.OPENAI_API_BASE
 
 
 def _provider_fallback_key(provider: str) -> str | None:
-    if provider == "DigitalOcean":
+    if provider in ("DigitalOcean", "Anthropic", "OpenAI"):
         return cfg.OPENAI_API_KEY
     return None
+
+
+def _get_do_available_models() -> set[str] | None:
+    """Return available model IDs from DigitalOcean endpoint (cached)."""
+    now = time.time()
+    if now - float(DO_MODELS_CACHE.get("ts", 0.0)) < 300:
+        models = DO_MODELS_CACHE.get("models")
+        return set(models) if isinstance(models, set) else None
+    try:
+        c = OpenAI(api_key=cfg.OPENAI_API_KEY, base_url=cfg.OPENAI_API_BASE)
+        data = c.models.list()
+        model_ids = {m.id for m in data.data}
+        DO_MODELS_CACHE["ts"] = now
+        DO_MODELS_CACHE["models"] = model_ids
+        return model_ids
+    except Exception as e:
+        logger.warning(f"Could not fetch DO model list: {e}")
+        return None
+
+
+def _get_provider_models(provider: str) -> list[str]:
+    models = list(cfg.MODEL_CATALOG.get(provider, []))
+    if provider != "DigitalOcean":
+        return models
+    available = _get_do_available_models()
+    if not available:
+        return models
+    filtered = [m for m in models if m in available]
+    return filtered if filtered else models
 
 
 def _resolve_client_and_model(selected_model: str) -> tuple[OpenAI, str, str]:
@@ -93,12 +136,20 @@ def _resolve_client_and_model(selected_model: str) -> tuple[OpenAI, str, str]:
     provider = _provider_from_model(selected_model)
     key_name = _provider_key_name(provider)
     api_key = mem.get_credential(key_name) or _provider_fallback_key(provider)
+
+    # Anthropic models in this bot are currently routed via Gradient endpoint.
+    # OpenAI models use direct OpenAI when OPENAI_PROVIDER_API_KEY is present,
+    # otherwise they transparently fall back to Gradient endpoint.
+    force_gradient = provider == "Anthropic" or (provider == "OpenAI" and not mem.get_credential("OPENAI_PROVIDER_API_KEY"))
+    base_provider = "DigitalOcean" if force_gradient else provider
+    if force_gradient:
+        api_key = cfg.OPENAI_API_KEY
     if not api_key:
         raise RuntimeError(
             f"Missing {provider} API key. Use /providerkey {provider.lower()} <key>"
         )
 
-    base_url = _provider_base_url(provider)
+    base_url = _provider_base_url(base_provider)
     cache_key = (base_url, api_key)
     if cache_key not in CLIENT_CACHE:
         CLIENT_CACHE[cache_key] = OpenAI(api_key=api_key, base_url=base_url)
@@ -107,6 +158,8 @@ def _resolve_client_and_model(selected_model: str) -> tuple[OpenAI, str, str]:
         api_model = selected_model.split(":", 1)[1]
     elif provider == "GitHub":
         api_model = selected_model.split(":", 1)[1]
+    elif provider == "OpenAI" and not force_gradient:
+        api_model = selected_model.replace("openai-", "", 1)
     else:
         api_model = selected_model
 
@@ -648,6 +701,10 @@ def _pending_provider_key_cfg(chat_id: int) -> str:
 
 def _providerkey_name(provider: str) -> str | None:
     p = provider.lower().strip()
+    if p in ("anthropic", "an"):
+        return "ANTHROPIC_API_KEY"
+    if p in ("openai", "oa"):
+        return "OPENAI_PROVIDER_API_KEY"
     if p in ("openrouter", "or"):
         return "OPENROUTER_API_KEY"
     if p in ("github", "gh"):
@@ -664,6 +721,16 @@ def _validate_provider_key(provider: str, key: str) -> tuple[bool, str]:
         return False, "Key looks too short or invalid."
 
     p = provider.lower().strip()
+    if p in ("anthropic", "an"):
+        if not k.startswith("sk-ant-"):
+            return False, "Anthropic key should start with `sk-ant-`"
+        return True, ""
+
+    if p in ("openai", "oa"):
+        if not k.startswith("sk-"):
+            return False, "OpenAI key should start with `sk-`"
+        return True, ""
+
     if p in ("openrouter", "or"):
         if not (k.startswith("sk-or-") or k.startswith("sk-or-v1-")):
             return False, "OpenRouter key should start with `sk-or-`"
@@ -1267,7 +1334,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/model \\[name\\] — Show or switch model\n"
         "/models — Switch model via buttons\n"
         "/usage — Per\\-model pricing & token usage\n"
-        "/providerkey \\<provider\\> \\<key\\> — Save provider API key\n"
+        "/providerkey — Add provider key via popup\n"
         "/status — Show running services\n"
         "/creds — List stored credentials\n"
         "/storekey \\<NAME\\> \\<VALUE\\> — Store a key directly \\(bypasses AI\\)\n"
@@ -1338,7 +1405,7 @@ def _build_provider_keyboard(current: str) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for provider in cfg.MODEL_CATALOG.keys():
         meta = PROVIDER_META.get(provider, {"emoji": "•", "slug": "do"})
-        count = len(cfg.MODEL_CATALOG.get(provider, []))
+        count = len(_get_provider_models(provider))
         active = " ✅" if provider == current_provider else ""
         rows.append([
             InlineKeyboardButton(
@@ -1350,7 +1417,7 @@ def _build_provider_keyboard(current: str) -> InlineKeyboardMarkup:
 
 
 def _build_provider_models_keyboard(current: str, provider: str) -> InlineKeyboardMarkup:
-    provider_models = cfg.MODEL_CATALOG.get(provider, [])
+    provider_models = _get_provider_models(provider)
     rows: list[list[InlineKeyboardButton]] = []
     for model in provider_models:
         marker = "✅ " if model == current else ""
@@ -1385,6 +1452,8 @@ async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     groups: dict[str, list[str]] = {
         "🌊 DigitalOcean": [],
+        "🟣 Anthropic": [],
+        "🟢 OpenAI": [],
         "🧭 OpenRouter": [],
         "🐙 GitHub": [],
     }
@@ -1416,7 +1485,11 @@ async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
             entry = f"`{_model_display_name(m)}`\n  {price_tag}  ·  _no usage_"
 
         provider = _provider_from_model(m)
-        if provider == "OpenRouter":
+        if provider == "Anthropic":
+            groups["🟣 Anthropic"].append(entry)
+        elif provider == "OpenAI":
+            groups["🟢 OpenAI"].append(entry)
+        elif provider == "OpenRouter":
             groups["🧭 OpenRouter"].append(entry)
         elif provider == "GitHub":
             groups["🐙 GitHub"].append(entry)
@@ -1578,6 +1651,8 @@ async def cmd_providerkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not context.args:
         kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🟣 Anthropic", callback_data="pkey_anthropic")],
+            [InlineKeyboardButton("🟢 OpenAI", callback_data="pkey_openai")],
             [InlineKeyboardButton("🧭 OpenRouter", callback_data="pkey_openrouter")],
             [InlineKeyboardButton("🐙 GitHub", callback_data="pkey_github")],
             [InlineKeyboardButton("🌊 DigitalOcean", callback_data="pkey_do")],
@@ -1592,7 +1667,7 @@ async def cmd_providerkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Backward-compatible fast path: /providerkey <provider> <key>
     if len(context.args) < 2:
-        await update.message.reply_text("Usage: /providerkey <openrouter|github|do> <key>")
+        await update.message.reply_text("Usage: /providerkey <anthropic|openai|openrouter|github|do> <key>")
         return
 
     provider = context.args[0].strip().lower()
@@ -1600,7 +1675,7 @@ async def cmd_providerkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     key_name = _providerkey_name(provider)
     if not key_name:
-        await update.message.reply_text("Unknown provider. Use one of: openrouter, github, do")
+        await update.message.reply_text("Unknown provider. Use: anthropic, openai, openrouter, github, do")
         return
 
     ok, reason = _validate_provider_key(provider, key)

@@ -26,6 +26,15 @@ MODEL_CATALOG = {
         "minimax-m2.5",
         "openai-gpt-oss-20b",
         "openai-gpt-oss-120b",
+        # Keep overlaps available in Gradient too when endpoint supports them
+        "anthropic-claude-sonnet-4",
+        "openai-gpt-4o",
+        # Optional additions: shown only if endpoint reports availability
+        "google-gemini-2.0-flash-001",
+        "xai-grok-3",
+        "xai-grok-3-mini",
+    ],
+    "Anthropic": [
         "anthropic-claude-haiku-4.5",
         "anthropic-claude-sonnet-4",
         "anthropic-claude-4.5-sonnet",
@@ -34,6 +43,8 @@ MODEL_CATALOG = {
         "anthropic-claude-opus-4.5",
         "anthropic-claude-opus-4.6",
         "anthropic-claude-4.1-opus",
+    ],
+    "OpenAI": [
         "openai-gpt-4o-mini",
         "openai-gpt-4o",
         "openai-gpt-4.1",
@@ -98,6 +109,10 @@ MODEL_PRICING: dict[str, tuple[float, float]] = {
     # OpenAI OSS ~ open source tier pricing
     "openai-gpt-oss-20b":           (0.20, 0.40),
     "openai-gpt-oss-120b":          (1.00, 3.00),
+    # Gemini / Grok in Gradient (estimated unless provider publishes exact DO rates)
+    "google-gemini-2.0-flash-001":  (0.40, 1.20),
+    "xai-grok-3":                   (5.00, 15.00),
+    "xai-grok-3-mini":              (1.00, 3.00),
     # ── Anthropic (confirmed from DO pricing page) ───────────
     "anthropic-claude-haiku-4.5":   (0.80,  4.00),
     "anthropic-claude-sonnet-4":    (3.00, 15.00),
