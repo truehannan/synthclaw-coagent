@@ -34,12 +34,77 @@ mem.init_db()
 cfg.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
 client = OpenAI(api_key=cfg.OPENAI_API_KEY, base_url=cfg.OPENAI_API_BASE)
+CLIENT_CACHE: dict[tuple[str, str], OpenAI] = {}
 
 # Active task tracking — allows /stop to interrupt a running agent loop
 ACTIVE_TASKS: dict[int, bool] = {}  # chat_id -> is_running
 
 # Sentinel returned by run_agent when it saves state and pauses for user input
 CHECKPOINT_SIGNAL = "__CHECKPOINT__"
+
+PROVIDER_META = {
+    "DigitalOcean": {"slug": "do", "emoji": "🌊"},
+    "OpenRouter": {"slug": "or", "emoji": "🧭"},
+    "GitHub": {"slug": "gh", "emoji": "🐙"},
+}
+
+
+def _provider_from_model(model: str) -> str:
+    if model.startswith("openrouter:"):
+        return "OpenRouter"
+    if model.startswith("github:"):
+        return "GitHub"
+    return "DigitalOcean"
+
+
+def _provider_key_name(provider: str) -> str:
+    if provider == "OpenRouter":
+        return "OPENROUTER_API_KEY"
+    if provider == "GitHub":
+        return "GITHUB_MODELS_API_KEY"
+    return "OPENAI_API_KEY"
+
+
+def _provider_base_url(provider: str) -> str:
+    if provider == "OpenRouter":
+        return cfg.OPENROUTER_API_BASE
+    if provider == "GitHub":
+        return cfg.GITHUB_MODELS_API_BASE
+    return cfg.OPENAI_API_BASE
+
+
+def _provider_fallback_key(provider: str) -> str | None:
+    if provider == "DigitalOcean":
+        return cfg.OPENAI_API_KEY
+    return None
+
+
+def _resolve_client_and_model(selected_model: str) -> tuple[OpenAI, str, str]:
+    """Resolve provider client + API model id from selected model id.
+
+    Returns (client, api_model, provider_name).
+    """
+    provider = _provider_from_model(selected_model)
+    key_name = _provider_key_name(provider)
+    api_key = mem.get_credential(key_name) or _provider_fallback_key(provider)
+    if not api_key:
+        raise RuntimeError(
+            f"Missing {provider} API key. Use /providerkey {provider.lower()} <key>"
+        )
+
+    base_url = _provider_base_url(provider)
+    cache_key = (base_url, api_key)
+    if cache_key not in CLIENT_CACHE:
+        CLIENT_CACHE[cache_key] = OpenAI(api_key=api_key, base_url=base_url)
+
+    if provider == "OpenRouter":
+        api_model = selected_model.split(":", 1)[1]
+    elif provider == "GitHub":
+        api_model = selected_model.split(":", 1)[1]
+    else:
+        api_model = selected_model
+
+    return CLIENT_CACHE[cache_key], api_model, provider
 
 
 async def _llm_call(**kwargs):
@@ -51,9 +116,13 @@ async def _llm_call(**kwargs):
     """
     NON_RETRYABLE = {401, 403, 404}
     delays = [5, 15, 30, 60, 120, 180]
+    selected_model = kwargs.get("model", "")
+    llm_client, api_model, provider = _resolve_client_and_model(selected_model)
+    payload = dict(kwargs)
+    payload["model"] = api_model
     for attempt, delay in enumerate(delays, 1):
         try:
-            return await asyncio.to_thread(client.chat.completions.create, **kwargs)
+            return await asyncio.to_thread(llm_client.chat.completions.create, **payload)
         except Exception as e:
             status = (
                 getattr(e, "status_code", None)
@@ -63,7 +132,7 @@ async def _llm_call(**kwargs):
                 logger.error(f"Non-retryable LLM error (HTTP {status}): {e}")
                 raise
             if attempt == len(delays):
-                logger.error(f"LLM failed after {attempt} attempts: {e}")
+                logger.error(f"LLM failed after {attempt} attempts ({provider}/{api_model}): {e}")
                 raise
             logger.warning(
                 f"⏳ LLM error (attempt {attempt}/{len(delays)}), retrying in {delay}s — "
@@ -923,6 +992,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/model \\[name\\] — Show or switch model\n"
         "/models — Switch model via buttons\n"
         "/usage — Per\\-model pricing & token usage\n"
+        "/providerkey \\<provider\\> \\<key\\> — Save provider API key\n"
         "/status — Show running services\n"
         "/creds — List stored credentials\n"
         "/storekey \\<NAME\\> \\<VALUE\\> — Store a key directly \\(bypasses AI\\)\n"
@@ -969,30 +1039,55 @@ async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Switched to `{new_model}`", parse_mode="Markdown")
 
 
-def _build_models_keyboard(current: str) -> InlineKeyboardMarkup:
-    """Build the model-selection inline keyboard. Reused by cmd_models + handle_model_button."""
-    groups: dict[str, list[InlineKeyboardButton]] = {
-        "🌊 DigitalOcean": [],
-        "🟣 Anthropic": [],
-        "🟢 OpenAI": [],
-    }
-    for m in cfg.AVAILABLE_MODELS:
-        short = m.replace("anthropic-", "").replace("openai-", "")
-        label = ("✅ " if m == current else "") + short
-        btn = InlineKeyboardButton(label, callback_data=f"model_{m}")
-        if m.startswith("anthropic-"):
-            groups["🟣 Anthropic"].append(btn)
-        elif m.startswith("openai-"):
-            groups["🟢 OpenAI"].append(btn)
-        else:
-            groups["🌊 DigitalOcean"].append(btn)
+def _provider_slug(provider: str) -> str:
+    return PROVIDER_META.get(provider, {}).get("slug", "do")
 
-    keyboard: list[list[InlineKeyboardButton]] = []
-    for provider, buttons in groups.items():
-        keyboard.append([InlineKeyboardButton(provider, callback_data="noop")])
-        for i in range(0, len(buttons), 2):
-            keyboard.append(buttons[i:i+2])
-    return InlineKeyboardMarkup(keyboard)
+
+def _provider_from_slug(slug: str) -> str:
+    for provider, meta in PROVIDER_META.items():
+        if meta.get("slug") == slug:
+            return provider
+    return "DigitalOcean"
+
+
+def _model_display_name(model: str) -> str:
+    if model.startswith("openrouter:") or model.startswith("github:"):
+        wire = model.split(":", 1)[1]
+        return wire.replace(":free", "")
+    return model
+
+
+def _build_provider_keyboard(current: str) -> InlineKeyboardMarkup:
+    current_provider = _provider_from_model(current)
+    rows: list[list[InlineKeyboardButton]] = []
+    for provider in cfg.MODEL_CATALOG.keys():
+        meta = PROVIDER_META.get(provider, {"emoji": "•", "slug": "do"})
+        count = len(cfg.MODEL_CATALOG.get(provider, []))
+        active = " ✅" if provider == current_provider else ""
+        rows.append([
+            InlineKeyboardButton(
+                f"{meta['emoji']} {provider} ({count}){active}",
+                callback_data=f"prov_{meta['slug']}",
+            )
+        ])
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_provider_models_keyboard(current: str, provider: str) -> InlineKeyboardMarkup:
+    provider_models = cfg.MODEL_CATALOG.get(provider, [])
+    rows: list[list[InlineKeyboardButton]] = []
+    for model in provider_models:
+        marker = "✅ " if model == current else ""
+        rows.append([
+            InlineKeyboardButton(
+                f"{marker}{_model_display_name(model)}",
+                callback_data=f"model_{model}",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton("⬅️ Providers", callback_data="models_home")
+    ])
+    return InlineKeyboardMarkup(rows)
 
 
 async def cmd_models(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1000,8 +1095,8 @@ async def cmd_models(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     current = get_current_model()
     await update.message.reply_text(
-        f"*Select a model* — ✅ = active\n\nCurrent: `{current}`\n\nSee /usage for pricing & token stats.",
-        reply_markup=_build_models_keyboard(current),
+        f"*Select provider*\n\nCurrent model: `{current}`\n\nThen pick a model inside provider.",
+        reply_markup=_build_provider_keyboard(current),
         parse_mode="Markdown",
     )
 
@@ -1014,8 +1109,8 @@ async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     groups: dict[str, list[str]] = {
         "🌊 DigitalOcean": [],
-        "🟣 Anthropic": [],
-        "🟢 OpenAI": [],
+        "🧭 OpenRouter": [],
+        "🐙 GitHub": [],
     }
     total_cost = 0.0
     total_in = 0
@@ -1040,14 +1135,15 @@ async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 usage_line = f"{in_k:.0f}K/{out_k:.0f}K tok · *${cost:.4f}*"
             else:
                 usage_line = f"{in_k:.0f}K/{out_k:.0f}K tok"
-            entry = f"`{m}`\n  {price_tag}  ·  {usage_line}"
+            entry = f"`{_model_display_name(m)}`\n  {price_tag}  ·  {usage_line}"
         else:
-            entry = f"`{m}`\n  {price_tag}  ·  _no usage_"
+            entry = f"`{_model_display_name(m)}`\n  {price_tag}  ·  _no usage_"
 
-        if m.startswith("anthropic-"):
-            groups["🟣 Anthropic"].append(entry)
-        elif m.startswith("openai-"):
-            groups["🟢 OpenAI"].append(entry)
+        provider = _provider_from_model(m)
+        if provider == "OpenRouter":
+            groups["🧭 OpenRouter"].append(entry)
+        elif provider == "GitHub":
+            groups["🐙 GitHub"].append(entry)
         else:
             groups["🌊 DigitalOcean"].append(entry)
 
@@ -1145,13 +1241,76 @@ async def handle_model_button(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # Edit the existing message in-place to reflect the new active model
     try:
+        provider = _provider_from_model(model_name)
         await query.edit_message_text(
-            f"*Select a model* — ✅ = active\n\nCurrent: `{model_name}`\n\nSee /usage for pricing & token stats.",
-            reply_markup=_build_models_keyboard(model_name),
+            f"*Select model — {provider}*\n\nCurrent model: `{model_name}`",
+            reply_markup=_build_provider_models_keyboard(model_name, provider),
             parse_mode="Markdown",
         )
     except Exception as e:
         logger.warning(f"handle_model_button edit failed: {e}")
+
+
+async def handle_provider_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_owner(query.from_user.id):
+        await query.answer("Unauthorized", show_alert=True)
+        return
+
+    data = query.data or ""
+    current = get_current_model()
+
+    if data == "models_home":
+        await query.answer()
+        await query.edit_message_text(
+            f"*Select provider*\n\nCurrent model: `{current}`\n\nThen pick a model inside provider.",
+            reply_markup=_build_provider_keyboard(current),
+            parse_mode="Markdown",
+        )
+        return
+
+    if not data.startswith("prov_"):
+        await query.answer()
+        return
+
+    provider = _provider_from_slug(data.replace("prov_", ""))
+    await query.answer()
+    await query.edit_message_text(
+        f"*Select model — {provider}*\n\nCurrent model: `{current}`",
+        reply_markup=_build_provider_models_keyboard(current, provider),
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_providerkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Store provider API keys quickly from chat.
+    Usage: /providerkey <openrouter|github|do> <key>
+    """
+    if not is_owner(update.effective_user.id):
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage: `/providerkey <openrouter|github|do> <key>`",
+            parse_mode="Markdown",
+        )
+        return
+
+    provider = context.args[0].strip().lower()
+    key = " ".join(context.args[1:]).strip()
+
+    key_name_map = {
+        "openrouter": "OPENROUTER_API_KEY",
+        "github": "GITHUB_MODELS_API_KEY",
+        "do": "OPENAI_API_KEY",
+        "digitalocean": "OPENAI_API_KEY",
+    }
+    key_name = key_name_map.get(provider)
+    if not key_name:
+        await update.message.reply_text("Unknown provider. Use one of: openrouter, github, do")
+        return
+
+    mem.store_credential(key_name, key, f"API key for {provider}")
+    await update.message.reply_text(f"✅ Stored key for `{provider}`", parse_mode="Markdown")
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1578,6 +1737,7 @@ def main():
     app.add_handler(CommandHandler("status",  cmd_status))
     app.add_handler(CommandHandler("creds",    cmd_creds))
     app.add_handler(CommandHandler("storekey", cmd_storekey))
+    app.add_handler(CommandHandler("providerkey", cmd_providerkey))
     app.add_handler(CommandHandler("memory",  cmd_memory_cmd))
     app.add_handler(CommandHandler("run",     cmd_run))
     app.add_handler(CommandHandler("ping",    cmd_ping))
@@ -1586,6 +1746,7 @@ def main():
     app.add_handler(CommandHandler("agent",   cmd_agent))
     app.add_handler(CommandHandler("usage",   cmd_usage))
     app.add_handler(CallbackQueryHandler(handle_continue_button, pattern=r"^cont_"))
+    app.add_handler(CallbackQueryHandler(handle_provider_button, pattern=r"^(prov_|models_home)"))
     app.add_handler(CallbackQueryHandler(handle_model_button, pattern="^model_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
