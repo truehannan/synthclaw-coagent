@@ -44,6 +44,7 @@ ACTIVE_TASKS: dict[int, bool] = {}  # chat_id -> is_running
 CHECKPOINT_SIGNAL = "__CHECKPOINT__"
 CONTEXT_CACHE: dict[int, dict] = {}
 CACHE_TTL_SECONDS = 180
+TASK_RUNTIME: dict[int, dict] = {}
 
 PENDING_PROVIDER_KEY_PREFIX = "pending_provider_key_"
 
@@ -550,6 +551,17 @@ def _invalidate_context_cache(chat_id: int):
     CONTEXT_CACHE.pop(chat_id, None)
 
 
+def _task_set(chat_id: int, **fields):
+    state = TASK_RUNTIME.get(chat_id, {})
+    state.update(fields)
+    state["updated_at"] = time.time()
+    TASK_RUNTIME[chat_id] = state
+
+
+def _task_reset(chat_id: int):
+    TASK_RUNTIME.pop(chat_id, None)
+
+
 def _extract_important_facts(user_text: str, assistant_text: str) -> list[tuple[str, int]]:
     """Heuristic importance scoring for durable memory extraction.
 
@@ -606,9 +618,10 @@ def _maybe_store_long_term_memory(chat_id: int, user_text: str, assistant_text: 
     try:
         facts = _extract_important_facts(user_text, assistant_text)
         for fact, importance in facts[:12]:
+            if importance < 4:
+                continue
             mem.add_long_term_fact(chat_id, fact, importance=importance, source="auto")
-            if importance >= 4:
-                mem.append_to_profile(chat_id, fact)
+            mem.append_to_profile(chat_id, fact)
     except Exception as e:
         logger.warning(f"auto long-term memory extraction failed: {e}")
 
@@ -905,12 +918,23 @@ async def run_agent(
 
     # Mark task as active (can be stopped via /stop)
     ACTIVE_TASKS[chat_id] = True
+    _task_set(
+        chat_id,
+        status="running",
+        phase="starting",
+        model=model,
+        step=resume_step,
+        attempt=resume_attempt_step,
+        stall=stall_count,
+        started_at=time.time(),
+    )
 
     for iteration in range(cfg.MAX_TOOL_ITERATIONS):
         # Check if user sent /stop
         if not ACTIVE_TASKS.get(chat_id, True):
             logger.info(f"Task stopped by user at iteration {iteration+1}")
             mem.save_message(chat_id, "assistant", "🛑 Task stopped by user.")
+            _task_set(chat_id, status="stopped", phase="stopped", step=resume_step + iteration)
             return "🛑 Task stopped.", media_to_send
 
         # ── Checkpoint: pause and offer Continue button ────────────────────────────
@@ -934,6 +958,7 @@ async def run_agent(
                 last_error=last_error,
             )
             ACTIVE_TASKS.pop(chat_id, None)
+            _task_set(chat_id, status="paused", phase="checkpoint", step=global_step, attempt=attempt_step, stall=stall_count)
             logger.info(
                 f"Checkpoint reached at global step {global_step} (attempt {attempt_step}, stall {stall_count}) "
                 f"for chat {chat_id}"
@@ -942,6 +967,7 @@ async def run_agent(
         # ─────────────────────────────────────────────────────────────────
 
         try:
+            _task_set(chat_id, status="running", phase="waiting_llm", step=global_step, attempt=attempt_step, stall=stall_count)
             response = await _llm_call(
                 model=model,
                 messages=messages,
@@ -971,7 +997,9 @@ async def run_agent(
                     last_sig=sig,
                     last_error=err_hash,
                 )
+                _task_set(chat_id, status="paused", phase="llm_error", step=max(global_step, resume_step + 1), attempt=max(attempt_step, resume_attempt_step + 1), stall=stall_count, last_error=str(e)[:180])
                 return CHECKPOINT_SIGNAL, media_to_send
+            _task_set(chat_id, status="error", phase="llm_error", step=global_step, attempt=attempt_step, last_error=str(e)[:180])
             return f"❌ LLM error: {e}", media_to_send
 
         # Track token usage per model
@@ -1068,6 +1096,7 @@ async def run_agent(
             if not ACTIVE_TASKS.get(chat_id, True):
                 ACTIVE_TASKS.pop(chat_id, None)
                 mem.save_message(chat_id, "assistant", "🛑 Task stopped by user.")
+                _task_set(chat_id, status="stopped", phase="stopped", step=global_step, attempt=attempt_step)
                 return "🛑 Task stopped.", media_to_send
 
             regular_calls = [(n, a) for n, a in tool_calls if n and n != "ask_user"]
@@ -1075,6 +1104,7 @@ async def run_agent(
 
             if regular_calls:
                 _loop = asyncio.get_running_loop()
+                _task_set(chat_id, status="running", phase="running_tools", step=global_step, attempt=attempt_step)
 
                 async def _run_tool_parallel(idx, tname, targs):
                     logger.info(f"Tool call [{iteration+1}][{idx}]: {tname}({targs})")
@@ -1154,6 +1184,7 @@ async def run_agent(
             _maybe_store_long_term_memory(chat_id, user_message, clean_reply)
             _invalidate_context_cache(chat_id)
             ACTIVE_TASKS.pop(chat_id, None)
+            _task_set(chat_id, status="done", phase="finished", step=global_step, attempt=attempt_step, finished_at=time.time())
             return clean_reply, media_to_send
 
     # Hit MAX_TOOL_ITERATIONS — save state so user can Continue
@@ -1170,6 +1201,7 @@ async def run_agent(
         last_error=last_error,
     )
     ACTIVE_TASKS.pop(chat_id, None)
+    _task_set(chat_id, status="paused", phase="max_steps", step=resume_step + cfg.MAX_TOOL_ITERATIONS, attempt=max(resume_attempt_step, resume_step) + cfg.MAX_TOOL_ITERATIONS, stall=stall_count)
     return CHECKPOINT_SIGNAL, media_to_send
 
 
@@ -1243,6 +1275,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/run \\<cmd\\> — Run shell command directly\n"
         "/plan \\<task\\> — Break task into steps \\(no execution\\)\n"
         "/agent \\<task\\> — Autonomous execution mode\n"
+        "/task — Live task status\n"
         "/stop — Stop a running task\n"
         "/ping — Check if alive\n\n"
         "*Media:* Send me photos, voice, audio, video, or files\\. "
@@ -1694,9 +1727,50 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if ACTIVE_TASKS.get(chat_id):
         ACTIVE_TASKS[chat_id] = False
+        _task_set(chat_id, status="stopping", phase="stop_requested")
         await update.message.reply_text("🛑 Stopping current task...")
     else:
         await update.message.reply_text("No task is currently running.")
+
+
+async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show live status of current/last task for this chat."""
+    if not is_owner(update.effective_user.id):
+        return
+    chat_id = update.effective_chat.id
+
+    rt = TASK_RUNTIME.get(chat_id)
+    paused = mem.load_task_state(chat_id)
+
+    if not rt and not paused:
+        await update.message.reply_text("No active or paused task right now.")
+        return
+
+    now = time.time()
+    lines = ["*Task Status*"]
+
+    if rt:
+        age = int(now - rt.get("updated_at", now))
+        lines.append(f"State: *{rt.get('status', 'unknown')}* ({rt.get('phase', 'n/a')})")
+        if rt.get("model"):
+            lines.append(f"Model: `{rt['model']}`")
+        if rt.get("step") is not None:
+            lines.append(f"Step: {rt.get('step')}  · Attempt: {rt.get('attempt', 0)}")
+        if rt.get("stall") is not None:
+            lines.append(f"Stall count: {rt.get('stall', 0)}")
+        lines.append(f"Last heartbeat: {age}s ago")
+        if rt.get("last_error"):
+            lines.append(f"Last error: `{str(rt.get('last_error'))[:120]}`")
+
+    if paused:
+        lines.append("")
+        lines.append("Paused checkpoint found:")
+        lines.append(
+            f"Step {paused.get('step_count')} · Attempt {paused.get('attempt_step', paused.get('step_count'))} · "
+            f"Stall {paused.get('stall_count', 0)}"
+        )
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2061,6 +2135,7 @@ def main():
     app.add_handler(CommandHandler("memory",  cmd_memory_cmd))
     app.add_handler(CommandHandler("run",     cmd_run))
     app.add_handler(CommandHandler("ping",    cmd_ping))
+    app.add_handler(CommandHandler("task",    cmd_task))
     app.add_handler(CommandHandler("stop",    cmd_stop))
     app.add_handler(CommandHandler("plan",    cmd_plan))
     app.add_handler(CommandHandler("agent",   cmd_agent))
