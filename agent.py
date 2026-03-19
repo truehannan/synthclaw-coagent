@@ -42,6 +42,8 @@ ACTIVE_TASKS: dict[int, bool] = {}  # chat_id -> is_running
 
 # Sentinel returned by run_agent when it saves state and pauses for user input
 CHECKPOINT_SIGNAL = "__CHECKPOINT__"
+CONTEXT_CACHE: dict[int, dict] = {}
+CACHE_TTL_SECONDS = 180
 
 PENDING_PROVIDER_KEY_PREFIX = "pending_provider_key_"
 
@@ -544,6 +546,73 @@ def _checkpoint_signature(messages: list[dict]) -> str:
     return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest() if raw else ""
 
 
+def _invalidate_context_cache(chat_id: int):
+    CONTEXT_CACHE.pop(chat_id, None)
+
+
+def _extract_important_facts(user_text: str, assistant_text: str) -> list[tuple[str, int]]:
+    """Heuristic importance scoring for durable memory extraction.
+
+    Returns list of (fact, importance:1-5).
+    """
+    text = f"{user_text or ''}\n{assistant_text or ''}".strip()
+    if not text:
+        return []
+
+    facts: list[tuple[str, int]] = []
+
+    patterns = [
+        (r"\bmy name is\s+([A-Za-z][A-Za-z\s\-]{1,40})", "Name: {}", 5),
+        (r"\b(i am|i'm)\s+from\s+([A-Za-z\s\-]{2,40})", "Location: {}", 3),
+        (r"\btimezone\s*(is|=)?\s*([A-Za-z0-9_+\-/:]{2,40})", "Timezone: {}", 5),
+        (r"\bi use\s+([A-Za-z0-9 ._\-/]{2,60})", "Uses: {}", 3),
+        (r"\bi prefer\s+([A-Za-z0-9 ._\-/]{2,80})", "Preference: {}", 4),
+        (r"\balways use\s+([A-Za-z0-9 ._\-/]{2,80})", "Rule: always use {}", 5),
+        (r"\bdefault model\s*(is|=)?\s*([A-Za-z0-9:._\-/]{2,80})", "Default model: {}", 4),
+    ]
+
+    lower_text = text.lower()
+    for regex, template, importance in patterns:
+        for m in re.finditer(regex, lower_text, flags=re.IGNORECASE):
+            if m.lastindex:
+                val = (m.group(m.lastindex) or "").strip(" .,!;:\\n\\t")
+                if 2 <= len(val) <= 100:
+                    facts.append((template.format(val), importance))
+
+    for line in (user_text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        l = line.lower()
+        if l.startswith("remember ") or " remember " in l:
+            fact = re.sub(r"^remember\s+", "", line, flags=re.IGNORECASE).strip()
+            if fact:
+                facts.append((f"Remembered: {fact}", 5))
+        if any(k in l for k in ("api key", "password", "secret", "token")):
+            # Never store secrets in long-term facts
+            continue
+
+    dedup: dict[str, int] = {}
+    for fact, imp in facts:
+        f = " ".join(fact.split())[:160]
+        if not f:
+            continue
+        dedup[f] = max(dedup.get(f, 0), imp)
+    return [(f, i) for f, i in dedup.items()]
+
+
+def _maybe_store_long_term_memory(chat_id: int, user_text: str, assistant_text: str):
+    """Store important durable facts automatically in DB and profile.md."""
+    try:
+        facts = _extract_important_facts(user_text, assistant_text)
+        for fact, importance in facts[:12]:
+            mem.add_long_term_fact(chat_id, fact, importance=importance, source="auto")
+            if importance >= 4:
+                mem.append_to_profile(chat_id, fact)
+    except Exception as e:
+        logger.warning(f"auto long-term memory extraction failed: {e}")
+
+
 def _trim_last_tool_cycle(messages: list[dict]) -> list[dict]:
     """Remove the last assistant tool call + tool_result pair to break replay loops."""
     out = list(messages)
@@ -699,11 +768,23 @@ def _maybe_summarize(chat_id: int):
     logger.info(f"Summarized + pruned {len(oldest)} messages for chat {chat_id}")
 
 
-def _build_context(chat_id: int) -> list[dict]:
-    """Build the full message list with MD context, memories, cred names."""
+def _build_context(chat_id: int, force_refresh: bool = False) -> list[dict]:
+    """Build message context with short-lived cache + durable memory enrichment."""
+    msg_count = mem.count_messages(chat_id)
+    now = time.time()
+    cache = CONTEXT_CACHE.get(chat_id)
+    if (
+        not force_refresh
+        and cache
+        and cache.get("msg_count") == msg_count
+        and (now - cache.get("ts", 0)) < CACHE_TTL_SECONDS
+    ):
+        return list(cache.get("messages", []))
+
     # 1. Get stored memories and credential names
     all_memories = mem.get_all_memory()
     cred_list = mem.list_credentials()
+    long_term_facts = mem.get_long_term_facts(chat_id, limit=40)
 
     # 2. Build enriched system prompt
     extra_context = []
@@ -714,7 +795,6 @@ def _build_context(chat_id: int) -> list[dict]:
         extra_context.append(f"\n== LONG-TERM CONTEXT ==\n{md_context}")
     else:
         # No MD context yet — inject basic session info so agent knows convo is ongoing
-        msg_count = mem.count_messages(chat_id)
         if msg_count > 0:
             extra_context.append(
                 f"\n== SESSION INFO ==\nActive conversation. "
@@ -729,6 +809,9 @@ def _build_context(chat_id: int) -> list[dict]:
     if cred_list:
         names = ", ".join(c["name"] for c in cred_list)
         extra_context.append(f"\n== STORED CREDENTIALS (available via get_cred) ==\n{names}")
+    if long_term_facts:
+        facts_text = "\n".join(f"- {f['fact']}" for f in long_term_facts)
+        extra_context.append(f"\n== DURABLE FACTS ==\n{facts_text}")
 
     system = SYSTEM_PROMPT.format(tools=get_tools_description())
     if extra_context:
@@ -740,6 +823,11 @@ def _build_context(chat_id: int) -> list[dict]:
     history = mem.get_history(chat_id, RECENT_WINDOW)
     messages.extend(history)
 
+    CONTEXT_CACHE[chat_id] = {
+        "ts": now,
+        "msg_count": msg_count,
+        "messages": list(messages),
+    }
     return messages
 
 
@@ -804,12 +892,13 @@ async def run_agent(
             mem.save_message(chat_id, "user", user_message)
         except Exception as me:
             logger.error(f"mem.save_message (user) failed: {me}")
+        _invalidate_context_cache(chat_id)
         mem.clear_task_state(chat_id)   # discard any stale checkpoint
 
         # Smart context: summarize old messages if needed, then build enriched context
         try:
             _maybe_summarize(chat_id)
-            messages = _build_context(chat_id)
+            messages = _build_context(chat_id, force_refresh=True)
         except Exception as me:
             logger.error(f"Context build failed: {me}")
             messages = [{"role": "system", "content": SYSTEM_PROMPT.format(tools=get_tools_description())}]
@@ -1062,6 +1151,8 @@ async def run_agent(
                 mem.save_message(chat_id, "assistant", clean_reply)
             except Exception as me:
                 logger.error(f"mem.save_message failed: {me}")
+            _maybe_store_long_term_memory(chat_id, user_message, clean_reply)
+            _invalidate_context_cache(chat_id)
             ACTIVE_TASKS.pop(chat_id, None)
             return clean_reply, media_to_send
 

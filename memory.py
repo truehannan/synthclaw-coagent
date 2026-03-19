@@ -74,6 +74,15 @@ def init_db():
             last_error TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS long_term_facts (
+            id INTEGER PRIMARY KEY,
+            chat_id INTEGER NOT NULL,
+            fact TEXT NOT NULL,
+            importance INTEGER NOT NULL DEFAULT 1,
+            source TEXT DEFAULT 'auto',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(chat_id, fact)
+        );
     """)
 
     # Backward-compatible migration for existing DBs
@@ -90,6 +99,43 @@ def init_db():
 
     conn.commit()
     conn.close()
+
+
+def add_long_term_fact(chat_id: int, fact: str, importance: int = 1, source: str = "auto"):
+    """Insert/update a durable memory fact with dedupe per chat."""
+    clean = (fact or "").strip()
+    if not clean:
+        return
+    imp = max(1, min(int(importance or 1), 5))
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR IGNORE INTO long_term_facts (chat_id, fact, importance, source) VALUES (?,?,?,?)",
+        (chat_id, clean, imp, source),
+    )
+    c.execute(
+        "UPDATE long_term_facts SET importance = MAX(importance, ?) WHERE chat_id=? AND fact=?",
+        (imp, chat_id, clean),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_long_term_facts(chat_id: int, limit: int = 40) -> list[dict]:
+    """Return durable memory facts ordered by importance then recency."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT fact, importance, source, created_at FROM long_term_facts "
+        "WHERE chat_id=? ORDER BY importance DESC, created_at DESC LIMIT ?",
+        (chat_id, limit),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {"fact": r[0], "importance": r[1], "source": r[2], "created_at": r[3]}
+        for r in rows
+    ]
 
 
 # ── Conversation history ────────────────────────────────────────────────────
