@@ -39,12 +39,14 @@ CLIENT_CACHE: dict[tuple[str, str], OpenAI] = {}
 
 # Active task tracking — allows /stop to interrupt a running agent loop
 ACTIVE_TASKS: dict[int, bool] = {}  # chat_id -> is_running
+RUNNING_TASKS: dict[int, asyncio.Task] = {}  # chat_id -> current handler task
 
 # Sentinel returned by run_agent when it saves state and pauses for user input
 CHECKPOINT_SIGNAL = "__CHECKPOINT__"
 CONTEXT_CACHE: dict[int, dict] = {}
 CACHE_TTL_SECONDS = 180
 TASK_RUNTIME: dict[int, dict] = {}
+LLM_ATTEMPT_TIMEOUT = 180
 
 PENDING_PROVIDER_KEY_PREFIX = "pending_provider_key_"
 
@@ -181,7 +183,10 @@ async def _llm_call(**kwargs):
     payload["model"] = api_model
     for attempt, delay in enumerate(delays, 1):
         try:
-            return await asyncio.to_thread(llm_client.chat.completions.create, **payload)
+            return await asyncio.wait_for(
+                asyncio.to_thread(llm_client.chat.completions.create, **payload),
+                timeout=LLM_ATTEMPT_TIMEOUT,
+            )
         except Exception as e:
             status = (
                 getattr(e, "status_code", None)
@@ -1800,12 +1805,15 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id):
         return
     chat_id = update.effective_chat.id
-    if ACTIVE_TASKS.get(chat_id):
+    task = RUNNING_TASKS.get(chat_id)
+    if ACTIVE_TASKS.get(chat_id) or (task and not task.done()):
         ACTIVE_TASKS[chat_id] = False
         _task_set(chat_id, status="stopping", phase="stop_requested")
+        if task and not task.done():
+            task.cancel()
         await update.message.reply_text("🛑 Stopping current task...")
-    else:
-        await update.message.reply_text("No task is currently running.")
+        return
+    await update.message.reply_text("No task is currently running.")
 
 
 async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1816,13 +1824,16 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     rt = TASK_RUNTIME.get(chat_id)
     paused = mem.load_task_state(chat_id)
+    running_task = RUNNING_TASKS.get(chat_id)
+    running_now = bool(running_task and not running_task.done())
 
-    if not rt and not paused:
+    if not rt and not paused and not running_now:
         await update.message.reply_text("No active or paused task right now.")
         return
 
     now = time.time()
     lines = ["*Task Status*"]
+    lines.append(f"Runner: *{'active' if running_now else 'idle'}*")
 
     if rt:
         age = int(now - rt.get("updated_at", now))
@@ -2056,6 +2067,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
     model = get_current_model()
+    RUNNING_TASKS[chat_id] = asyncio.current_task()
 
     # Pending provider-key flow: user selected provider and now sends raw key text
     pending_provider = (mem.get_config(_pending_provider_key_cfg(chat_id), "") or "").strip().lower()
@@ -2100,9 +2112,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
                 await update.message.reply_text(chunk)
         await _send_queued_media(update, media_items)
+        _task_set(chat_id, status="done", phase="completed")
+    except asyncio.CancelledError:
+        _task_set(chat_id, status="stopped", phase="cancelled")
+        ACTIVE_TASKS.pop(chat_id, None)
+        try:
+            await update.message.reply_text("🛑 Task stopped.")
+        except Exception:
+            pass
+        return
     except Exception as e:
         logger.error(f"handle_message error: {e}", exc_info=True)
+        _task_set(chat_id, status="error", phase="handler_exception", last_error=str(e)[:180])
         await update.message.reply_text(f"❌ {e}")
+    finally:
+        if RUNNING_TASKS.get(chat_id) is asyncio.current_task():
+            RUNNING_TASKS.pop(chat_id, None)
 
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2113,6 +2138,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
     model = get_current_model()
+    RUNNING_TASKS[chat_id] = asyncio.current_task()
     msg = update.message
 
     # Determine media type and get Telegram file object
@@ -2188,15 +2214,28 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
                 await update.message.reply_text(chunk)
         await _send_queued_media(update, media_items)
+        _task_set(chat_id, status="done", phase="completed")
+    except asyncio.CancelledError:
+        _task_set(chat_id, status="stopped", phase="cancelled")
+        ACTIVE_TASKS.pop(chat_id, None)
+        try:
+            await update.message.reply_text("🛑 Task stopped.")
+        except Exception:
+            pass
+        return
     except Exception as e:
         logger.error(f"handle_media error: {e}", exc_info=True)
+        _task_set(chat_id, status="error", phase="media_exception", last_error=str(e)[:180])
         await update.message.reply_text(f"❌ {e}")
+    finally:
+        if RUNNING_TASKS.get(chat_id) is asyncio.current_task():
+            RUNNING_TASKS.pop(chat_id, None)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    app = Application.builder().token(cfg.TELEGRAM_TOKEN).build()
+    app = Application.builder().token(cfg.TELEGRAM_TOKEN).concurrent_updates(True).build()
 
     app.add_handler(CommandHandler("start",   cmd_start))
     app.add_handler(CommandHandler("help",    cmd_help))
