@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import hashlib
 import json
 import logging
 import re
@@ -41,6 +42,8 @@ ACTIVE_TASKS: dict[int, bool] = {}  # chat_id -> is_running
 
 # Sentinel returned by run_agent when it saves state and pauses for user input
 CHECKPOINT_SIGNAL = "__CHECKPOINT__"
+
+PENDING_PROVIDER_KEY_PREFIX = "pending_provider_key_"
 
 PROVIDER_META = {
     "DigitalOcean": {"slug": "do", "emoji": "🌊"},
@@ -525,6 +528,79 @@ def _contains_tool_markup(reply: str) -> bool:
     return any(m in reply for m in markers)
 
 
+def _checkpoint_signature(messages: list[dict]) -> str:
+    """Compact signature of recent tool execution state for stall detection."""
+    tail = []
+    for msg in reversed(messages[-8:]):
+        role = msg.get("role", "")
+        content = msg.get("content", "") or ""
+        if role == "assistant" and (_contains_tool_markup(content) or "<tool_call>" in content):
+            tail.append(f"A:{content[:1200]}")
+        elif role == "user" and "<tool_result>" in content:
+            tail.append(f"U:{content[:1200]}")
+        if len(tail) >= 2:
+            break
+    raw = "\n".join(reversed(tail)) if tail else ""
+    return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest() if raw else ""
+
+
+def _trim_last_tool_cycle(messages: list[dict]) -> list[dict]:
+    """Remove the last assistant tool call + tool_result pair to break replay loops."""
+    out = list(messages)
+    for _ in range(2):
+        if not out:
+            break
+        last = out[-1]
+        role = last.get("role", "")
+        content = last.get("content", "") or ""
+        if (role == "user" and "<tool_result>" in content) or (
+            role == "assistant" and _contains_tool_markup(content)
+        ):
+            out.pop()
+    return out
+
+
+def _pending_provider_key_cfg(chat_id: int) -> str:
+    return f"{PENDING_PROVIDER_KEY_PREFIX}{chat_id}"
+
+
+def _providerkey_name(provider: str) -> str | None:
+    p = provider.lower().strip()
+    if p in ("openrouter", "or"):
+        return "OPENROUTER_API_KEY"
+    if p in ("github", "gh"):
+        return "GITHUB_MODELS_API_KEY"
+    if p in ("do", "digitalocean"):
+        return "OPENAI_API_KEY"
+    return None
+
+
+def _validate_provider_key(provider: str, key: str) -> tuple[bool, str]:
+    """Basic provider-specific key validation to reject obvious garbage text."""
+    k = (key or "").strip()
+    if len(k) < 16 or " " in k:
+        return False, "Key looks too short or invalid."
+
+    p = provider.lower().strip()
+    if p in ("openrouter", "or"):
+        if not (k.startswith("sk-or-") or k.startswith("sk-or-v1-")):
+            return False, "OpenRouter key should start with `sk-or-`"
+        return True, ""
+
+    if p in ("do", "digitalocean"):
+        if not k.startswith("sk-do-"):
+            return False, "DigitalOcean key should start with `sk-do-`"
+        return True, ""
+
+    if p in ("github", "gh"):
+        valid_prefix = ("ghp_", "github_pat_", "gho_", "ghu_", "ghs_", "ghr_")
+        if not k.startswith(valid_prefix):
+            return False, "GitHub token should look like `ghp_...` or `github_pat_...`"
+        return True, ""
+
+    return False, "Unknown provider."
+
+
 # ── Smart context (MD file system) ────────────────────────────────────────────
 
 SUMMARIZE_THRESHOLD = 20   # total msgs before we summarize + prune
@@ -691,6 +767,10 @@ async def run_agent(
     resume_messages: list | None = None,
     resume_step: int = 0,
     resume_media: list | None = None,
+    resume_attempt_step: int = 0,
+    resume_stall_count: int = 0,
+    resume_last_sig: str | None = None,
+    resume_last_error: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Core agent loop. Returns (text_reply, list_of_media_to_send).
 
@@ -699,11 +779,25 @@ async def run_agent(
     Returns CHECKPOINT_SIGNAL as text when the loop pauses for a Continue button.
     """
     media_to_send: list[dict] = list(resume_media) if resume_media else []
+    stall_count = max(0, int(resume_stall_count or 0))
+    last_sig = resume_last_sig or ""
+    last_error = resume_last_error or ""
 
     if resume_messages is not None:
         # Resuming from a checkpoint — use saved message history directly
         messages = list(resume_messages)
         mem.clear_task_state(chat_id)
+        if stall_count >= 3:
+            messages = _trim_last_tool_cycle(messages)
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Recovery mode: previous resume attempts repeated the same failing step. "
+                    "Do NOT resend the same payload. Continue in strict order with smaller chunks, "
+                    "verify each step result before next action, and if blocked ask one concise clarification."
+                ),
+            })
+            stall_count = 0
     else:
         # Fresh start: save user message, build context
         try:
@@ -732,10 +826,29 @@ async def run_agent(
 
         # ── Checkpoint: pause and offer Continue button ────────────────────────────
         global_step = resume_step + iteration
+        attempt_step = max(resume_attempt_step, resume_step) + iteration
         if iteration > 0 and global_step % cfg.CHECKPOINT_EVERY == 0:
-            mem.save_task_state(chat_id, messages, media_to_send, model, global_step)
+            sig = _checkpoint_signature(messages)
+            if sig and sig == last_sig:
+                stall_count += 1
+            else:
+                stall_count = 0
+            mem.save_task_state(
+                chat_id,
+                messages,
+                media_to_send,
+                model,
+                global_step,
+                attempt_step=attempt_step,
+                stall_count=stall_count,
+                last_sig=sig,
+                last_error=last_error,
+            )
             ACTIVE_TASKS.pop(chat_id, None)
-            logger.info(f"Checkpoint reached at global step {global_step} for chat {chat_id}")
+            logger.info(
+                f"Checkpoint reached at global step {global_step} (attempt {attempt_step}, stall {stall_count}) "
+                f"for chat {chat_id}"
+            )
             return CHECKPOINT_SIGNAL, media_to_send
         # ─────────────────────────────────────────────────────────────────
 
@@ -751,7 +864,24 @@ async def run_agent(
             ACTIVE_TASKS.pop(chat_id, None)
             # If we've done some work already (including resumed tasks), save state so user can Continue
             if iteration > 0 or resume_step > 0:
-                mem.save_task_state(chat_id, messages, media_to_send, model, global_step)
+                sig = _checkpoint_signature(messages)
+                err_text = str(e)
+                err_hash = hashlib.sha1(err_text.encode("utf-8", errors="ignore")).hexdigest()
+                if sig and sig == last_sig and err_hash == last_error:
+                    stall_count += 1
+                else:
+                    stall_count = 0
+                mem.save_task_state(
+                    chat_id,
+                    messages,
+                    media_to_send,
+                    model,
+                    max(global_step, resume_step + 1),
+                    attempt_step=max(attempt_step, resume_attempt_step + 1),
+                    stall_count=stall_count,
+                    last_sig=sig,
+                    last_error=err_hash,
+                )
                 return CHECKPOINT_SIGNAL, media_to_send
             return f"❌ LLM error: {e}", media_to_send
 
@@ -805,7 +935,18 @@ async def run_agent(
                     continue
 
                 # Still looping after steering -> checkpoint pause (safe, resumable, no payload leak)
-                mem.save_task_state(chat_id, messages, media_to_send, model, global_step)
+                sig = _checkpoint_signature(messages)
+                mem.save_task_state(
+                    chat_id,
+                    messages,
+                    media_to_send,
+                    model,
+                    max(global_step, resume_step + 1),
+                    attempt_step=max(attempt_step, resume_attempt_step + 1),
+                    stall_count=max(stall_count, count),
+                    last_sig=sig,
+                    last_error=last_error,
+                )
                 ACTIVE_TASKS.pop(chat_id, None)
                 return CHECKPOINT_SIGNAL, media_to_send
             if not hasattr(run_agent, '_last_tool_sig'):
@@ -925,7 +1066,18 @@ async def run_agent(
             return clean_reply, media_to_send
 
     # Hit MAX_TOOL_ITERATIONS — save state so user can Continue
-    mem.save_task_state(chat_id, messages, media_to_send, model, resume_step + cfg.MAX_TOOL_ITERATIONS)
+    sig = _checkpoint_signature(messages)
+    mem.save_task_state(
+        chat_id,
+        messages,
+        media_to_send,
+        model,
+        resume_step + cfg.MAX_TOOL_ITERATIONS,
+        attempt_step=max(resume_attempt_step, resume_step) + cfg.MAX_TOOL_ITERATIONS,
+        stall_count=stall_count,
+        last_sig=sig,
+        last_error=last_error,
+    )
     ACTIVE_TASKS.pop(chat_id, None)
     return CHECKPOINT_SIGNAL, media_to_send
 
@@ -1185,9 +1337,13 @@ async def handle_continue_button(update: Update, context: ContextTypes.DEFAULT_T
     model    = state["model"]
     msgs     = state["messages"]
     step     = state["step_count"]
+    attempt_step = state.get("attempt_step", step)
+    stall_count  = state.get("stall_count", 0)
+    last_sig     = state.get("last_sig")
+    last_error   = state.get("last_error")
     saved_media = state["media"]
 
-    await context.bot.send_message(chat_id, f"▶️ Resuming from step {step}…")
+    await context.bot.send_message(chat_id, f"▶️ Resuming from step {step} (attempt {attempt_step})…")
     await context.bot.send_chat_action(chat_id, "typing")
 
     async def _send(text):
@@ -1197,15 +1353,23 @@ async def handle_continue_button(update: Update, context: ContextTypes.DEFAULT_T
 
     reply, media_items = await run_agent(
         chat_id, "", model, send_fn=_send,
-        resume_messages=msgs, resume_step=step, resume_media=saved_media,
+        resume_messages=msgs,
+        resume_step=step,
+        resume_media=saved_media,
+        resume_attempt_step=attempt_step,
+        resume_stall_count=stall_count,
+        resume_last_sig=last_sig,
+        resume_last_error=last_error,
     )
 
     if reply == CHECKPOINT_SIGNAL:
         new_state = mem.load_task_state(chat_id)
         new_step = new_state["step_count"] if new_state else step + cfg.CHECKPOINT_EVERY
+        new_attempt = new_state.get("attempt_step", new_step) if new_state else new_step
+        new_stall = new_state.get("stall_count", 0) if new_state else 0
         await context.bot.send_message(
             chat_id,
-            f"⏸️ Paused at step {new_step} — tap to keep going.",
+            f"⏸️ Paused at step {new_step} (attempt {new_attempt}, stall {new_stall}) — tap to keep going.",
             reply_markup=_continue_button(chat_id, new_step),
         )
     elif reply and reply.strip():
@@ -1283,34 +1447,78 @@ async def handle_provider_button(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def cmd_providerkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Store provider API keys quickly from chat.
-    Usage: /providerkey <openrouter|github|do> <key>
+    """Interactive provider key setup from chat.
+    /providerkey -> show provider buttons; then user sends key text.
     """
     if not is_owner(update.effective_user.id):
         return
-    if len(context.args) < 2:
+    if not context.args:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🧭 OpenRouter", callback_data="pkey_openrouter")],
+            [InlineKeyboardButton("🐙 GitHub", callback_data="pkey_github")],
+            [InlineKeyboardButton("🌊 DigitalOcean", callback_data="pkey_do")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="pkey_cancel")],
+        ])
         await update.message.reply_text(
-            "Usage: `/providerkey <openrouter|github|do> <key>`",
+            "Choose provider, then send API key in next message:",
+            reply_markup=kb,
             parse_mode="Markdown",
         )
+        return
+
+    # Backward-compatible fast path: /providerkey <provider> <key>
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /providerkey <openrouter|github|do> <key>")
         return
 
     provider = context.args[0].strip().lower()
     key = " ".join(context.args[1:]).strip()
 
-    key_name_map = {
-        "openrouter": "OPENROUTER_API_KEY",
-        "github": "GITHUB_MODELS_API_KEY",
-        "do": "OPENAI_API_KEY",
-        "digitalocean": "OPENAI_API_KEY",
-    }
-    key_name = key_name_map.get(provider)
+    key_name = _providerkey_name(provider)
     if not key_name:
         await update.message.reply_text("Unknown provider. Use one of: openrouter, github, do")
         return
 
+    ok, reason = _validate_provider_key(provider, key)
+    if not ok:
+        await update.message.reply_text(f"❌ {reason}")
+        return
+
     mem.store_credential(key_name, key, f"API key for {provider}")
     await update.message.reply_text(f"✅ Stored key for `{provider}`", parse_mode="Markdown")
+
+
+async def handle_providerkey_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_owner(query.from_user.id):
+        await query.answer("Unauthorized", show_alert=True)
+        return
+
+    data = query.data or ""
+    chat_id = query.message.chat_id
+
+    if data == "pkey_cancel":
+        mem.set_config(_pending_provider_key_cfg(chat_id), "")
+        await query.answer("Cancelled")
+        await query.edit_message_text("Provider key setup cancelled.")
+        return
+
+    if not data.startswith("pkey_"):
+        await query.answer()
+        return
+
+    provider = data.replace("pkey_", "")
+    if not _providerkey_name(provider):
+        await query.answer("Unknown provider", show_alert=True)
+        return
+
+    mem.set_config(_pending_provider_key_cfg(chat_id), provider)
+    await query.answer()
+    await query.edit_message_text(
+        f"Send your `{provider}` API key now.\n"
+        f"I will validate format before storing.",
+        parse_mode="Markdown",
+    )
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1609,6 +1817,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     model = get_current_model()
 
+    # Pending provider-key flow: user selected provider and now sends raw key text
+    pending_provider = (mem.get_config(_pending_provider_key_cfg(chat_id), "") or "").strip().lower()
+    if pending_provider:
+        key_text = (update.message.text or "").strip()
+        key_name = _providerkey_name(pending_provider)
+        if not key_name:
+            mem.set_config(_pending_provider_key_cfg(chat_id), "")
+            await update.message.reply_text("❌ Provider key setup reset. Use /providerkey again.")
+            return
+        ok, reason = _validate_provider_key(pending_provider, key_text)
+        if not ok:
+            await update.message.reply_text(
+                f"❌ {reason}\nSend the `{pending_provider}` key again or run /providerkey to cancel/restart.",
+                parse_mode="Markdown",
+            )
+            return
+        mem.store_credential(key_name, key_text, f"API key for {pending_provider}")
+        mem.set_config(_pending_provider_key_cfg(chat_id), "")
+        await update.message.reply_text(f"✅ Stored key for `{pending_provider}`", parse_mode="Markdown")
+        return
+
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     async def _send(text):
@@ -1746,6 +1975,7 @@ def main():
     app.add_handler(CommandHandler("agent",   cmd_agent))
     app.add_handler(CommandHandler("usage",   cmd_usage))
     app.add_handler(CallbackQueryHandler(handle_continue_button, pattern=r"^cont_"))
+    app.add_handler(CallbackQueryHandler(handle_providerkey_button, pattern=r"^pkey_"))
     app.add_handler(CallbackQueryHandler(handle_provider_button, pattern=r"^(prov_|models_home)"))
     app.add_handler(CallbackQueryHandler(handle_model_button, pattern="^model_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

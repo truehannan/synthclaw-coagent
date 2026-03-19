@@ -68,9 +68,26 @@ def init_db():
             media      TEXT NOT NULL,
             model      TEXT NOT NULL,
             step_count INTEGER NOT NULL DEFAULT 0,
+            attempt_step INTEGER NOT NULL DEFAULT 0,
+            stall_count INTEGER NOT NULL DEFAULT 0,
+            last_sig   TEXT,
+            last_error TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     """)
+
+    # Backward-compatible migration for existing DBs
+    c.execute("PRAGMA table_info(task_state)")
+    existing_cols = {row[1] for row in c.fetchall()}
+    if "attempt_step" not in existing_cols:
+        c.execute("ALTER TABLE task_state ADD COLUMN attempt_step INTEGER NOT NULL DEFAULT 0")
+    if "stall_count" not in existing_cols:
+        c.execute("ALTER TABLE task_state ADD COLUMN stall_count INTEGER NOT NULL DEFAULT 0")
+    if "last_sig" not in existing_cols:
+        c.execute("ALTER TABLE task_state ADD COLUMN last_sig TEXT")
+    if "last_error" not in existing_cols:
+        c.execute("ALTER TABLE task_state ADD COLUMN last_error TEXT")
+
     conn.commit()
     conn.close()
 
@@ -110,14 +127,34 @@ def clear_history(chat_id: int):
 
 # ── Task state (checkpoint / resume) ──────────────────────────────────────
 
-def save_task_state(chat_id: int, messages: list, media: list, model: str, step_count: int):
+def save_task_state(
+    chat_id: int,
+    messages: list,
+    media: list,
+    model: str,
+    step_count: int,
+    attempt_step: int = 0,
+    stall_count: int = 0,
+    last_sig: str | None = None,
+    last_error: str | None = None,
+):
     """Persist an in-progress agent loop so it can be resumed after a checkpoint."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
-        "INSERT OR REPLACE INTO task_state (chat_id, messages, media, model, step_count)"
-        " VALUES (?,?,?,?,?)",
-        (chat_id, json.dumps(messages), json.dumps(media), model, step_count),
+        "INSERT OR REPLACE INTO task_state (chat_id, messages, media, model, step_count, attempt_step, stall_count, last_sig, last_error)"
+        " VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            chat_id,
+            json.dumps(messages),
+            json.dumps(media),
+            model,
+            step_count,
+            attempt_step,
+            stall_count,
+            last_sig,
+            last_error,
+        ),
     )
     conn.commit()
     conn.close()
@@ -128,7 +165,8 @@ def load_task_state(chat_id: int) -> dict | None:
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
-        "SELECT messages, media, model, step_count FROM task_state WHERE chat_id=?",
+        "SELECT messages, media, model, step_count, attempt_step, stall_count, last_sig, last_error "
+        "FROM task_state WHERE chat_id=?",
         (chat_id,),
     )
     row = c.fetchone()
@@ -140,6 +178,10 @@ def load_task_state(chat_id: int) -> dict | None:
         "media":      json.loads(row[1]),
         "model":      row[2],
         "step_count": row[3],
+        "attempt_step": row[4] if row[4] is not None else row[3],
+        "stall_count": row[5] if row[5] is not None else 0,
+        "last_sig": row[6],
+        "last_error": row[7],
     }
 
 
