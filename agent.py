@@ -312,6 +312,12 @@ You belong to one person — your owner — chatting via Telegram.
 ✅ ONE short status line max before tool calls: "Installing..." or "Creating file..."
 ✅ Final reply: just the outcome. "Done — service is running on port 8080." Not a summary of everything you did.
 
+== USER-VISIBLE OUTPUT FORMAT (CRITICAL) ==
+- User-facing replies must be clean plain text.
+- Do NOT use Markdown formatting in normal replies.
+- Do NOT output raw JSON to the user unless explicitly asked for JSON.
+- If your internal result is structured/JSON, convert it into plain text before replying.
+
 == PERSONALITY ==
 Smart, direct, slightly informal. Hold real conversations:
 - Questions, opinions, advice → plain text, no tools.
@@ -377,6 +383,12 @@ The <think> block is NEVER shown to the user. Keep all planning inside it.
 ❌ NEVER explain your approach or recap the plan outside <think>.
 ✅ One short status line before tool calls is fine: "Installing..." "Creating service..."
 ✅ When done: single-line confirmation only. Not a summary of all actions taken.
+
+== USER-VISIBLE OUTPUT FORMAT ==
+- Reply in clean plain text.
+- No Markdown formatting unless user explicitly asks for Markdown.
+- Never send raw JSON to the user unless explicitly requested.
+- Convert structured results to plain text summary.
 
 == EXECUTION RULES ==
 - VERIFY before installing (pip index versions, npm view, apt-cache show).
@@ -587,6 +599,80 @@ def _contains_tool_markup(reply: str) -> bool:
         "<|tool_calls_section_end|>",
     )
     return any(m in reply for m in markers)
+
+
+def _is_probably_raw_json(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    if t.startswith("{") and t.endswith("}"):
+        return True
+    if t.startswith("[") and t.endswith("]"):
+        return True
+    if "\n{\"" in t or "\n[{\"" in t:
+        return True
+    if t.startswith("```json"):
+        return True
+    return False
+
+
+def _json_to_plain_text(text: str) -> str:
+    """Best-effort conversion from JSON payload to readable plain text."""
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-zA-Z]*\n", "", raw)
+        raw = re.sub(r"\n```$", "", raw)
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        return text
+
+    if isinstance(obj, dict):
+        lines = []
+        for k, v in obj.items():
+            if isinstance(v, (dict, list)):
+                lines.append(f"{k}: {json.dumps(v, ensure_ascii=False)}")
+            else:
+                lines.append(f"{k}: {v}")
+        return "\n".join(lines)
+    if isinstance(obj, list):
+        lines = []
+        for i, item in enumerate(obj, 1):
+            if isinstance(item, (dict, list)):
+                lines.append(f"{i}. {json.dumps(item, ensure_ascii=False)}")
+            else:
+                lines.append(f"{i}. {item}")
+        return "\n".join(lines)
+    return str(obj)
+
+
+def _strip_markdown_basic(text: str) -> str:
+    """Light markdown removal for cleaner plain text replies."""
+    if not text:
+        return ""
+    t = text
+    t = re.sub(r"```[\s\S]*?```", lambda m: m.group(0).strip("`").replace("\n", " "), t)
+    t = re.sub(r"`([^`]+)`", r"\1", t)
+    t = re.sub(r"\*\*([^*]+)\*\*", r"\1", t)
+    t = re.sub(r"\*([^*]+)\*", r"\1", t)
+    t = re.sub(r"_([^_]+)_", r"\1", t)
+    t = re.sub(r"^#{1,6}\s*", "", t, flags=re.MULTILINE)
+    t = re.sub(r"^\s*[-*]\s+", "", t, flags=re.MULTILINE)
+    t = re.sub(r"^\s*\d+\.\s+", "", t, flags=re.MULTILINE)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
+def _finalize_user_text(text: str) -> tuple[str, bool]:
+    """Return clean plain text and a flag indicating raw JSON was detected."""
+    t = _strip_internal_markup(text)
+    raw_json = _is_probably_raw_json(t)
+    if raw_json:
+        t = _json_to_plain_text(t)
+    t = _strip_markdown_basic(t)
+    if not t:
+        t = "Done."
+    return t, raw_json
 
 
 def _checkpoint_signature(messages: list[dict]) -> str:
@@ -1246,9 +1332,7 @@ async def run_agent(
                 continue
 
             # Final reply — strip any <think> block before sending
-            clean_reply = _strip_internal_markup(reply)
-            if not clean_reply:              # Fix #11/#14: guard empty final reply
-                clean_reply = "Done."
+            clean_reply, raw_json_detected = _finalize_user_text(reply)
             try:                             # Fix #16: guard memory write failure
                 mem.save_message(chat_id, "assistant", clean_reply)
             except Exception as me:
@@ -1256,7 +1340,15 @@ async def run_agent(
             _maybe_store_long_term_memory(chat_id, user_message, clean_reply)
             _invalidate_context_cache(chat_id)
             ACTIVE_TASKS.pop(chat_id, None)
-            _task_set(chat_id, status="done", phase="finished", step=global_step, attempt=attempt_step, finished_at=time.time())
+            _task_set(
+                chat_id,
+                status="done",
+                phase="finished",
+                step=global_step,
+                attempt=attempt_step,
+                finished_at=time.time(),
+                raw_json_detected=raw_json_detected,
+            )
             return clean_reply, media_to_send
 
     # Hit MAX_TOOL_ITERATIONS — save state so user can Continue
@@ -1847,6 +1939,8 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"Last heartbeat: {age}s ago")
         if rt.get("last_error"):
             lines.append(f"Last error: `{str(rt.get('last_error'))[:120]}`")
+        if "raw_json_detected" in rt:
+            lines.append(f"Raw JSON detected: {'yes' if rt.get('raw_json_detected') else 'no'}")
 
     if paused:
         lines.append("")
@@ -2006,12 +2100,11 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     })
                     continue
 
-                clean_reply = _strip_internal_markup(reply) if reply else "Done."
-                if not clean_reply:
-                    clean_reply = "Done."
+                clean_reply, raw_json_detected = _finalize_user_text(reply if reply else "Done.")
                 for chunk in [clean_reply[i:i+4000] for i in range(0, len(clean_reply), 4000)]:
                     await update.message.reply_text(chunk)
                 ACTIVE_TASKS.pop(chat_id, None)
+                _task_set(chat_id, status="done", phase="finished", raw_json_detected=raw_json_detected)
                 await _send_queued_media(update, agent_media)
                 return
         ACTIVE_TASKS.pop(chat_id, None)
