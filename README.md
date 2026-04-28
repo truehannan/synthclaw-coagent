@@ -16,7 +16,7 @@ There are big agent frameworks out there (see [comparison below](#synthclaw-vs-o
 - ⚡ **You want it running in 5 minutes**, not after configuring 47 TOML files
 - 💰 **You want it on a $6/month VPS**, not a Kubernetes cluster
 - 📱 **You want to chat with it on Telegram/WhatsApp**, not through a CLI or web UI
-- 📖 **You want to read and understand the entire codebase** in one sitting (~800 lines of Python)
+- 📖 **You want to read and understand the entire codebase** in one sitting (~1300 lines of Python)
 
 ---
 
@@ -186,9 +186,9 @@ SynthClaw works with any OpenAI-compatible API. Set `OPENAI_API_BASE` and `OPENA
 | | **SynthClaw-CoAgent** | **OpenClaw** |
 |---|---|---|
 | **Purpose** | Personal assistant for one person | Enterprise agent infrastructure |
-| **Language** | Python (~1300 lines) | Rust (~100K+ lines) |
-| **Setup time** | 5 minutes | Complex (Rust toolchain, TOML configs, binary compilation) |
-| **Server requirements** | $6/mo VPS (1 vCPU, 512MB RAM) | Significant resources |
+| **Language** | Python (~1300 lines) | Node.js (~100K+ lines) |
+| **Setup time** | 5 minutes | Complex (Node.js toolchain, TOML configs, binary compilation) |
+| **Server requirements** | $6/mo VPS (1 vCPU, 256MB RAM) | Significant resources |
 | **Channels** | Telegram + WhatsApp | 17+ (Telegram, Discord, Slack, Matrix, Signal, etc.) |
 | **Architecture** | Single process, simple loop | Gateway/daemon, trait-driven, plugin system |
 | **LLM integration** | Any OpenAI-compatible API | Custom provider traits, multiple backends |
