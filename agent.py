@@ -1441,7 +1441,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/agent \\<task\\> — Autonomous execution mode\n"
         "/task — Live task status\n"
         "/stop — Stop a running task\n"
-        "/ping — Check if alive\n\n"
+        "/ping — Check if alive\n"
+        "/update — Pull latest code and restart service\n\n"
         "*Media:* Send me photos, voice, audio, video, or files\\. "
         "I'll save and process them\\. I can also send files back to you\\.\n\n"
         "*Just chat normally:*\n"
@@ -1957,6 +1958,29 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🟢 Alive!")
 
 
+async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pull latest code from GitHub, install deps, and restart service."""
+    if not is_owner(update.effective_user.id):
+        return
+    msg = await update.message.reply_text("⏳ Updating agent from GitHub…")
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            "cd /opt/agent && git fetch origin main && git merge --ff-only origin/main && "
+            "/opt/agent/venv/bin/pip install -r requirements.txt 2>&1 && "
+            "systemctl restart agent && sleep 2 && systemctl is-active agent",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await proc.communicate()
+        result = stdout.decode(errors="ignore")[-500:]  # Last 500 chars
+        if proc.returncode == 0:
+            await msg.edit_text(f"✅ Update complete and restarted:\n```\n{result}\n```", parse_mode="Markdown")
+        else:
+            await msg.edit_text(f"⚠️ Update had issues:\n```\n{result}\n```", parse_mode="Markdown")
+    except Exception as e:
+        await msg.edit_text(f"❌ Update failed: {e}")
+
+
 async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Break down a task into steps without executing anything."""
     if not is_owner(update.effective_user.id):
@@ -2342,6 +2366,7 @@ def main():
     app.add_handler(CommandHandler("memory",  cmd_memory_cmd))
     app.add_handler(CommandHandler("run",     cmd_run))
     app.add_handler(CommandHandler("ping",    cmd_ping))
+    app.add_handler(CommandHandler("update",  cmd_update))
     app.add_handler(CommandHandler("task",    cmd_task))
     app.add_handler(CommandHandler("stop",    cmd_stop))
     app.add_handler(CommandHandler("plan",    cmd_plan))
