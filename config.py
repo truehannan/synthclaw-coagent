@@ -1,17 +1,22 @@
+import os
 from pathlib import Path
 
-BASE_DIR = Path("/opt/agent")
+BASE_DIR = Path(os.getenv("SYNTHCLAW_BASE_DIR", "/opt/agent"))
 WORKSPACE_DIR = BASE_DIR / "workspace"
 MEDIA_DIR = WORKSPACE_DIR / "media"
 DB_PATH = BASE_DIR / "agent.db"
 LOG_PATH = BASE_DIR / "agent.log"
 
-TELEGRAM_TOKEN = "8738793728:AAGPWBDVqfb6ukUA87XbMP-4pGAVr3gLNUw"
+INTERFACE_MODE = os.getenv("INTERFACE_MODE", "telegram").strip().lower()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 
-OPENAI_API_KEY = "sk-do-qUSAyRNb9gxU_IdkSOUXOcQCAvKZUjEcWSMcOW2MHjMdZ0zpSW0CVx3kku"
-OPENAI_API_BASE = "https://inference.do-ai.run/v1"
-OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
-GITHUB_MODELS_API_BASE = "https://models.inference.ai.azure.com"
+# Discord support removed; keep Telegram-only
+# Provide TELEGRAM_TOKEN in .env file (never commit secrets)
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://inference.do-ai.run/v1").strip()
+OPENROUTER_API_BASE = os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1").strip()
+GITHUB_MODELS_API_BASE = os.getenv("GITHUB_MODELS_API_BASE", "https://models.inference.ai.azure.com").strip()
 
 DEFAULT_MODEL = "llama3.3-70b-instruct"
 MODEL_CATALOG = {
