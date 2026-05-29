@@ -1,83 +1,142 @@
-# 🤖 SynthClaw-CoAgent
+# SynthClaw CoAgent
 
-![synthclaw-coagent](56771a46-71a7-47c7-a0c5-89c64da22c4e.png)
+```
+  /$$$$$$                        /$$     /$$                 /$$                                /$$$$$$                                                      /$$    
+ /$$__  $$                      | $$    | $$                | $$                               /$$__  $$                                                    | $$    
+| $$  \__/ /$$   /$$ /$$$$$$$  /$$$$$$  | $$$$$$$   /$$$$$$$| $$  /$$$$$$  /$$  /$$  /$$      | $$  \__/  /$$$$$$   /$$$$$$   /$$$$$$   /$$$$$$  /$$$$$$$  /$$$$$$  
+|  $$$$$$ | $$  | $$| $$__  $$|_  $$_/  | $$__  $$ /$$_____/| $$ |____  $$| $$ | $$ | $$      | $$       /$$__  $$ |____  $$ /$$__  $$ /$$__  $$| $$__  $$|_  $$_/  
+ \____  $$| $$  | $$| $$  \ $$  | $$    | $$  \ $$| $$      | $$  /$$$$$$$| $$ | $$ | $$      | $$      | $$  \ $$  /$$$$$$$| $$  \ $$| $$$$$$$$| $$  \ $$  | $$    
+ /$$  \ $$| $$  | $$| $$  | $$  | $$ /$$| $$  | $$| $$      | $$ /$$__  $$| $$ | $$ | $$      | $$    $$| $$  | $$ /$$__  $$| $$  | $$| $$_____/| $$  | $$  | $$ /$$
+|  $$$$$$/|  $$$$$$$| $$  | $$  |  $$$$/| $$  | $$|  $$$$$$$| $$|  $$$$$$$|  $$$$$/$$$$/      |  $$$$$$/|  $$$$$$/|  $$$$$$$|  $$$$$$$|  $$$$$$$| $$  | $$  |  $$$$/
+ \______/  \____  $$|__/  |__/   \___/  |__/  |__/ \_______/|__/ \_______/ \_____/\___/        \______/  \______/  \_______/ \____  $$ \_______/|__/  |__/   \___/  
+           /$$  | $$                                                                                                         /$$  \ $$                              
+          |  $$$$$$/                                                                                                        |  $$$$$$/                              
+           \______/                                                                                                          \______/                               
+```
 
 **Your personal AI agent that lives on a cheap VPS and talks to you through Telegram or WhatsApp.**
 
-SynthClaw-CoAgent is a lightweight, self-hosted AI agent that runs on a single server. It can execute shell commands, manage files, call APIs, run background services, store encrypted credentials, and remember things across conversations — all controlled through natural chat.
+SynthClaw-CoAgent is a lightweight, self-hosted AI agent that runs on a single server. It can execute shell commands, manage files, call APIs, run background services, store encrypted credentials, and remember things across conversations — all controlled through natural chat **or the CLI**.
 
 ---
 
 ## 🎯 Why SynthClaw?
 
-There are big agent frameworks out there (see [comparison below](#synthclaw-vs-openclaw)). SynthClaw isn't trying to compete with them. It fills a different gap:
-
 - 👤 **You want a personal AI assistant**, not an enterprise platform
 - ⚡ **You want it running in 5 minutes**, not after configuring 47 TOML files
 - 💰 **You want it on a $6/month VPS**, not a Kubernetes cluster
-- 📱 **You want to chat with it on Telegram/WhatsApp**, not through a CLI or web UI
+- 📱 **You want to chat with it on Telegram/WhatsApp**, not through a web UI
+- 🖥️ **You want full CLI control** — setup, deploy, manage, all with one command
 - 📖 **You want to read and understand the entire codebase** in one sitting (~1300 lines of Python)
 
 ---
 
-## ✨ Features
+## 🚀 Quick Start (CLI Wizard)
 
-- 💬 **Conversational AI** — Not just a task executor. It chats, explains, has opinions, and knows when to use tools vs just talk.
-- 🛠️ **12 Built-in Tools** — Shell commands, file I/O, HTTP requests, systemd services, encrypted credential storage, persistent memory
-- 📲 **Telegram + WhatsApp** — Full bot interfaces for both platforms
-- 🔌 **Any LLM Backend** — Works with any OpenAI-compatible API (DigitalOcean Gradient AI, OpenAI, Ollama, vLLM, etc.)
-- 🔄 **Multi-Model** — Switch between models on the fly with `/model`
-- 🔐 **Encrypted Credentials** — Fernet encryption for stored API keys and passwords
-- 🧠 **Persistent Memory** — Key-value store that survives across conversations
-- 📋 **Planning Mode** — `/plan` breaks tasks into steps without executing
-- 🤖 **Agent Mode** — `/agent` executes tasks autonomously, chaining tools without confirmation
-- 🔒 **Owner Lock** — First user to `/start` becomes the owner; everyone else is blocked
-- ⚙️ **Interactive Setup** — CLI wizard generates your `.env` configuration
-
----
-
-## 🚀 Quick Start
-
-### 1. Clone
+### 1. Clone & Install CLI
 
 ```bash
 git clone https://github.com/truehannan/synthclaw-coagent.git
-cd synthclaw-coagent
+cd synthclaw-coagent/cli
+npm install && npm run build
+npm link
 ```
 
-### 2. Configure
+After `npm link`, the `synthclaw` command is available globally on your machine.
 
-**Option A — Interactive wizard (recommended):**
-```bash
-python3 setup_cli.py
-```
-
-**Option B — Manual:**
-```bash
-cp .env.example .env
-nano .env  # Fill in your tokens
-```
-
-### 3. Deploy to Server
+### 2. Run the Setup Wizard
 
 ```bash
-# Copy files to your VPS
-scp -r ./* root@your-server:/opt/agent/
-
-# SSH in and run setup
-ssh root@your-server 'bash /opt/agent/setup_server.sh'
-
-# Start the agent
-ssh root@your-server 'systemctl start agent'
+synthclaw setup
 ```
 
-### 4. Chat
+The wizard interactively asks for everything:
+- Interface mode (Telegram / WhatsApp / Both)
+- Telegram bot token
+- WhatsApp API credentials (if applicable)
+- LLM provider API key & base URL
+- Default model selection
+- Server settings (remote host, base directory)
+
+No more manually editing `.env` files. One command handles it all.
+
+### 3. Deploy to Your VPS
+
+```bash
+synthclaw deploy
+```
+
+This uploads all agent files, writes your `.env`, installs Python dependencies, sets up the systemd service, and starts the agent — all in one step.
+
+### 4. Start Chatting
 
 Open Telegram, find your bot, send `/start`. That's it.
 
+Or use the CLI directly:
+
+```bash
+synthclaw agent "deploy a node server on port 3000"
+synthclaw run "systemctl status nginx"
+synthclaw plan "set up daily backups for /var/www"
+```
+
 ---
 
-## 📋 Commands
+## 🖥️ CLI Commands
+
+After `npm link`, all commands start with `synthclaw`:
+
+### Setup & Lifecycle
+
+| Command | Description |
+|---------|-------------|
+| `synthclaw setup` | Interactive wizard — configure all credentials & settings |
+| `synthclaw deploy` | Deploy agent to your remote VPS (upload + install + start) |
+| `synthclaw start` | Start the agent (runs persistently until machine stops) |
+| `synthclaw stop` | Stop the running agent |
+| `synthclaw status` | Show agent status, model, config |
+| `synthclaw logs` | Tail agent logs (`-f` for follow mode) |
+
+### AI & Execution
+
+| Command | Description |
+|---------|-------------|
+| `synthclaw run <cmd>` | Execute a shell command on the agent server |
+| `synthclaw plan <task>` | Break a task into steps (no execution) |
+| `synthclaw agent <task>` | Autonomous mode — executes without asking |
+
+### Memory & Credentials
+
+| Command | Description |
+|---------|-------------|
+| `synthclaw memory` | Show all remembered facts |
+| `synthclaw memory set <key> <value>` | Remember a fact |
+| `synthclaw memory get <key>` | Recall a specific fact |
+| `synthclaw creds` | List stored credentials (values hidden) |
+| `synthclaw creds set <name> <value>` | Store an encrypted credential |
+| `synthclaw creds get <name>` | Retrieve a credential |
+
+### Model Management
+
+| Command | Description |
+|---------|-------------|
+| `synthclaw model` | Show current LLM model |
+| `synthclaw model <name>` | Switch to a different model |
+| `synthclaw models` | List all available models by provider |
+
+### Utility
+
+| Command | Description |
+|---------|-------------|
+| `synthclaw ping` | Check if the agent is alive |
+| `synthclaw clear` | Wipe conversation history |
+| `synthclaw help` | Show all commands |
+
+---
+
+## 📲 Telegram Commands
+
+When chatting with your bot on Telegram, these slash commands are available:
 
 | Command | Description |
 |---------|-------------|
@@ -103,28 +162,45 @@ Open Telegram, find your bot, send `/start`. That's it.
 
 ---
 
+## ✨ Features
+
+- 💬 **Conversational AI** — Not just a task executor. It chats, explains, has opinions, and knows when to use tools vs just talk.
+- 🛠️ **12 Built-in Tools** — Shell commands, file I/O, HTTP requests, systemd services, encrypted credential storage, persistent memory
+- 📲 **Telegram + WhatsApp** — Full bot interfaces for both platforms
+- 🖥️ **Full CLI** — Every bot command is also a `synthclaw` CLI command
+- 🔌 **Any LLM Backend** — Works with any OpenAI-compatible API (DigitalOcean Gradient AI, OpenAI, Ollama, vLLM, etc.)
+- 🔄 **Multi-Model** — Switch between models on the fly
+- 🔐 **Encrypted Credentials** — Fernet encryption for stored API keys and passwords
+- 🧠 **Persistent Memory** — Key-value store that survives across conversations
+- 📋 **Planning Mode** — Breaks tasks into steps without executing
+- 🤖 **Agent Mode** — Executes tasks autonomously, chaining tools without confirmation
+- 🔒 **Owner Lock** — First user to `/start` becomes the owner; everyone else is blocked
+- ⚙️ **One-Command Setup** — `synthclaw setup` wizard generates everything
+
+---
+
 ## 🏗️ Architecture
 
 ```
-┌──────────────┐     ┌──────────────┐
-│   Telegram   │     │   WhatsApp   │
-│   (polling)  │     │  (webhooks)  │
-└──────┬───────┘     └──────┬───────┘
-       │                    │
-       └────────┬───────────┘
-                │
-         ┌──────▼──────┐
-         │  Agent Core │  ← LLM + tool-call loop
-         │  (agent.py) │
-         └──────┬──────┘
-                │
-    ┌───────────┼───────────┐
-    │           │           │
-┌───▼───┐ ┌────▼────┐ ┌────▼────┐
-│ Tools │ │ Memory  │ │ Config  │
-│12 fns │ │ SQLite  │ │  .env   │
-│       │ │+Fernet  │ │         │
-└───────┘ └─────────┘ └─────────┘
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   Telegram   │     │   WhatsApp   │     │  CLI (Node)  │
+│   (polling)  │     │  (webhooks)  │     │  synthclaw   │
+└──────┬───────┘     └──────┬───────┘     └──────┬───────┘
+       │                    │                    │
+       └────────────┬───────┘────────────────────┘
+                    │
+             ┌──────▼──────┐
+             │  Agent Core │  ← LLM + tool-call loop
+             │  (agent.py) │
+             └──────┬──────┘
+                    │
+        ┌───────────┼───────────┐
+        │           │           │
+    ┌───▼───┐ ┌────▼────┐ ┌────▼────┐
+    │ Tools │ │ Memory  │ │ Config  │
+    │12 fns │ │ SQLite  │ │  .env   │
+    │       │ │+Fernet  │ │         │
+    └───────┘ └─────────┘ └─────────┘
 ```
 
 **Files:**
@@ -137,28 +213,32 @@ Open Telegram, find your bot, send `/start`. That's it.
 | `tools.py` | 12 tool implementations | ~230 |
 | `memory.py` | SQLite + Fernet encryption layer | ~170 |
 | `config.py` | Environment-based configuration | ~45 |
-| `setup_cli.py` | Interactive setup wizard | ~180 |
-| `setup_server.sh` | VPS bootstrap script | ~50 |
+| `cli/` | Node.js CLI package (`synthclaw` commands) | ~600 |
 
-**Total: ~1300 lines.** You can read and understand the entire thing.
+**Total: ~1900 lines.** You can still read and understand the entire thing.
 
 ---
 
 ## 💬 WhatsApp Setup
 
-WhatsApp uses the [Meta Cloud API](https://developers.facebook.com/docs/whatsapp/cloud-api/get-started) with webhooks (unlike Telegram's polling).
+WhatsApp uses the [Meta Cloud API](https://developers.facebook.com/docs/whatsapp/cloud-api/get-started) with webhooks.
 
-### Steps:
+The `synthclaw setup` wizard handles all WhatsApp configuration. You just need:
 
-1. Create a [Meta Developer account](https://developers.facebook.com/)
-2. Create an app → Add WhatsApp product
-3. Get your **Access Token** and **Phone Number ID** from the WhatsApp dashboard
-4. Run `python setup_cli.py` and choose "whatsapp" or "both"
-5. Deploy to your server
-6. Set up your webhook URL in Meta dashboard:
-   - URL: `https://your-domain:8443/webhook`
-   - Verify token: the one from your `.env`
-   - Subscribe to `messages`
+1. A [Meta Developer account](https://developers.facebook.com/)
+2. An app with WhatsApp product added
+3. Your **Access Token** and **Phone Number ID** from the WhatsApp dashboard
+
+Then run:
+```bash
+synthclaw setup   # choose "whatsapp" or "both"
+synthclaw deploy  # deploys everything to your VPS
+```
+
+Set up your webhook URL in Meta dashboard:
+- URL: `https://your-domain:8443/webhook`
+- Verify token: shown after setup
+- Subscribe to `messages`
 
 > **Note:** You need HTTPS for webhooks. Use nginx + Let's Encrypt or Cloudflare Tunnel.
 
@@ -166,7 +246,7 @@ WhatsApp uses the [Meta Cloud API](https://developers.facebook.com/docs/whatsapp
 
 ## 🧠 LLM Providers
 
-SynthClaw works with any OpenAI-compatible API. Set `OPENAI_API_BASE` and `OPENAI_API_KEY` in your `.env`.
+SynthClaw works with any OpenAI-compatible API. Configure via `synthclaw setup` or `synthclaw model`.
 
 | Provider | API Base | Notes |
 |----------|----------|-------|
@@ -181,28 +261,22 @@ SynthClaw works with any OpenAI-compatible API. Set `OPENAI_API_BASE` and `OPENA
 
 ## ⚖️ SynthClaw vs OpenClaw
 
-[OpenClaw](https://github.com/openclaw/openclaw) is a massive open-source AI agent infrastructure project — 26K+ stars, 137 contributors, written in Rust. It's impressive engineering. But it solves a different problem.
-
 | | **SynthClaw-CoAgent** | **OpenClaw** |
 |---|---|---|
 | **Purpose** | Personal assistant for one person | Enterprise agent infrastructure |
-| **Language** | Python (~1300 lines) | Node.js (~100K+ lines) |
-| **Setup time** | 5 minutes | Complex (Node.js toolchain, TOML configs, binary compilation) |
+| **Language** | Python + Node CLI (~1900 lines) | Node.js (~100K+ lines) |
+| **Setup time** | `synthclaw setup` → 2 minutes | Complex (Node.js toolchain, TOML configs) |
 | **Server requirements** | $6/mo VPS (1 vCPU, 256MB RAM) | Significant resources |
-| **Channels** | Telegram + WhatsApp | 17+ (Telegram, Discord, Slack, Matrix, Signal, etc.) |
-| **Architecture** | Single process, simple loop | Gateway/daemon, trait-driven, plugin system |
-| **LLM integration** | Any OpenAI-compatible API | Custom provider traits, multiple backends |
-| **Configuration** | `.env` file + CLI wizard | TOML files, identity system (AIEOS) |
-| **Security model** | Owner lock + Fernet encryption | Sandboxing, pairing, allowlists, audit trails |
-| **Memory** | SQLite + key-value store | Multiple backends (Redis, Postgres, etc.) |
+| **Channels** | Telegram + WhatsApp + CLI | 17+ (Telegram, Discord, Slack, etc.) |
+| **Configuration** | Interactive wizard | TOML files, identity system |
 | **License** | Source Available (non-commercial) | MIT + Apache-2.0 |
 | **Who it's for** | Solo developers, personal use | Teams, orgs, production deployments |
-
-**TL;DR:** OpenClaw is a framework for building agent systems. SynthClaw is a ready-to-use personal agent you deploy in 5 minutes and chat with from your phone.
 
 ---
 
 ## 🔐 Environment Variables
+
+These are configured automatically by `synthclaw setup`. You can also edit `.env` manually:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
