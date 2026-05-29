@@ -181,7 +181,7 @@ SynthClaw works with any OpenAI-compatible API. Set `OPENAI_API_BASE` and `OPENA
 
 ## ⚖️ SynthClaw vs OpenClaw
 
-[OpenClaw](https://github.com/openclaw-ai/openclaw) is a massive open-source AI agent infrastructure project — 26K+ stars, 137 contributors, written in Rust. It's impressive engineering. But it solves a different problem.
+[OpenClaw](https://github.com/openclaw/openclaw) is a massive open-source AI agent infrastructure project — 26K+ stars, 137 contributors, written in Rust. It's impressive engineering. But it solves a different problem.
 
 | | **SynthClaw-CoAgent** | **OpenClaw** |
 |---|---|---|
