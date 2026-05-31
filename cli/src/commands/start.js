@@ -87,11 +87,31 @@ export async function runStart(args) {
     return;
   }
 
-  // Verify venv exists
+  // Ensure venv exists — auto-create if missing
   const venvDir = join(root, "venv");
   if (!existsSync(venvDir)) {
-    printError("Python venv not found. Run 'synthclaw setup' and install dependencies.");
-    return;
+    const spinnerVenv = ora("Python venv not found — creating automatically...").start();
+    try {
+      let pythonBin = "python3";
+      try { execSync(`${pythonBin} --version`, { encoding: "utf-8" }); }
+      catch { pythonBin = "python"; }
+
+      execSync(`${pythonBin} -m venv "${venvDir}"`, { encoding: "utf-8", cwd: root, timeout: 30000 });
+      spinnerVenv.succeed("Virtual environment created");
+
+      const requirementsPath = join(root, "requirements.txt");
+      if (existsSync(requirementsPath)) {
+        const spinnerPip = ora("Installing Python dependencies...").start();
+        const pipBin = join(venvDir, "bin", "pip");
+        execSync(`"${pipBin}" install --upgrade pip -q`, { encoding: "utf-8", timeout: 60000, cwd: root });
+        execSync(`"${pipBin}" install -r "${requirementsPath}" -q`, { encoding: "utf-8", timeout: 180000, cwd: root });
+        spinnerPip.succeed("Dependencies installed");
+      }
+    } catch (err) {
+      spinnerVenv.fail("Could not create Python venv: " + (err.stderr || err.message).slice(0, 200));
+      printInfo("Make sure Python 3.10+ is installed on this machine.");
+      return;
+    }
   }
 
   // Create workspace dir if missing
