@@ -115,12 +115,20 @@ export async function runStart(args) {
     }
   }
 
-  // Ensure venv exists — auto-create if missing
+  // Ensure venv exists and is healthy — recreate if broken
   const venvDir = join(root, "venv");
+  const venvPip = join(venvDir, "bin", "pip");
   let pythonBin = getVenvPython(root);
 
+  // If venv dir exists but pip or python is missing, it's corrupted — nuke it
+  if (existsSync(venvDir) && (!pythonBin || !existsSync(venvPip))) {
+    printInfo("Venv is corrupted (missing binaries). Recreating...");
+    execSync(`rm -rf "${venvDir}"`, { encoding: "utf-8" });
+    pythonBin = null;
+  }
+
   if (!pythonBin) {
-    const spinnerVenv = ora("Python venv not found — creating...").start();
+    const spinnerVenv = ora("Creating Python virtual environment...").start();
     try {
       createVenv(root);
       pythonBin = getVenvPython(root);
@@ -142,17 +150,26 @@ export async function runStart(args) {
     const spinnerDeps = ora("Missing dependencies — installing...").start();
     try {
       const pipBin = join(venvDir, "bin", "pip");
-      const requirementsPath = join(root, "requirements.txt");
-      execSync(`"${pipBin}" install -r "${requirementsPath}" -q`, { encoding: "utf-8", timeout: 180000, cwd: root });
+      if (!existsSync(pipBin)) {
+        // pip missing — recreate entire venv
+        spinnerDeps.text = "Venv broken — recreating...";
+        execSync(`rm -rf "${venvDir}"`, { encoding: "utf-8" });
+        createVenv(root);
+        pythonBin = getVenvPython(root);
+      } else {
+        const requirementsPath = join(root, "requirements.txt");
+        execSync(`"${pipBin}" install -r "${requirementsPath}" -q`, { encoding: "utf-8", timeout: 180000, cwd: root });
+      }
       spinnerDeps.succeed("Dependencies installed");
 
       if (!verifyImports(pythonBin, root)) {
-        spinnerDeps.fail("Still missing modules after install");
-        printError("Run manually: " + pipBin + " install -r requirements.txt");
+        spinnerDeps.fail("Still can't import modules after install");
+        printError("Try: rm -rf venv && synthclaw start");
         return;
       }
     } catch (err) {
-      spinnerDeps.fail("pip install failed: " + (err.stderr || err.message).slice(0, 200));
+      spinnerDeps.fail("Install failed: " + (err.stderr || err.message).slice(0, 200));
+      printInfo("Try: rm -rf venv && synthclaw start");
       return;
     }
   }
