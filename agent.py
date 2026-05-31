@@ -56,6 +56,7 @@ PROVIDER_META = {
     "OpenAI": {"slug": "oa", "emoji": "🟢"},
     "OpenRouter": {"slug": "or", "emoji": "🧭"},
     "GitHub": {"slug": "gh", "emoji": "🐙"},
+    "NVIDIA": {"slug": "nv", "emoji": "🟩"},
 }
 OPENAI_DIRECT_API_BASE = "https://api.openai.com/v1"
 DO_MODELS_CACHE: dict[str, object] = {"ts": 0.0, "models": set()}
@@ -66,6 +67,8 @@ def _provider_from_model(model: str) -> str:
         return "OpenRouter"
     if model.startswith("github:"):
         return "GitHub"
+    if model.startswith("nvidia:"):
+        return "NVIDIA"
     if model.startswith("anthropic-"):
         return "Anthropic"
     if model.startswith("openai-"):
@@ -82,6 +85,8 @@ def _provider_key_name(provider: str) -> str:
         return "OPENAI_PROVIDER_API_KEY"
     if provider == "Anthropic":
         return "ANTHROPIC_API_KEY"
+    if provider == "NVIDIA":
+        return "NVIDIA_API_KEY"
     return "OPENAI_API_KEY"
 
 
@@ -92,6 +97,8 @@ def _provider_base_url(provider: str) -> str:
         return cfg.GITHUB_MODELS_API_BASE
     if provider == "OpenAI":
         return OPENAI_DIRECT_API_BASE
+    if provider == "NVIDIA":
+        return cfg.NVIDIA_API_BASE
     return cfg.OPENAI_API_BASE
 
 
@@ -159,6 +166,8 @@ def _resolve_client_and_model(selected_model: str) -> tuple[OpenAI, str, str]:
     if provider == "OpenRouter":
         api_model = selected_model.split(":", 1)[1]
     elif provider == "GitHub":
+        api_model = selected_model.split(":", 1)[1]
+    elif provider == "NVIDIA":
         api_model = selected_model.split(":", 1)[1]
     elif provider == "OpenAI" and not force_gradient:
         api_model = selected_model.replace("openai-", "", 1)
@@ -802,6 +811,8 @@ def _providerkey_name(provider: str) -> str | None:
         return "GITHUB_MODELS_API_KEY"
     if p in ("do", "digitalocean"):
         return "OPENAI_API_KEY"
+    if p in ("nvidia", "nv"):
+        return "NVIDIA_API_KEY"
     return None
 
 
@@ -836,6 +847,11 @@ def _validate_provider_key(provider: str, key: str) -> tuple[bool, str]:
         valid_prefix = ("ghp_", "github_pat_", "gho_", "ghu_", "ghs_", "ghr_")
         if not k.startswith(valid_prefix):
             return False, "GitHub token should look like `ghp_...` or `github_pat_...`"
+        return True, ""
+
+    if p in ("nvidia", "nv"):
+        if not k.startswith("nvapi-"):
+            return False, "NVIDIA NIM key should start with `nvapi-`"
         return True, ""
 
     return False, "Unknown provider."

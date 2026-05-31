@@ -39,6 +39,17 @@ const MODEL_CATALOG = {
     "github:gpt-4o",
     "github:Meta-Llama-3.1-70B-Instruct",
   ],
+  "NVIDIA": [
+    "nvidia:meta/llama-3.3-70b-instruct",
+    "nvidia:meta/llama-3.1-405b-instruct",
+    "nvidia:mistralai/mistral-large-2-instruct",
+    "nvidia:mistralai/magistral-small-2506",
+    "nvidia:deepseek-ai/deepseek-r1",
+    "nvidia:qwen/qwen3-235b-instruct",
+    "nvidia:google/gemma-3-27b-it",
+    "nvidia:nvidia/llama-3.1-nemotron-70b-instruct",
+    "nvidia:nvidia/nemotron-mini-4b-instruct",
+  ],
 };
 
 export async function runModels() {

@@ -44,6 +44,7 @@ OPENAI_API_KEY = _clean_env("OPENAI_API_KEY")
 OPENAI_API_BASE = _clean_env("OPENAI_API_BASE", "https://inference.do-ai.run/v1")
 OPENROUTER_API_BASE = _clean_env("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
 GITHUB_MODELS_API_BASE = _clean_env("GITHUB_MODELS_API_BASE", "https://models.inference.ai.azure.com")
+NVIDIA_API_BASE = _clean_env("NVIDIA_API_BASE", "https://integrate.api.nvidia.com/v1")
 
 DEFAULT_MODEL = "llama3.3-70b-instruct"
 MODEL_CATALOG = {
@@ -114,6 +115,17 @@ MODEL_CATALOG = {
         "github:DeepSeek-V3",
         "github:Qwen2.5-72B-Instruct",
     ],
+    "NVIDIA": [
+        "nvidia:meta/llama-3.3-70b-instruct",
+        "nvidia:meta/llama-3.1-405b-instruct",
+        "nvidia:mistralai/mistral-large-2-instruct",
+        "nvidia:mistralai/magistral-small-2506",
+        "nvidia:deepseek-ai/deepseek-r1",
+        "nvidia:qwen/qwen3-235b-instruct",
+        "nvidia:google/gemma-3-27b-it",
+        "nvidia:nvidia/llama-3.1-nemotron-70b-instruct",
+        "nvidia:nvidia/nemotron-mini-4b-instruct",
+    ],
 }
 
 AVAILABLE_MODELS = [m for provider_models in MODEL_CATALOG.values() for m in provider_models]
@@ -170,6 +182,16 @@ MODEL_PRICING: dict[str, tuple[float, float]] = {
     "openai-o1":                    (15.00, 60.00),
     "openai-o3-mini":               (1.10,  4.40),
     "openai-o3":                    (10.00, 40.00),
+    # ── NVIDIA NIM (build.nvidia.com pricing) ──────────────────────────
+    "nvidia:meta/llama-3.3-70b-instruct":         (0.60, 0.60),
+    "nvidia:meta/llama-3.1-405b-instruct":        (3.00, 3.00),
+    "nvidia:mistralai/mistral-large-2-instruct":  (2.00, 6.00),
+    "nvidia:mistralai/magistral-small-2506":      (0.40, 1.60),
+    "nvidia:deepseek-ai/deepseek-r1":             (3.00, 12.00),
+    "nvidia:qwen/qwen3-235b-instruct":            (3.00, 12.00),
+    "nvidia:google/gemma-3-27b-it":               (0.20, 0.40),
+    "nvidia:nvidia/llama-3.1-nemotron-70b-instruct": (0.60, 0.60),
+    "nvidia:nvidia/nemotron-mini-4b-instruct":    (0.05, 0.05),
 }
 
 # Marker to know which models have confirmed vs estimated pricing
