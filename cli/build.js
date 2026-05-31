@@ -8,7 +8,17 @@ await build({
   format: "esm",
   outfile: "dist/index.js",
   banner: { js: "#!/usr/bin/env node\n" },
-  external: ["shelljs"],
+  external: [
+    "shelljs",
+    "chalk",
+    "inquirer",
+    "ora",
+    "conf",
+    "node:*", // Mark all node built-in modules as external
+  ],
+  loader: {
+    ".node": "file",
+  },
 });
 
 console.log("✓ Built dist/index.js");

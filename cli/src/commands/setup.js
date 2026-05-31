@@ -1,6 +1,6 @@
-import inquirer from "inquirer";
 import chalk from "chalk";
 import ora from "ora";
+import inquirer from "inquirer";
 import { writeFileSync } from "fs";
 import { join } from "path";
 import { randomBytes } from "crypto";
