@@ -1,10 +1,11 @@
 import chalk from "chalk";
 import ora from "ora";
 import inquirer from "inquirer";
-import { writeFileSync } from "fs";
+import { writeFileSync, existsSync } from "fs";
 import { join } from "path";
+import { execSync } from "child_process";
 import { randomBytes } from "crypto";
-import { config, generateEnvContent, getProjectRoot, printSuccess, printInfo } from "../utils.js";
+import { config, generateEnvContent, getProjectRoot, printSuccess, printError, printInfo } from "../utils.js";
 
 export async function runSetup() {
   console.log(
@@ -208,16 +209,95 @@ export async function runSetup() {
   config.set("max_tool_iterations", serverAnswers.maxIterations);
   config.set("max_history_messages", serverAnswers.maxHistory);
 
-  // Write .env file
-  const spinner = ora("Writing .env configuration...").start();
+  // Step 6: Write .env file
+  const spinner1 = ora("Writing .env configuration...").start();
+  const root = getProjectRoot();
   try {
     const envContent = generateEnvContent();
-    const root = getProjectRoot();
     const envPath = join(root, ".env");
     writeFileSync(envPath, envContent);
-    spinner.succeed(`Configuration saved to ${envPath}`);
+    spinner1.succeed(`Configuration saved to ${envPath}`);
   } catch (err) {
-    spinner.warn("Could not write local .env (will use stored config)");
+    spinner1.warn("Could not write local .env (will use stored config)");
+  }
+
+  // Step 7: Install Python dependencies locally
+  console.log("");
+  const { installDeps } = await inquirer.prompt([
+    {
+      type: "confirm",
+      name: "installDeps",
+      message: "Install Python dependencies now? (creates venv + pip install)",
+      default: true,
+    },
+  ]);
+
+  if (installDeps) {
+    const venvPath = join(root, "venv");
+    const requirementsPath = join(root, "requirements.txt");
+
+    if (!existsSync(requirementsPath)) {
+      printError(`requirements.txt not found at ${requirementsPath}`);
+    } else {
+      // Detect python3 binary
+      let pythonBin = "python3";
+      try {
+        execSync(`${pythonBin} --version`, { encoding: "utf-8" });
+      } catch {
+        pythonBin = "python";
+        try {
+          execSync(`${pythonBin} --version`, { encoding: "utf-8" });
+        } catch {
+          printError("Python 3 not found. Please install Python 3.10+ first.");
+          pythonBin = null;
+        }
+      }
+
+      if (pythonBin) {
+        // Create venv
+        const spinnerVenv = ora("Creating Python virtual environment...").start();
+        try {
+          if (!existsSync(venvPath)) {
+            execSync(`${pythonBin} -m venv "${venvPath}"`, {
+              encoding: "utf-8",
+              timeout: 30000,
+              cwd: root,
+            });
+          }
+          spinnerVenv.succeed("Virtual environment ready");
+        } catch (err) {
+          spinnerVenv.fail("Could not create venv: " + err.message);
+        }
+
+        // Install dependencies
+        if (existsSync(venvPath)) {
+          const spinnerPip = ora("Installing Python dependencies (this may take a minute)...").start();
+          try {
+            const pipBin = join(venvPath, "bin", "pip");
+            execSync(`"${pipBin}" install --upgrade pip -q`, {
+              encoding: "utf-8",
+              timeout: 60000,
+              cwd: root,
+            });
+            execSync(`"${pipBin}" install -r "${requirementsPath}" -q`, {
+              encoding: "utf-8",
+              timeout: 180000,
+              cwd: root,
+            });
+            spinnerPip.succeed("Python dependencies installed");
+          } catch (err) {
+            spinnerPip.fail("pip install failed: " + (err.stderr || err.message).slice(0, 200));
+            printInfo("You can retry manually: venv/bin/pip install -r requirements.txt");
+          }
+        }
+      }
+    }
+
+    // Create workspace directory
+    const workspaceDir = join(root, "workspace");
+    try {
+      execSync(`mkdir -p "${workspaceDir}"`, { encoding: "utf-8" });
+    } catch {}
   }
 
   // Summary
@@ -232,10 +312,18 @@ export async function runSetup() {
     printSuccess(
       `Remote: ${config.get("remote_user")}@${config.get("remote_host")}`
     );
+  } else {
+    printSuccess("Mode: Local (agent runs on this machine)");
   }
   console.log("");
   printInfo("Next steps:");
-  console.log(chalk.dim("  synthclaw deploy    # deploy to your VPS"));
-  console.log(chalk.dim("  synthclaw start     # start the agent"));
+  if (config.get("remote_host")) {
+    console.log(chalk.dim("  synthclaw deploy    # deploy to your VPS"));
+    console.log(chalk.dim("  synthclaw start     # start the agent (on VPS)"));
+  } else {
+    console.log(chalk.dim("  synthclaw start     # start the agent locally"));
+  }
+  console.log(chalk.dim("  synthclaw status    # check if running"));
+  console.log(chalk.dim("  synthclaw logs      # view agent output"));
   console.log("");
 }
