@@ -57,6 +57,7 @@ PROVIDER_META = {
     "OpenRouter": {"slug": "or", "emoji": "🧭"},
     "GitHub": {"slug": "gh", "emoji": "🐙"},
     "NVIDIA": {"slug": "nv", "emoji": "🟩"},
+    "HuggingFace": {"slug": "hf", "emoji": "🤗"},
 }
 OPENAI_DIRECT_API_BASE = "https://api.openai.com/v1"
 DO_MODELS_CACHE: dict[str, object] = {"ts": 0.0, "models": set()}
@@ -69,6 +70,8 @@ def _provider_from_model(model: str) -> str:
         return "GitHub"
     if model.startswith("nvidia:"):
         return "NVIDIA"
+    if model.startswith("hf:"):
+        return "HuggingFace"
     if model.startswith("anthropic-"):
         return "Anthropic"
     if model.startswith("openai-"):
@@ -87,6 +90,8 @@ def _provider_key_name(provider: str) -> str:
         return "ANTHROPIC_API_KEY"
     if provider == "NVIDIA":
         return "NVIDIA_API_KEY"
+    if provider == "HuggingFace":
+        return "HUGGINGFACE_API_KEY"
     return "OPENAI_API_KEY"
 
 
@@ -99,6 +104,8 @@ def _provider_base_url(provider: str) -> str:
         return OPENAI_DIRECT_API_BASE
     if provider == "NVIDIA":
         return cfg.NVIDIA_API_BASE
+    if provider == "HuggingFace":
+        return cfg.HUGGINGFACE_API_BASE
     return cfg.OPENAI_API_BASE
 
 
@@ -168,6 +175,8 @@ def _resolve_client_and_model(selected_model: str) -> tuple[OpenAI, str, str]:
     elif provider == "GitHub":
         api_model = selected_model.split(":", 1)[1]
     elif provider == "NVIDIA":
+        api_model = selected_model.split(":", 1)[1]
+    elif provider == "HuggingFace":
         api_model = selected_model.split(":", 1)[1]
     elif provider == "OpenAI" and not force_gradient:
         api_model = selected_model.replace("openai-", "", 1)
@@ -272,6 +281,19 @@ Multiple tool calls in one response (all execute at once):
 ❌ No raw JSON without tags. ❌ No markdown fences.
 ✅ Always use <tool_call> tags — the only format that works.
 
+== TOKEN OPTIMIZATION (CRITICAL — SAVES MONEY) ==
+EVERY tool call costs tokens. Minimize round-trips:
+1. BATCH reads: If you need 3 files, put 3 <tool_call> blocks in ONE response.
+2. BATCH commands: If you need to run pip install + create file + start service,
+   chain with && in a SINGLE run_command call where possible.
+3. NEVER do one tool call per response when you could do 3-5 at once.
+4. If a task needs read_file + write_file + run_command, do ALL in one response.
+5. For installs: `pip install pkg1 pkg2 pkg3` — one command, not three.
+6. Use run_commands([cmd1, cmd2, cmd3]) for independent commands.
+7. NEVER call read_file on a file you just wrote — you already know its contents.
+8. NEVER run `ls` before `cat` — just read the file directly.
+9. Keep replies SHORT. One line status + tool calls. No essays.
+
 == EXIT CODE RULES (CRITICAL) ==
 - returncode 0 = SUCCESS. Proceed.
 - returncode != 0 = FAILED. The command DID NOT WORK.
@@ -351,19 +373,21 @@ Get system info with system_info. Check ports with check_port.
 
 == TASK RULES ==
 - Credentials shared → store_cred IMMEDIATELY. No asking.
-- Personal facts → remember.
+- Personal facts → remember. Reminders → set_reminder.
 - Scripts: write_file then run_command.
 - Services: write script then spawn_service. Check port first with check_port.
 - Show output only when it adds value.
 - When approved to proceed: EXECUTE, do not re-list the steps.
 - pip/pip3 are auto-routed to the venv. Just run `pip install X` normally.
 - python/python3 are auto-routed to venv Python. Just use them normally.
+- If uncertain about a fact, use google_search or web_search before answering.
+- For timed tasks/reminders, use set_reminder (sends Telegram message at scheduled time).
 
-== ABSOLUTE RULE: NEVER DELEGATE TO THE USER ==
-❌ You must NEVER tell the user to run a command, install something, edit a file, or take any action.
-❌ You must NEVER say "you need to", "you should", "you'll need to", "try running", "please run".
-❌ If you hit a problem: YOU solve it. If you truly cannot: report the error — not a to-do list for the user.
-✅ The user only asks. You only do.
+== ABSOLUTE RULES ==
+- NEVER delegate to the user. NEVER say "you need to", "try running", "please do".
+- You have full server access. You handle everything. The user only requests.
+- NEVER narrate your plan. Just act. One status line max, then tool calls.
+- Final reply: outcome only. Not a summary of steps taken.
 """
 
 PLAN_PROMPT = """\
@@ -405,6 +429,10 @@ The <think> block is NEVER shown to the user. Keep all planning inside it.
 - Batch reads together, batch writes together. Minimize round-trips.
 - Use read_files/write_files/run_commands for bulk operations.
 - Multiple <tool_call> blocks in one response execute at once.
+- MAXIMIZE work per response: if a task has 5 steps, do 3-5 tool calls in ONE response.
+- Chain shell commands with && when they depend on each other.
+- Install multiple packages in one command: `pip install a b c`
+- NEVER do one tool per turn. That wastes tokens and money.
 
 == EXIT CODES ==
 - returncode 0 = success. Proceed.
@@ -813,6 +841,8 @@ def _providerkey_name(provider: str) -> str | None:
         return "OPENAI_API_KEY"
     if p in ("nvidia", "nv"):
         return "NVIDIA_API_KEY"
+    if p in ("huggingface", "hf"):
+        return "HUGGINGFACE_API_KEY"
     return None
 
 
@@ -854,14 +884,19 @@ def _validate_provider_key(provider: str, key: str) -> tuple[bool, str]:
             return False, "NVIDIA NIM key should start with `nvapi-`"
         return True, ""
 
+    if p in ("huggingface", "hf"):
+        if not k.startswith("hf_"):
+            return False, "HuggingFace key should start with `hf_`"
+        return True, ""
+
     return False, "Unknown provider."
 
 
 # ── Smart context (MD file system) ────────────────────────────────────────────
 
-SUMMARIZE_THRESHOLD = 20   # total msgs before we summarize + prune
-RECENT_WINDOW = 30         # keep this many recent messages verbatim
-SUMMARIZE_BATCH = 15       # how many old messages to summarize at once
+SUMMARIZE_THRESHOLD = 12   # total msgs before we summarize + prune (lower = less tokens)
+RECENT_WINDOW = 16         # keep this many recent messages verbatim (was 30 — saves ~40% tokens)
+SUMMARIZE_BATCH = 10       # how many old messages to summarize at once
 
 SUMMARY_SYSTEM = (
     "You are a summarizer. Condense the following conversation into a concise markdown "
@@ -1323,8 +1358,8 @@ async def run_agent(
             if not result_text:              # Fix #11: guard empty result_text
                 result_text = "(tool returned no output)"
             # Compress tool results if they're too large (save context tokens)
-            if len(result_text) > 6000:
-                result_text = result_text[:5500] + "\n\n... [output truncated to save context] ..."
+            if len(result_text) > 4000:
+                result_text = result_text[:3500] + "\n\n... [truncated, " + str(len(result_text)) + " chars total] ..."
             messages.append({
                 "role": "user",
                 "content": f"<tool_result>\n{result_text}\n</tool_result>\n"

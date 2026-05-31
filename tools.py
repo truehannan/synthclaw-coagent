@@ -623,6 +623,46 @@ def web_search(query: str, max_results: int = 8) -> dict:
         return {"error": str(e)}
 
 
+def google_search(query: str, max_results: int = 5) -> dict:
+    """Search Google via Custom Search JSON API. Requires GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX
+    stored as credentials or env vars. Falls back to DuckDuckGo if not configured."""
+    from config import GOOGLE_SEARCH_API_KEY, GOOGLE_SEARCH_CX
+    api_key = get_credential("GOOGLE_SEARCH_API_KEY") or GOOGLE_SEARCH_API_KEY
+    cx = get_credential("GOOGLE_SEARCH_CX") or GOOGLE_SEARCH_CX
+
+    if not api_key or not cx:
+        # Fallback to DuckDuckGo
+        return web_search(query, max_results)
+
+    try:
+        params = {
+            "key": api_key,
+            "cx": cx,
+            "q": query,
+            "num": min(max_results, 10),
+        }
+        resp = requests.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params=params,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = []
+        for item in data.get("items", [])[:max_results]:
+            results.append({
+                "title": item.get("title", ""),
+                "url": item.get("link", ""),
+                "snippet": item.get("snippet", ""),
+            })
+        return {"query": query, "results": results, "count": len(results), "engine": "google"}
+    except Exception as e:
+        # Fallback to DuckDuckGo on any Google error
+        fallback = web_search(query, max_results)
+        fallback["note"] = f"Google failed ({e}), used DuckDuckGo fallback"
+        return fallback
+
+
 def scrape_page(url: str, max_chars: int = 8000) -> dict:
     """Fetch a web page and return clean readable text (scripts/styles/nav removed)."""
     try:
@@ -801,6 +841,46 @@ def send_telegram_message(chat_id: str, text: str) -> dict:
         if data.get("ok"):
             return {"success": True, "message_id": data["result"]["message_id"]}
         return {"error": data.get("description", "Unknown Telegram error")}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def set_reminder(message: str, schedule: str, name: str = "") -> dict:
+    """Set a timed reminder that sends a Telegram message to the owner at the specified time.
+    schedule: cron expression (e.g. '30 9 * * *' = daily 9:30am, '0 14 * * 1' = Monday 2pm).
+    The agent will message the owner at that time. Use for: reminders, daily reports, recurring checks."""
+    try:
+        from config import TELEGRAM_TOKEN, BASE_DIR
+        from memory import get_config
+        owner_id = get_config("owner_telegram_id")
+        if not owner_id:
+            return {"error": "No owner registered yet. The owner must /start the bot first."}
+
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", name or f"reminder_{int(time.time())}")
+        # Escape message for shell
+        escaped_msg = message.replace("'", "'\\''")
+        # Build curl command that hits Telegram API directly
+        cmd = (
+            f"curl -s -X POST 'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage' "
+            f"-d chat_id={owner_id} -d text='{escaped_msg}'"
+        )
+        cron_line = f"{schedule} {cmd} # agent-task:{safe_name}"
+
+        r = subprocess.run("crontab -l 2>/dev/null", shell=True, capture_output=True, text=True)
+        existing = r.stdout.strip()
+        if f"agent-task:{safe_name}" in existing:
+            return {"error": f"Reminder '{safe_name}' already exists. Use remove_cron to remove it first."}
+        new_crontab = (existing + "\n" + cron_line).strip() + "\n"
+        r2 = subprocess.run("crontab -", input=new_crontab, shell=True, capture_output=True, text=True)
+        if r2.returncode != 0:
+            return {"error": r2.stderr.strip() or "crontab write failed"}
+        return {
+            "success": True,
+            "name": safe_name,
+            "schedule": schedule,
+            "message": message,
+            "note": f"Reminder set. Will message owner at: {schedule}",
+        }
     except Exception as e:
         return {"error": str(e)}
 
@@ -1113,6 +1193,11 @@ TOOL_REGISTRY = {
         "description": "Search the web using DuckDuckGo. No API key required. Returns titles, URLs, and snippets.",
         "params": {"query": "str", "max_results": "int (optional, default 8)"},
     },
+    "google_search": {
+        "fn": google_search,
+        "description": "Search Google (high quality results). Falls back to DuckDuckGo if Google API key not configured. Use for factual lookups, docs, current info.",
+        "params": {"query": "str", "max_results": "int (optional, default 5)"},
+    },
     "scrape_page": {
         "fn": scrape_page,
         "description": "Fetch a web page and return clean readable text (scripts/styles/nav removed).",
@@ -1167,6 +1252,11 @@ TOOL_REGISTRY = {
         "fn": schedule_task,
         "description": "Create a cron job that runs a command on a schedule. schedule is a cron expression (e.g. '0 * * * *' = hourly, '0 9 * * 1' = Monday 9am).",
         "params": {"name": "str (unique job name)", "command": "str (full shell command)", "schedule": "str (cron expression)"},
+    },
+    "set_reminder": {
+        "fn": set_reminder,
+        "description": "Set a timed reminder — sends a Telegram message to the owner at a scheduled time. Use for: 'remind me at 9am', 'daily standup reminder', 'weekly report ping'. Schedule is a cron expression.",
+        "params": {"message": "str (reminder text)", "schedule": "str (cron expression, e.g. '0 9 * * *' = daily 9am)", "name": "str (optional, unique identifier)"},
     },
     "list_cron": {
         "fn": list_cron,

@@ -50,6 +50,16 @@ const MODEL_CATALOG = {
     "nvidia:nvidia/llama-3.1-nemotron-70b-instruct",
     "nvidia:nvidia/nemotron-mini-4b-instruct",
   ],
+  "HuggingFace": [
+    "hf:meta-llama/Llama-3.3-70B-Instruct",
+    "hf:meta-llama/Llama-3.1-8B-Instruct",
+    "hf:mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+    "hf:Qwen/Qwen3-235B-A22B",
+    "hf:deepseek-ai/DeepSeek-R1",
+    "hf:google/gemma-3-27b-it",
+    "hf:microsoft/phi-4",
+    "hf:NousResearch/Hermes-3-Llama-3.1-8B",
+  ],
 };
 
 export async function runModels() {

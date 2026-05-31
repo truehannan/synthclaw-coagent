@@ -45,6 +45,9 @@ OPENAI_API_BASE = _clean_env("OPENAI_API_BASE", "https://inference.do-ai.run/v1"
 OPENROUTER_API_BASE = _clean_env("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
 GITHUB_MODELS_API_BASE = _clean_env("GITHUB_MODELS_API_BASE", "https://models.inference.ai.azure.com")
 NVIDIA_API_BASE = _clean_env("NVIDIA_API_BASE", "https://integrate.api.nvidia.com/v1")
+HUGGINGFACE_API_BASE = _clean_env("HUGGINGFACE_API_BASE", "https://router.huggingface.co/v1")
+GOOGLE_SEARCH_API_KEY = _clean_env("GOOGLE_SEARCH_API_KEY")
+GOOGLE_SEARCH_CX = _clean_env("GOOGLE_SEARCH_CX")
 
 DEFAULT_MODEL = "llama3.3-70b-instruct"
 MODEL_CATALOG = {
@@ -126,12 +129,22 @@ MODEL_CATALOG = {
         "nvidia:nvidia/llama-3.1-nemotron-70b-instruct",
         "nvidia:nvidia/nemotron-mini-4b-instruct",
     ],
+    "HuggingFace": [
+        "hf:meta-llama/Llama-3.3-70B-Instruct",
+        "hf:meta-llama/Llama-3.1-8B-Instruct",
+        "hf:mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+        "hf:Qwen/Qwen3-235B-A22B",
+        "hf:deepseek-ai/DeepSeek-R1",
+        "hf:google/gemma-3-27b-it",
+        "hf:microsoft/phi-4",
+        "hf:NousResearch/Hermes-3-Llama-3.1-8B",
+    ],
 }
 
 AVAILABLE_MODELS = [m for provider_models in MODEL_CATALOG.values() for m in provider_models]
 
 MAX_TOOL_ITERATIONS = 200
-MAX_HISTORY_MESSAGES = 20
+MAX_HISTORY_MESSAGES = 16
 CHECKPOINT_EVERY = 50          # save state + show Continue button after this many loop iterations
 
 # ── Model pricing (USD per 1M tokens) ──────────────────────────────────────
@@ -192,6 +205,15 @@ MODEL_PRICING: dict[str, tuple[float, float]] = {
     "nvidia:google/gemma-3-27b-it":               (0.20, 0.40),
     "nvidia:nvidia/llama-3.1-nemotron-70b-instruct": (0.60, 0.60),
     "nvidia:nvidia/nemotron-mini-4b-instruct":    (0.05, 0.05),
+    # ── HuggingFace Inference (serverless, pay-per-token) ──────────────
+    "hf:meta-llama/Llama-3.3-70B-Instruct":       (0.36, 0.36),
+    "hf:meta-llama/Llama-3.1-8B-Instruct":        (0.05, 0.05),
+    "hf:mistralai/Mistral-Small-3.1-24B-Instruct-2503": (0.14, 0.14),
+    "hf:Qwen/Qwen3-235B-A22B":                    (0.30, 0.90),
+    "hf:deepseek-ai/DeepSeek-R1":                  (0.55, 2.19),
+    "hf:google/gemma-3-27b-it":                    (0.14, 0.14),
+    "hf:microsoft/phi-4":                          (0.07, 0.07),
+    "hf:NousResearch/Hermes-3-Llama-3.1-8B":      (0.05, 0.05),
 }
 
 # Marker to know which models have confirmed vs estimated pricing
