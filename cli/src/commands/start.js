@@ -2,68 +2,89 @@ import chalk from "chalk";
 import ora from "ora";
 import { existsSync, writeFileSync } from "fs";
 import { join } from "path";
-import { execSync, spawn } from "child_process";
+import { execSync } from "child_process";
 import { config, getProjectRoot, generateEnvContent, printSuccess, printError, printInfo } from "../utils.js";
 
 /**
- * Detect the Python binary inside venv (or system fallback).
+ * Get the absolute path to venv python. Returns null if venv doesn't exist.
  */
-function findPython(root) {
+function getVenvPython(root) {
   const venvPython = join(root, "venv", "bin", "python");
   if (existsSync(venvPython)) return venvPython;
   const venvPython3 = join(root, "venv", "bin", "python3");
   if (existsSync(venvPython3)) return venvPython3;
-  // system fallback
-  try {
-    execSync("python3 --version", { encoding: "utf-8" });
-    return "python3";
-  } catch {
-    return "python";
+  return null;
+}
+
+/**
+ * Create venv and install dependencies.
+ */
+function createVenv(root) {
+  let systemPython = "python3";
+  try { execSync(`${systemPython} --version`, { encoding: "utf-8" }); }
+  catch {
+    systemPython = "python";
+    try { execSync(`${systemPython} --version`, { encoding: "utf-8" }); }
+    catch { throw new Error("Python 3 not found. Install Python 3.10+ first."); }
+  }
+
+  const venvDir = join(root, "venv");
+  execSync(`${systemPython} -m venv "${venvDir}"`, { encoding: "utf-8", cwd: root, timeout: 30000 });
+
+  const pipBin = join(venvDir, "bin", "pip");
+  execSync(`"${pipBin}" install --upgrade pip -q`, { encoding: "utf-8", timeout: 60000, cwd: root });
+
+  const requirementsPath = join(root, "requirements.txt");
+  if (existsSync(requirementsPath)) {
+    execSync(`"${pipBin}" install -r "${requirementsPath}" -q`, { encoding: "utf-8", timeout: 180000, cwd: root });
   }
 }
 
 /**
- * Check if systemd agent.service is installed.
+ * Verify that the venv python has the critical packages installed.
  */
-function hasSystemdService() {
+function verifyImports(pythonBin, root) {
   try {
-    const result = execSync("systemctl cat agent 2>/dev/null", { encoding: "utf-8" });
-    return result.length > 0;
-  } catch {
+    execSync(
+      `"${pythonBin}" -c "import openai; import telegram; print('ok')"`,
+      { encoding: "utf-8", cwd: root, timeout: 10000 }
+    );
+    return true;
+  } catch (err) {
     return false;
   }
 }
 
 /**
- * Create and install the systemd service file.
+ * Write systemd service file with absolute paths.
  */
-function installSystemdService(root) {
-  const pythonBin = findPython(root);
+function installSystemdService(root, pythonBin) {
   const mainPy = join(root, "main.py");
   const envFile = join(root, ".env");
+  const logFile = join(root, "agent.log");
 
-  const serviceContent = `[Unit]
-Description=SynthClaw-CoAgent — Personal AI Agent
-After=network-online.target
-Wants=network-online.target
+  const serviceContent = [
+    "[Unit]",
+    "Description=SynthClaw-CoAgent — Personal AI Agent",
+    "After=network-online.target",
+    "Wants=network-online.target",
+    "",
+    "[Service]",
+    "Type=simple",
+    `WorkingDirectory=${root}`,
+    `Environment=SYNTHCLAW_BASE_DIR=${root}`,
+    `ExecStart=${pythonBin} ${mainPy}`,
+    "Restart=always",
+    "RestartSec=10",
+    `StandardOutput=append:${logFile}`,
+    `StandardError=append:${logFile}`,
+    existsSync(envFile) ? `EnvironmentFile=${envFile}` : "",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+  ].filter(Boolean).join("\n");
 
-[Service]
-Type=simple
-WorkingDirectory=${root}
-ExecStart=${pythonBin} ${mainPy}
-Restart=always
-RestartSec=10
-StandardOutput=append:${join(root, "agent.log")}
-StandardError=append:${join(root, "agent.log")}
-${existsSync(envFile) ? `EnvironmentFile=${envFile}` : ""}
-
-[Install]
-WantedBy=multi-user.target
-`;
-
-  execSync(`echo '${serviceContent.replace(/'/g, "'\\''")}' > /etc/systemd/system/agent.service`, {
-    encoding: "utf-8",
-  });
+  writeFileSync("/etc/systemd/system/agent.service", serviceContent + "\n");
   execSync("systemctl daemon-reload", { encoding: "utf-8" });
   execSync("systemctl enable agent.service 2>/dev/null", { encoding: "utf-8" });
 }
@@ -73,43 +94,65 @@ export async function runStart(args) {
   const root = getProjectRoot();
   const mainPy = join(root, "main.py");
 
+  // Show what root we resolved
+  printInfo(`Project root: ${root}`);
+
   // Verify main.py exists
   if (!existsSync(mainPy)) {
     printError(`Cannot find main.py at ${root}`);
-    printInfo("Run 'synthclaw setup' first, or cd into the synthclaw-coagent directory.");
+    printInfo("cd into the synthclaw-coagent directory and try again.");
     return;
   }
 
-  // Verify .env exists
+  // Ensure .env exists (write from stored config)
   const envFile = join(root, ".env");
-  if (!existsSync(envFile)) {
-    printError("No .env file found. Run 'synthclaw setup' first.");
-    return;
+  try {
+    writeFileSync(envFile, generateEnvContent());
+  } catch (err) {
+    if (!existsSync(envFile)) {
+      printError("Cannot write .env file. Run 'synthclaw setup' first.");
+      return;
+    }
   }
 
   // Ensure venv exists — auto-create if missing
   const venvDir = join(root, "venv");
-  if (!existsSync(venvDir)) {
-    const spinnerVenv = ora("Python venv not found — creating automatically...").start();
+  let pythonBin = getVenvPython(root);
+
+  if (!pythonBin) {
+    const spinnerVenv = ora("Python venv not found — creating...").start();
     try {
-      let pythonBin = "python3";
-      try { execSync(`${pythonBin} --version`, { encoding: "utf-8" }); }
-      catch { pythonBin = "python"; }
+      createVenv(root);
+      pythonBin = getVenvPython(root);
+      spinnerVenv.succeed("Virtual environment created + deps installed");
+    } catch (err) {
+      spinnerVenv.fail("Could not create Python venv");
+      printError(err.message);
+      return;
+    }
+  }
 
-      execSync(`${pythonBin} -m venv "${venvDir}"`, { encoding: "utf-8", cwd: root, timeout: 30000 });
-      spinnerVenv.succeed("Virtual environment created");
+  if (!pythonBin) {
+    printError("Could not find Python in venv after creation. Something went wrong.");
+    return;
+  }
 
+  // Verify imports work
+  if (!verifyImports(pythonBin, root)) {
+    const spinnerDeps = ora("Missing dependencies — installing...").start();
+    try {
+      const pipBin = join(venvDir, "bin", "pip");
       const requirementsPath = join(root, "requirements.txt");
-      if (existsSync(requirementsPath)) {
-        const spinnerPip = ora("Installing Python dependencies...").start();
-        const pipBin = join(venvDir, "bin", "pip");
-        execSync(`"${pipBin}" install --upgrade pip -q`, { encoding: "utf-8", timeout: 60000, cwd: root });
-        execSync(`"${pipBin}" install -r "${requirementsPath}" -q`, { encoding: "utf-8", timeout: 180000, cwd: root });
-        spinnerPip.succeed("Dependencies installed");
+      execSync(`"${pipBin}" install -r "${requirementsPath}" -q`, { encoding: "utf-8", timeout: 180000, cwd: root });
+      spinnerDeps.succeed("Dependencies installed");
+
+      if (!verifyImports(pythonBin, root)) {
+        spinnerDeps.fail("Still missing modules after install");
+        printError("Run manually: " + pipBin + " install -r requirements.txt");
+        return;
       }
     } catch (err) {
-      spinnerVenv.fail("Could not create Python venv: " + (err.stderr || err.message).slice(0, 200));
-      printInfo("Make sure Python 3.10+ is installed on this machine.");
+      spinnerDeps.fail("pip install failed: " + (err.stderr || err.message).slice(0, 200));
       return;
     }
   }
@@ -123,16 +166,14 @@ export async function runStart(args) {
   // Touch log file if missing
   const logFile = join(root, "agent.log");
   if (!existsSync(logFile)) {
-    try { execSync(`touch "${logFile}"`, { encoding: "utf-8" }); } catch {}
+    try { writeFileSync(logFile, ""); } catch {}
   }
 
-  // --- Foreground mode: just run directly ---
+  // --- Foreground mode ---
   if (foreground) {
-    const pythonBin = findPython(root);
-    printInfo(`Starting agent in foreground... (Ctrl+C to stop)`);
-    console.log(chalk.dim(`  ${pythonBin} ${mainPy}\n`));
+    printInfo(`Starting in foreground: ${pythonBin} ${mainPy}`);
     try {
-      execSync(`${pythonBin} "${mainPy}"`, {
+      execSync(`"${pythonBin}" "${mainPy}"`, {
         cwd: root,
         stdio: "inherit",
         env: { ...process.env, SYNTHCLAW_BASE_DIR: root },
@@ -149,106 +190,84 @@ export async function runStart(args) {
     return;
   }
 
-  // --- Background mode: use systemd if possible, else nohup ---
+  // --- Background mode ---
   const spinner = ora("Starting SynthClaw agent...").start();
 
-  // Check if we have systemd access
+  // Stop any existing agent first
+  try { execSync("systemctl stop agent 2>/dev/null", { encoding: "utf-8", timeout: 5000 }); } catch {}
+  const pidFile = join(root, "agent.pid");
+  if (existsSync(pidFile)) {
+    try {
+      const oldPid = execSync(`cat "${pidFile}"`, { encoding: "utf-8" }).trim();
+      execSync(`kill ${oldPid} 2>/dev/null`, { encoding: "utf-8" });
+    } catch {}
+  }
+
+  // Check if we have systemd + root access
   let canSystemd = false;
   try {
     execSync("systemctl --version 2>/dev/null", { encoding: "utf-8" });
-    // Check if we can write to /etc/systemd (root access)
     execSync("test -w /etc/systemd/system", { encoding: "utf-8" });
     canSystemd = true;
-  } catch {
-    canSystemd = false;
-  }
+  } catch {}
 
   if (canSystemd) {
-    // Always regenerate service + .env to pick up any path/config changes
     spinner.text = "Configuring systemd service...";
     try {
-      // Write fresh .env from stored config (ensures no stale/quoted values)
-      writeFileSync(join(root, ".env"), generateEnvContent());
-      installSystemdService(root);
+      installSystemdService(root, pythonBin);
       spinner.text = "Starting agent via systemd...";
-    } catch (err) {
-      spinner.fail("Could not install systemd service");
-      printError(err.message);
-      printInfo("Falling back to nohup...");
-      canSystemd = false;
-    }
+      execSync("systemctl start agent", { encoding: "utf-8", timeout: 10000 });
+      await new Promise((r) => setTimeout(r, 3000));
 
-    if (canSystemd) {
-      try {
-        execSync("systemctl start agent", { encoding: "utf-8", timeout: 10000 });
-        await new Promise((r) => setTimeout(r, 2000));
+      const status = execSync("systemctl is-active agent 2>/dev/null || echo inactive", {
+        encoding: "utf-8",
+      }).trim();
 
-        // Verify
-        const status = execSync("systemctl is-active agent 2>/dev/null || echo inactive", {
-          encoding: "utf-8",
-        }).trim();
-
-        if (status === "active") {
-          spinner.succeed("Agent started (systemd service — persists until machine stops)");
-          console.log(chalk.dim("  synthclaw logs     — view output"));
-          console.log(chalk.dim("  synthclaw status   — check status"));
-          console.log(chalk.dim("  synthclaw stop     — stop the agent"));
-        } else {
-          spinner.fail("Agent failed to start");
-          printError("Check logs: synthclaw logs");
-          try {
-            const output = execSync("journalctl -u agent --no-pager -n 15 2>/dev/null", { encoding: "utf-8" });
-            console.log(chalk.dim(output));
-          } catch {}
-        }
+      if (status === "active") {
+        spinner.succeed("Agent started (systemd — persists until machine stops)");
+        printInfo(`Using: ${pythonBin}`);
+        console.log(chalk.dim("  synthclaw logs     — view output"));
+        console.log(chalk.dim("  synthclaw status   — check status"));
+        console.log(chalk.dim("  synthclaw stop     — stop the agent"));
         return;
-      } catch (err) {
-        spinner.fail("systemctl start failed");
-        printError(err.message);
-        printInfo("Falling back to nohup...");
+      } else {
+        spinner.fail("Agent failed to start via systemd");
+        try {
+          const output = execSync("journalctl -u agent --no-pager -n 10 2>/dev/null", { encoding: "utf-8" });
+          console.log(chalk.dim(output));
+        } catch {}
+        // Show the actual error from agent.log
+        try {
+          const logTail = execSync(`tail -10 "${logFile}" 2>/dev/null`, { encoding: "utf-8" });
+          if (logTail.trim()) {
+            console.log(chalk.dim("\nagent.log:"));
+            console.log(chalk.dim(logTail));
+          }
+        } catch {}
+        return;
       }
+    } catch (err) {
+      spinner.warn("systemd failed, trying nohup...");
     }
   }
 
-  // Fallback: nohup (works without root/systemd)
-  const pythonBin = findPython(root);
-  const pidFile = join(root, "agent.pid");
-
-  // Write fresh .env from stored config
-  try { writeFileSync(join(root, ".env"), generateEnvContent()); } catch {}
-
-  // Check if already running via pid
-  if (existsSync(pidFile)) {
-    try {
-      const pid = execSync(`cat "${pidFile}"`, { encoding: "utf-8" }).trim();
-      execSync(`kill -0 ${pid} 2>/dev/null`, { encoding: "utf-8" });
-      spinner.info("Agent is already running (PID: " + pid + ")");
-      console.log(chalk.dim("  synthclaw stop     — to stop it"));
-      return;
-    } catch {
-      // stale pid file
-    }
-  }
-
+  // Fallback: nohup
   try {
     execSync(
       `SYNTHCLAW_BASE_DIR="${root}" nohup "${pythonBin}" "${mainPy}" >> "${logFile}" 2>&1 & echo $! > "${pidFile}"`,
       { encoding: "utf-8", cwd: root, timeout: 5000 }
     );
+    await new Promise((r) => setTimeout(r, 3000));
 
-    await new Promise((r) => setTimeout(r, 2000));
-
-    // Verify process is alive
     const pid = execSync(`cat "${pidFile}"`, { encoding: "utf-8" }).trim();
     try {
       execSync(`kill -0 ${pid}`, { encoding: "utf-8" });
-      spinner.succeed(`Agent started (PID: ${pid} — running in background)`);
-      printInfo("Agent will run until you stop it or the machine restarts.");
+      spinner.succeed(`Agent started (PID: ${pid})`);
+      printInfo(`Using: ${pythonBin}`);
       console.log(chalk.dim("  synthclaw logs     — view output"));
       console.log(chalk.dim("  synthclaw stop     — stop the agent"));
     } catch {
-      spinner.fail("Agent process died immediately after starting");
-      printError("Check logs: synthclaw logs");
+      spinner.fail("Agent crashed on startup");
       try {
         const logTail = execSync(`tail -15 "${logFile}"`, { encoding: "utf-8" });
         console.log(chalk.dim(logTail));
