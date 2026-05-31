@@ -18,6 +18,7 @@ function getVenvPython(root) {
 
 /**
  * Create venv and install dependencies.
+ * Handles Ubuntu/Debian where python3-venv package may not be installed.
  */
 function createVenv(root) {
   let systemPython = "python3";
@@ -29,9 +30,42 @@ function createVenv(root) {
   }
 
   const venvDir = join(root, "venv");
-  execSync(`${systemPython} -m venv "${venvDir}"`, { encoding: "utf-8", cwd: root, timeout: 30000 });
+
+  // Try creating venv — if it fails, install python3-venv package and retry
+  try {
+    execSync(`${systemPython} -m venv "${venvDir}"`, { encoding: "utf-8", cwd: root, timeout: 30000 });
+  } catch (err) {
+    // On Ubuntu/Debian, python3-venv may not be installed
+    const errMsg = (err.stderr || err.message || "").toLowerCase();
+    if (errMsg.includes("ensurepip") || errMsg.includes("no module") || errMsg.includes("returned non-zero")) {
+      // Try installing python3-venv
+      try {
+        execSync("apt-get update -qq && apt-get install -y -qq python3-venv python3-pip", {
+          encoding: "utf-8", timeout: 60000,
+        });
+      } catch {
+        // Also try without apt-get update
+        try {
+          execSync("apt-get install -y -qq python3-venv python3-pip 2>/dev/null || yum install -y python3-pip 2>/dev/null || true", {
+            encoding: "utf-8", timeout: 30000,
+          });
+        } catch {}
+      }
+      // Retry venv creation
+      execSync(`${systemPython} -m venv "${venvDir}"`, { encoding: "utf-8", cwd: root, timeout: 30000 });
+    } else {
+      throw err;
+    }
+  }
 
   const pipBin = join(venvDir, "bin", "pip");
+  if (!existsSync(pipBin)) {
+    // ensurepip might have failed — install pip manually
+    execSync(`${systemPython} -m ensurepip --default-pip 2>/dev/null || curl -sS https://bootstrap.pypa.io/get-pip.py | "${join(venvDir, "bin", "python")}"`, {
+      encoding: "utf-8", cwd: root, timeout: 30000,
+    });
+  }
+
   execSync(`"${pipBin}" install --upgrade pip -q`, { encoding: "utf-8", timeout: 60000, cwd: root });
 
   const requirementsPath = join(root, "requirements.txt");
