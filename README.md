@@ -1,4 +1,9 @@
 # SynthClaw CoAgent
+---
+
+![Synthclaw Coagent](synthclaw.png)
+
+---
 
 ```
   /$$$$$$                        /$$     /$$                 /$$                                /$$$$$$                                                      /$$    
