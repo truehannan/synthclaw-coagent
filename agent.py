@@ -882,10 +882,20 @@ def _build_context(chat_id: int, force_refresh: bool = False) -> list[dict]:
     if extra_context:
         system += "\n" + "\n".join(extra_context)
 
+    # Inject relevant skill instructions based on latest user message
+    latest_user_msg = ""
+    history = mem.get_history(chat_id, RECENT_WINDOW)
+    for msg in reversed(history):
+        if msg.get("role") == "user":
+            latest_user_msg = msg.get("content", "")
+            break
+    skill_context = _get_relevant_skills(latest_user_msg)
+    if skill_context:
+        system += f"\n\n== SKILL INSTRUCTIONS (follow these for the current task) ==\n{skill_context}"
+
     messages = [{"role": "system", "content": system}]
 
     # Recent messages (the actual conversation window)
-    history = mem.get_history(chat_id, RECENT_WINDOW)
     messages.extend(history)
 
     CONTEXT_CACHE[chat_id] = {
@@ -1335,6 +1345,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/agent \\<task\\> — Autonomous execution mode\n"
         "/task — Live task status\n"
         "/stop — Stop a running task\n"
+        "/skills — List/install/remove skills \\(send \\.zip to install\\)\n"
         "/ping — Check if alive\n"
         "/update — Pull latest code and restart service\n\n"
         "*Media:* Send me photos, voice, audio, video, or files\\. "
@@ -2038,6 +2049,135 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ {e}")
 
 
+# ── Skills system ─────────────────────────────────────────────────────────────
+
+SKILLS_DIR = cfg.BASE_DIR / ".skills"
+
+
+def _list_skills() -> list[dict]:
+    """List all installed skills from .skills directory."""
+    if not SKILLS_DIR.exists():
+        return []
+    skills = []
+    for d in sorted(SKILLS_DIR.iterdir()):
+        if d.is_dir():
+            skill_md = d / "SKILL.md"
+            readme = d / "README.md"
+            desc_file = skill_md if skill_md.exists() else (readme if readme.exists() else None)
+            desc = ""
+            if desc_file:
+                content = desc_file.read_text(encoding="utf-8", errors="ignore")
+                # First non-empty line after any header
+                for line in content.split("\n"):
+                    line = line.strip().lstrip("#").strip()
+                    if line and not line.startswith("---"):
+                        desc = line[:100]
+                        break
+            skills.append({"name": d.name, "path": str(d), "description": desc})
+    return skills
+
+
+def _get_skill_instructions(skill_name: str) -> str | None:
+    """Read the full instructions from a skill's SKILL.md or README.md."""
+    skill_dir = SKILLS_DIR / skill_name
+    if not skill_dir.exists():
+        return None
+    for fname in ("SKILL.md", "README.md", "INSTRUCTIONS.md", "instructions.md"):
+        f = skill_dir / fname
+        if f.exists():
+            return f.read_text(encoding="utf-8", errors="ignore")[:8000]
+    # If no markdown, try to read all .md files
+    mds = list(skill_dir.glob("*.md"))
+    if mds:
+        return mds[0].read_text(encoding="utf-8", errors="ignore")[:8000]
+    return None
+
+
+def _get_relevant_skills(user_message: str) -> str:
+    """Check installed skills and return instructions for any that seem relevant to the task."""
+    skills = _list_skills()
+    if not skills:
+        return ""
+    # Simple keyword matching — check if skill name or description matches user message
+    relevant = []
+    msg_lower = (user_message or "").lower()
+    for skill in skills:
+        name_lower = skill["name"].lower().replace("-", " ").replace("_", " ")
+        desc_lower = (skill["description"] or "").lower()
+        # Match if skill name words appear in message, or description keywords match
+        name_words = name_lower.split()
+        if any(w in msg_lower for w in name_words if len(w) > 3):
+            instructions = _get_skill_instructions(skill["name"])
+            if instructions:
+                relevant.append(f"== SKILL: {skill['name']} ==\n{instructions}")
+        elif any(w in msg_lower for w in desc_lower.split() if len(w) > 4):
+            instructions = _get_skill_instructions(skill["name"])
+            if instructions:
+                relevant.append(f"== SKILL: {skill['name']} ==\n{instructions}")
+    # Limit to top 2 skills to avoid prompt bloat
+    return "\n\n".join(relevant[:2])
+
+
+async def cmd_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /skills command — list, install (from zip), or remove skills."""
+    if not is_owner(update.effective_user.id):
+        return
+
+    args = context.args
+    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # /skills — list all
+    if not args:
+        skills = _list_skills()
+        if not skills:
+            await update.message.reply_text(
+                "📦 No skills installed.\n\n"
+                "Send a .zip file with a skill folder inside (must contain SKILL.md).\n"
+                "Or: /skills install <url-to-zip>"
+            )
+            return
+        lines = ["📦 Installed Skills:\n"]
+        for s in skills:
+            desc = f" — {s['description']}" if s['description'] else ""
+            lines.append(f"• {s['name']}{desc}")
+        lines.append(f"\nTotal: {len(skills)} skill(s)")
+        lines.append("Send a .zip to install more, or /skills remove <name>")
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    # /skills remove <name>
+    if args[0] == "remove" and len(args) > 1:
+        name = args[1]
+        skill_path = SKILLS_DIR / name
+        if skill_path.exists() and skill_path.is_dir():
+            import shutil
+            shutil.rmtree(skill_path)
+            await update.message.reply_text(f"✅ Removed skill: {name}")
+        else:
+            await update.message.reply_text(f"❌ Skill not found: {name}")
+        return
+
+    # /skills install <url>
+    if args[0] == "install" and len(args) > 1:
+        import zipfile
+        import io
+        url = args[1]
+        await update.message.reply_text(f"⬇️ Downloading skill from {url}...")
+        try:
+            resp = __import__("requests").get(url, timeout=30)
+            resp.raise_for_status()
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                zf.extractall(SKILLS_DIR)
+            # Find what was extracted
+            new_skills = _list_skills()
+            await update.message.reply_text(f"✅ Skill installed. Total skills: {len(new_skills)}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Install failed: {e}")
+        return
+
+    await update.message.reply_text("Usage: /skills | /skills remove <name> | /skills install <url>\nOr send a .zip file to install.")
+
+
 # ── Media helpers ─────────────────────────────────────────────────────────────
 
 async def _send_queued_media(update: Update, media_items: list[dict]):
@@ -2103,13 +2243,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
+    # ── Real-time progress message ──────────────────────────────────────────
+    # Send a "working..." message that we edit in place as tools execute
+    progress_msg = None
+    progress_lines: list[str] = []
+    progress_step = [0]
+
+    async def _update_progress(tool_name: str = "", status: str = "⏳"):
+        """Edit the progress message in place to show live task updates."""
+        nonlocal progress_msg
+        progress_step[0] += 1
+        if tool_name:
+            progress_lines.append(f"{status} {tool_name}")
+        # Build display text
+        header = f"🔄 Working... (step {progress_step[0]})\n"
+        # Show last 8 steps to keep message short
+        visible = progress_lines[-8:]
+        body = "\n".join(visible)
+        text = header + body
+        try:
+            if progress_msg is None:
+                progress_msg = await update.message.reply_text(text)
+            else:
+                await progress_msg.edit_text(text)
+        except Exception:
+            pass  # Telegram rate limits or message unchanged
+
     async def _send(text):
-        for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
-            await update.message.reply_text(chunk)
+        """Send intermediate text from agent and update progress."""
+        if text and len(text.strip()) > 3:
+            progress_lines.append(f"💬 {text[:100]}")
+            await _update_progress()
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     try:
         reply, media_items = await run_agent(chat_id, update.message.text, model, send_fn=_send)
+
+        # Delete progress message before sending final reply
+        if progress_msg:
+            try:
+                await progress_msg.delete()
+            except Exception:
+                pass
+
         if reply == CHECKPOINT_SIGNAL:
             state = mem.load_task_state(chat_id)
             step = state["step_count"] if state else "?"
@@ -2127,6 +2303,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except asyncio.CancelledError:
         _task_set(chat_id, status="stopped", phase="cancelled")
         ACTIVE_TASKS.pop(chat_id, None)
+        if progress_msg:
+            try:
+                await progress_msg.edit_text("🛑 Task stopped.")
+            except Exception:
+                pass
         try:
             await update.message.reply_text("🛑 Task stopped.")
         except Exception:
@@ -2135,6 +2316,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"handle_message error: {e}", exc_info=True)
         _task_set(chat_id, status="error", phase="handler_exception", last_error=str(e)[:180])
+        if progress_msg:
+            try:
+                await progress_msg.edit_text(f"❌ Error: {e}")
+            except Exception:
+                pass
         await update.message.reply_text(f"❌ {e}")
     finally:
         if RUNNING_TASKS.get(chat_id) is asyncio.current_task():
@@ -2193,6 +2379,29 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     save_path = save_dir / filename
     await tg_file.download_to_drive(str(save_path))
+
+    # ── Auto-install skill if it's a .zip file ──
+    if ext.lower() == ".zip" and media_type == "document":
+        import zipfile
+        try:
+            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(save_path) as zf:
+                # Check if it looks like a skill (has SKILL.md or README.md)
+                names = zf.namelist()
+                is_skill = any("SKILL.md" in n or "skill.md" in n or "README.md" in n for n in names)
+                if is_skill:
+                    zf.extractall(SKILLS_DIR)
+                    skills = _list_skills()
+                    await update.message.reply_text(
+                        f"📦 Skill installed from zip!\n"
+                        f"Total skills: {len(skills)}\n"
+                        f"Use /skills to see all installed skills."
+                    )
+                    return
+        except zipfile.BadZipFile:
+            pass  # Not a valid zip, continue normal processing
+        except Exception as e:
+            logger.warning(f"Skill install from zip failed: {e}")
 
     # Build text description for the LLM
     file_size = save_path.stat().st_size
@@ -2265,6 +2474,7 @@ def main():
     app.add_handler(CommandHandler("stop",    cmd_stop))
     app.add_handler(CommandHandler("plan",    cmd_plan))
     app.add_handler(CommandHandler("agent",   cmd_agent))
+    app.add_handler(CommandHandler("skills",  cmd_skills))
     app.add_handler(CommandHandler("usage",   cmd_usage))
     app.add_handler(CallbackQueryHandler(handle_continue_button, pattern=r"^cont_"))
     app.add_handler(CallbackQueryHandler(handle_providerkey_button, pattern=r"^pkey_"))
