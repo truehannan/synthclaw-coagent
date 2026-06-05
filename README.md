@@ -340,3 +340,6 @@ Just keep it simple — SynthClaw's entire point is being small and readable.
 ---
 
 **Made by [@truehannan](https://github.com/truehannan)**
+| `/skills` | List, install (`.zip` or URL), or remove skills |
+- 🧩 **Skills System** — Drop in `.zip` skill packs (each with a `SKILL.md`) to extend the agent's behaviour; install via `/skills install <url>` or by sending a `.zip` directly in chat
+- 📊 **Live Progress Messages** — Long-running tool chains edit a single "Working…" message in place so you always see real-time step updates
