@@ -302,7 +302,6 @@ These are configured automatically by `synthclaw setup`. You can also edit `.env
 
 ## 🔧 Built-in Tools
 
-The agent has 12 tools it can use autonomously:
 
 | Tool | What it does |
 |------|-------------|
@@ -317,7 +316,6 @@ The agent has 12 tools it can use autonomously:
 | `store_cred` | Store an encrypted credential |
 | `get_cred` | Retrieve a stored credential |
 | `remember` | Save a persistent fact |
-| `recall` | Retrieve saved facts |
 
 ---
 
@@ -340,3 +338,8 @@ Just keep it simple — SynthClaw's entire point is being small and readable.
 ---
 
 **Made by [@truehannan](https://github.com/truehannan)**
+| `/apis [info\|add\|remove <name>]` | List, inspect, add, or remove registered external APIs |
+The agent has 14 tools it can use autonomously:
+| `recall` | Retrieve saved facts |
+| `register_api` | Register an external API (auto-detects Stripe, Vercel, Cloudflare, GitHub, and more) |
+| `api_call` | Call any registered external API by name |
