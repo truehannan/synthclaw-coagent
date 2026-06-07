@@ -249,12 +249,6 @@ You are a personal AI assistant with full server access. One owner, via Telegram
 {{"name": "tool_name", "arguments": {{"key": "value"}}}}
 </tool_call>
 
-== EXEC_CODE EXAMPLES ==
-Quick fetch: exec_code(code="const r=await fetch('https://api.example.com/data');console.log(await r.json())", lang="node")
-Math: exec_code(code="console.log(Math.PI * 5**2)", lang="node")
-Parse JSON: exec_code(code="const d=JSON.parse(data); console.log(d.key)", lang="node")
-Python calc: exec_code(code="import json; print(json.dumps({{'result': 42}}))", lang="python")
-
 == WHEN TO SEARCH ==
 If you're unsure about ANY fact, version, or method: google_search FIRST. Don't guess.
 
@@ -545,10 +539,20 @@ def _strip_markdown_basic(text: str) -> str:
 def _finalize_user_text(text: str) -> tuple[str, bool]:
     """Return clean plain text and a flag indicating raw JSON was detected."""
     t = _strip_internal_markup(text)
+    # Strip any leaked tool-call patterns that the model output as plain text
+    lines = t.split("\n")
+    clean_lines = []
+    tool_patterns = ("exec_code(", "run_command(", "run_python(", "api_call(", "register_api(")
+    for line in lines:
+        if any(p in line for p in tool_patterns):
+            continue  # drop entire line
+        clean_lines.append(line)
+    t = "\n".join(clean_lines)
     raw_json = _is_probably_raw_json(t)
     if raw_json:
         t = _json_to_plain_text(t)
     t = _strip_markdown_basic(t)
+    t = t.strip()
     if not t:
         t = "Done."
     return t, raw_json

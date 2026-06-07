@@ -1473,7 +1473,7 @@ TOOL_REGISTRY = {
     },
     "exec_code": {
         "fn": exec_code,
-        "description": "Execute code IN MEMORY (no files). PREFERRED for: calculations, data processing, API calls, JSON parsing, quick logic. Supports: node (JS), python, bash.",
+        "description": "Run code directly in memory. PREFERRED over write_file+run_command for quick tasks. Use via <tool_call> like any other tool. lang: node (default), python, bash.",
         "params": {"code": "str (code to execute)", "lang": "str (node|python|bash, default: node)", "timeout": "int (optional, default 30s)"},
     },
     "read_csv": {
