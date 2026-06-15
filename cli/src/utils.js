@@ -25,6 +25,13 @@ export const config = new Conf({
     max_history_messages: { type: "string", default: "20" },
     remote_host: { type: "string", default: "" },
     remote_user: { type: "string", default: "root" },
+    max_rpm: { type: "string", default: "0" },
+    composio_api_key: { type: "string", default: "" },
+    storage_mode: { type: "string", default: "local" },
+    cf_account_id: { type: "string", default: "" },
+    cf_d1_database_id: { type: "string", default: "" },
+    cf_api_token: { type: "string", default: "" },
+    cf_r2_bucket: { type: "string", default: "" },
   },
 });
 
@@ -107,6 +114,22 @@ export function generateEnvContent() {
   lines.push(`SYNTHCLAW_BASE_DIR=${actualRoot}`);
   lines.push(`MAX_TOOL_ITERATIONS=${config.get("max_tool_iterations")}`);
   lines.push(`MAX_HISTORY_MESSAGES=${config.get("max_history_messages")}`);
+  const rpm = config.get("max_rpm") || "0";
+  if (rpm && rpm !== "0") {
+    lines.push(`MAX_RPM=${rpm}`);
+  }
+  if (config.get("composio_api_key")) {
+    lines.push(`COMPOSIO_API_KEY=${config.get("composio_api_key")}`);
+  }
+  if (config.get("storage_mode") === "cloudflare") {
+    lines.push(`STORAGE_MODE=cloudflare`);
+    lines.push(`CF_ACCOUNT_ID=${config.get("cf_account_id")}`);
+    lines.push(`CF_D1_DATABASE_ID=${config.get("cf_d1_database_id")}`);
+    lines.push(`CF_API_TOKEN=${config.get("cf_api_token")}`);
+    if (config.get("cf_r2_bucket")) {
+      lines.push(`CF_R2_BUCKET=${config.get("cf_r2_bucket")}`);
+    }
+  }
   lines.push("");
 
   return lines.join("\n");

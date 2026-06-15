@@ -1302,6 +1302,33 @@ def list_apis() -> dict:
     return {"apis": tools, "count": len(tools)}
 
 
+def composio_execute(tool_slug: str, args: str = "{}", connected_account_id: str = "") -> dict:
+    """Execute a Composio tool action. Composio provides 1000+ app integrations (Gmail, Slack, GitHub, etc.).
+    tool_slug: the Composio tool slug (e.g. 'GMAIL_SEND_EMAIL', 'GITHUB_CREATE_ISSUE')
+    args: JSON string of arguments for the tool
+    connected_account_id: optional, Composio connected account ID"""
+    from config import COMPOSIO_API_KEY
+    from memory import get_credential
+    api_key = get_credential("COMPOSIO_API_KEY") or COMPOSIO_API_KEY
+    if not api_key:
+        return {"error": "Composio not configured. Store COMPOSIO_API_KEY first."}
+    try:
+        body = {"arguments": json.loads(args) if isinstance(args, str) else args}
+        if connected_account_id:
+            body["connectedAccountId"] = connected_account_id
+        headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+        resp = requests.post(
+            f"https://backend.composio.dev/api/v3.1/tools/execute/{tool_slug}",
+            headers=headers, json=body, timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            return {"success": True, "tool": tool_slug, "result": data}
+        return {"error": f"Composio returned {resp.status_code}", "details": resp.text[:500]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── Tool registry ─────────────────────────────────────────────────────────────
 
 TOOL_REGISTRY = {
@@ -1593,6 +1620,15 @@ TOOL_REGISTRY = {
         "fn": list_apis,
         "description": "List all registered dynamic APIs and their endpoints. Shows what external services the agent can call.",
         "params": {},
+    },
+    "composio_execute": {
+        "fn": composio_execute,
+        "description": "Execute any Composio tool (1000+ apps: Gmail, Slack, GitHub, Notion, etc). Use /connectors to connect apps first.",
+        "params": {
+            "tool_slug": "str (e.g. GMAIL_SEND_EMAIL, GITHUB_CREATE_ISSUE, SLACK_SEND_MESSAGE)",
+            "args": "str (JSON arguments for the tool)",
+            "connected_account_id": "str (optional)",
+        },
     },
 }
 

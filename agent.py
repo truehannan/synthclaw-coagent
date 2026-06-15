@@ -201,7 +201,22 @@ async def _llm_call(**kwargs):
     Retries transient errors (timeouts, rate-limits, 5xx) with bounded backoff.
     Schedule: 5 → 15 → 30 → 60 → 120 → 180 s.
     Hard-fails immediately on 401 / 403 / 404 (auth / not-found).
+    Respects MAX_RPM rate limit if configured.
     """
+    # Rate limiting — token bucket
+    if cfg.MAX_RPM > 0:
+        now = time.time()
+        if not hasattr(_llm_call, '_rpm_times'):
+            _llm_call._rpm_times = []
+        # Remove timestamps older than 60 seconds
+        _llm_call._rpm_times = [t for t in _llm_call._rpm_times if now - t < 60]
+        if len(_llm_call._rpm_times) >= cfg.MAX_RPM:
+            wait = 60 - (now - _llm_call._rpm_times[0])
+            if wait > 0:
+                logger.info(f"⏱️ RPM limit ({cfg.MAX_RPM}/min) — waiting {wait:.1f}s")
+                await asyncio.sleep(wait)
+        _llm_call._rpm_times.append(time.time())
+
     NON_RETRYABLE = {401, 403, 404}
     delays = [5, 15, 30, 60, 120, 180]
     selected_model = kwargs.get("model", "")
@@ -2179,6 +2194,195 @@ def _get_relevant_skills(user_message: str) -> str:
     return "\n\n".join(relevant[:2])
 
 
+# ── Composio integration ──────────────────────────────────────────────────────
+
+COMPOSIO_BASE = "https://backend.composio.dev/api/v3.1"
+
+
+async def cmd_connectors(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /connectors — list available Composio apps or initiate connection."""
+    if not is_owner(update.effective_user.id):
+        return
+
+    api_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY")
+    if not api_key:
+        await update.message.reply_text(
+            "❌ Composio not configured.\n\n"
+            "Run synthclaw setup and add your Composio API key,\n"
+            "or: /storekey COMPOSIO_API_KEY <your-key>\n\n"
+            "Get your key at app.composio.dev"
+        )
+        return
+
+    args = context.args
+    headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+
+    # /connectors — list connected apps
+    if not args:
+        try:
+            import requests as req
+            resp = req.get(f"{COMPOSIO_BASE}/connectedAccounts", headers=headers, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                accounts = data.get("items", data) if isinstance(data, dict) else data
+                if not accounts:
+                    await update.message.reply_text(
+                        "🔗 No connected apps yet.\n\n"
+                        "Use: /connectors connect <app-name>\n"
+                        "Example: /connectors connect github\n\n"
+                        "Available: github, gmail, slack, notion, discord, linear, hubspot, google-calendar, and 1000+ more"
+                    )
+                    return
+                lines = ["🔗 Connected Apps:\n"]
+                for acc in (accounts[:20] if isinstance(accounts, list) else []):
+                    name = acc.get("appName", acc.get("app_name", "unknown"))
+                    status = acc.get("status", "active")
+                    lines.append(f"  • {name} ({status})")
+                lines.append(f"\nUse /connectors connect <app> to add more")
+                await update.message.reply_text("\n".join(lines))
+            else:
+                await update.message.reply_text(f"❌ Composio API error: {resp.status_code}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+        return
+
+    # /connectors connect <app>
+    if args[0] == "connect" and len(args) > 1:
+        app_name = args[1].lower()
+        try:
+            import requests as req
+            resp = req.post(
+                f"{COMPOSIO_BASE}/connectedAccounts",
+                headers=headers,
+                json={"integrationId": app_name, "redirectUri": "https://backend.composio.dev/"},
+                timeout=15,
+            )
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                url = data.get("redirectUrl", data.get("connectionUrl", data.get("url", "")))
+                if url:
+                    await update.message.reply_text(
+                        f"🔗 Connect {app_name}:\n\n{url}\n\nOpen this link to authorize."
+                    )
+                else:
+                    await update.message.reply_text(f"✅ {app_name} connected (no OAuth needed)")
+            else:
+                err = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else resp.text
+                await update.message.reply_text(f"❌ Could not connect {app_name}: {err}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+        return
+
+    # /connectors search <query>
+    if args[0] == "search" and len(args) > 1:
+        query = " ".join(args[1:])
+        try:
+            import requests as req
+            resp = req.get(f"{COMPOSIO_BASE}/tools?search={query}&limit=15", headers=headers, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                tools_list = data.get("items", data) if isinstance(data, dict) else data
+                if not tools_list:
+                    await update.message.reply_text(f"No tools found for: {query}")
+                    return
+                lines = [f"🔍 Tools matching '{query}':\n"]
+                for t in (tools_list[:15] if isinstance(tools_list, list) else []):
+                    name = t.get("slug", t.get("name", "?"))
+                    desc = t.get("description", "")[:60]
+                    lines.append(f"  • {name} — {desc}")
+                await update.message.reply_text("\n".join(lines))
+            else:
+                await update.message.reply_text(f"❌ Search failed: {resp.status_code}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+        return
+
+    await update.message.reply_text(
+        "Usage:\n"
+        "/connectors — list connected apps\n"
+        "/connectors connect <app> — connect a new app (OAuth)\n"
+        "/connectors search <query> — search available tools"
+    )
+
+
+# ── MCP support ──────────────────────────────────────────────────────────────
+
+async def cmd_mcp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /mcp — add/list/remove MCP server configurations."""
+    if not is_owner(update.effective_user.id):
+        return
+
+    args = context.args
+    text = update.message.text or ""
+
+    # /mcp — list configured servers
+    if not args:
+        mcp_configs = mem.get_all_memory()
+        mcp_servers = {k: v for k, v in mcp_configs.items() if k.startswith("mcp:")}
+        if not mcp_servers:
+            await update.message.reply_text(
+                "🔌 No MCP servers configured.\n\n"
+                "Paste your MCP JSON config after /mcp add:\n"
+                '/mcp add {"mcpServers":{"server-name":{"command":"npx","args":["-y","@server/mcp"]}}}\n\n'
+                "Supports: stdio, sse, and streamable-http transports."
+            )
+            return
+        lines = ["🔌 MCP Servers:\n"]
+        for name, conf in mcp_servers.items():
+            server_name = name.replace("mcp:", "")
+            lines.append(f"  • {server_name}")
+        lines.append(f"\nTotal: {len(mcp_servers)}")
+        lines.append("Use: /mcp remove <name>")
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    # /mcp add <json>
+    if args[0] == "add":
+        json_text = text.split("add", 1)[1].strip() if "add" in text else ""
+        if not json_text:
+            await update.message.reply_text("Paste MCP JSON after /mcp add")
+            return
+        try:
+            import json as json_mod
+            parsed = json_mod.loads(json_text)
+            # Support both {mcpServers: {...}} and direct {name: {command, args}}
+            servers = parsed.get("mcpServers", parsed)
+            if not isinstance(servers, dict):
+                await update.message.reply_text("❌ Invalid format. Expected JSON with server configs.")
+                return
+            added = []
+            for name, conf in servers.items():
+                mem.set_memory(f"mcp:{name}", json_mod.dumps(conf))
+                added.append(name)
+            await update.message.reply_text(f"✅ Added MCP server(s): {', '.join(added)}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Invalid JSON: {e}")
+        return
+
+    # /mcp remove <name>
+    if args[0] == "remove" and len(args) > 1:
+        name = args[1]
+        key = f"mcp:{name}"
+        if mem.get_memory(key):
+            # Delete from memory table
+            import sqlite3
+            conn = sqlite3.connect(cfg.DB_PATH)
+            conn.execute("DELETE FROM memory WHERE key=?", (key,))
+            conn.commit()
+            conn.close()
+            await update.message.reply_text(f"✅ Removed MCP server: {name}")
+        else:
+            await update.message.reply_text(f"❌ MCP server not found: {name}")
+        return
+
+    await update.message.reply_text(
+        "Usage:\n"
+        "/mcp — list MCP servers\n"
+        '/mcp add {"mcpServers":{"name":{"command":"...","args":[...]}}}\n'
+        "/mcp remove <name>"
+    )
+
+
 async def cmd_apis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /apis command — list, remove, or show details of registered APIs."""
     if not is_owner(update.effective_user.id):
@@ -2630,6 +2834,8 @@ def main():
     app.add_handler(CommandHandler("agent",   cmd_agent))
     app.add_handler(CommandHandler("skills",  cmd_skills))
     app.add_handler(CommandHandler("apis",    cmd_apis))
+    app.add_handler(CommandHandler("connectors", cmd_connectors))
+    app.add_handler(CommandHandler("mcp",     cmd_mcp))
     app.add_handler(CommandHandler("usage",   cmd_usage))
     app.add_handler(CallbackQueryHandler(handle_continue_button, pattern=r"^cont_"))
     app.add_handler(CallbackQueryHandler(handle_providerkey_button, pattern=r"^pkey_"))
