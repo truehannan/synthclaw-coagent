@@ -11,6 +11,25 @@ function isConfigured() {
   return !!(config.get("telegram_token") || config.get("openai_api_key"));
 }
 
+function masked(val) {
+  if (!val) return "";
+  if (val.length <= 8) return "••••";
+  return val.slice(0, 4) + "••••" + val.slice(-4);
+}
+
+const PROVIDERS = {
+  "DigitalOcean Gradient AI": { base: "https://inference.do-ai.run/v1", prefix: "sk-do-" },
+  "OpenAI": { base: "https://api.openai.com/v1", prefix: "sk-" },
+  "Anthropic (via DO)": { base: "https://inference.do-ai.run/v1", prefix: "" },
+  "Google Gemini": { base: "https://generativelanguage.googleapis.com/v1beta/openai", prefix: "AIza" },
+  "NVIDIA NIM": { base: "https://integrate.api.nvidia.com/v1", prefix: "nvapi-" },
+  "HuggingFace": { base: "https://router.huggingface.co/v1", prefix: "hf_" },
+  "OpenRouter": { base: "https://openrouter.ai/api/v1", prefix: "sk-or-" },
+  "GitHub Models": { base: "https://models.inference.ai.azure.com", prefix: "ghp_" },
+  "Ollama (local)": { base: "http://localhost:11434/v1", prefix: "" },
+  "Custom URL": { base: "", prefix: "" },
+};
+
 export async function runSetup() {
   const editMode = isConfigured();
 
@@ -20,163 +39,97 @@ export async function runSetup() {
   );
 
   if (editMode) {
-    printInfo("Existing config detected. Current values shown as defaults — press Enter to keep.\n");
+    printInfo("Current values shown. Press Enter to keep unchanged.\n");
   }
 
-  // Step 1: Storage mode
+  // Step 1: Storage
   console.log(chalk.hex("#e85d04")("━".repeat(50)));
   console.log(chalk.bold("  1. STORAGE"));
   console.log(chalk.hex("#e85d04")("━".repeat(50)));
 
-  const { storageMode } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "storageMode",
-      message: "Where to store agent data?",
-      choices: [
-        { name: "Local SQLite (default, on this machine)", value: "local" },
-        { name: "Cloudflare D1 + R2 (cloud, synced across devices)", value: "cloudflare" },
-      ],
-      default: config.get("storage_mode"),
-    },
-  ]);
+  const { storageMode } = await inquirer.prompt([{
+    type: "list", name: "storageMode", message: "Where to store data?",
+    choices: [
+      { name: "Local SQLite (default)", value: "local" },
+      { name: "Cloudflare D1 + R2 (cloud sync)", value: "cloudflare" },
+    ],
+    default: config.get("storage_mode"),
+  }]);
   config.set("storage_mode", storageMode);
 
   if (storageMode === "cloudflare") {
-    console.log(chalk.dim("  Cloudflare D1 for database, R2 for file storage (optional)\n"));
-
     const cfAnswers = await inquirer.prompt([
-      {
-        type: "input",
-        name: "cfAccountId",
-        message: "Cloudflare Account ID:",
-        validate: (v) => (v.length > 10 ? true : "Account ID seems too short"),
-        default: config.get("cf_account_id") || undefined,
-      },
-      {
-        type: "password",
-        name: "cfApiToken",
-        message: "Cloudflare API Token (needs D1 + R2 permissions):",
-        mask: "*",
-        validate: (v) => (v.length > 10 ? true : "Token seems too short"),
-        default: config.get("cf_api_token") || undefined,
-      },
-      {
-        type: "input",
-        name: "cfD1DatabaseId",
-        message: "D1 Database ID (create at dash.cloudflare.com/d1):",
-        validate: (v) => (v.length > 10 ? true : "ID seems too short"),
-        default: config.get("cf_d1_database_id") || undefined,
-      },
-      {
-        type: "input",
-        name: "cfR2Bucket",
-        message: "R2 Bucket name (optional, for file storage):",
-        default: config.get("cf_r2_bucket") || "",
-      },
+      { type: "input", name: "cfAccountId", message: "Cloudflare Account ID:", default: config.get("cf_account_id") || undefined },
+      { type: "password", name: "cfApiToken", message: "Cloudflare API Token:", mask: "*", default: config.get("cf_api_token") || undefined },
+      { type: "input", name: "cfD1DatabaseId", message: "D1 Database ID:", default: config.get("cf_d1_database_id") || undefined },
+      { type: "input", name: "cfR2Bucket", message: "R2 Bucket name (optional):", default: config.get("cf_r2_bucket") || "" },
     ]);
-
     config.set("cf_account_id", cfAnswers.cfAccountId);
     config.set("cf_api_token", cfAnswers.cfApiToken);
     config.set("cf_d1_database_id", cfAnswers.cfD1DatabaseId);
     config.set("cf_r2_bucket", cfAnswers.cfR2Bucket || "");
 
-    // Test connection
-    const spinnerCf = ora("Testing Cloudflare D1 connection...").start();
+    const spinnerCf = ora("Testing Cloudflare connection...").start();
     try {
       const resp = execSync(
         `curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${cfAnswers.cfApiToken}" "https://api.cloudflare.com/client/v4/accounts/${cfAnswers.cfAccountId}/d1/database/${cfAnswers.cfD1DatabaseId}"`,
         { encoding: "utf-8", timeout: 10000 }
       ).trim();
-      if (resp === "200") {
-        spinnerCf.succeed("Cloudflare D1 connected");
-      } else {
-        spinnerCf.warn(`Cloudflare returned HTTP ${resp} — check credentials`);
-        const { fallback } = await inquirer.prompt([
-          { type: "confirm", name: "fallback", message: "Switch to local SQLite instead?", default: true },
-        ]);
-        if (fallback) {
-          config.set("storage_mode", "local");
-        }
+      if (resp === "200") { spinnerCf.succeed("Connected"); }
+      else {
+        spinnerCf.warn(`HTTP ${resp} — check credentials`);
+        const { fb } = await inquirer.prompt([{ type: "confirm", name: "fb", message: "Use local SQLite instead?", default: true }]);
+        if (fb) config.set("storage_mode", "local");
       }
-    } catch (err) {
-      spinnerCf.warn("Could not reach Cloudflare — using local SQLite as fallback");
-      config.set("storage_mode", "local");
-    }
+    } catch { spinnerCf.warn("Connection failed — using local SQLite"); config.set("storage_mode", "local"); }
   }
 
-  // Step 2: Interface mode
+  // Step 2: Interface
   console.log(chalk.hex("#e85d04")("\n━".repeat(50)));
-  console.log(chalk.bold("  2. INTERFACE MODE"));
+  console.log(chalk.bold("  2. INTERFACE"));
   console.log(chalk.hex("#e85d04")("━".repeat(50)));
 
-  const { interfaceMode } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "interfaceMode",
-      message: "Which messaging interface(s)?",
-      choices: [
-        { name: "Telegram (polling)", value: "telegram" },
-        { name: "WhatsApp (webhooks via Meta Cloud API)", value: "whatsapp" },
-        { name: "Both (Telegram + WhatsApp)", value: "both" },
-      ],
-      default: config.get("interface_mode"),
-    },
-  ]);
+  const { interfaceMode } = await inquirer.prompt([{
+    type: "list", name: "interfaceMode", message: "Messaging platform?",
+    choices: [
+      { name: "Telegram", value: "telegram" },
+      { name: "WhatsApp", value: "whatsapp" },
+      { name: "Both", value: "both" },
+    ],
+    default: config.get("interface_mode"),
+  }]);
   config.set("interface_mode", interfaceMode);
 
-  // Step 3: Telegram config
+  // Step 3: Telegram
   if (interfaceMode === "telegram" || interfaceMode === "both") {
     console.log(chalk.hex("#e85d04")("\n━".repeat(50)));
     console.log(chalk.bold("  3. TELEGRAM"));
     console.log(chalk.hex("#e85d04")("━".repeat(50)));
-
-    const { telegramToken } = await inquirer.prompt([
-      {
-        type: "password",
-        name: "telegramToken",
-        message: editMode ? "Telegram Bot Token (Enter to keep current):" : "Telegram Bot Token:",
-        mask: "*",
-        validate: (v) => (v.length > 10 || (editMode && v === "") ? true : "Token seems too short"),
-        default: editMode ? config.get("telegram_token") : undefined,
-      },
-    ]);
+    if (editMode && config.get("telegram_token")) {
+      printInfo(`Current: ${masked(config.get("telegram_token"))}`);
+    }
+    const { telegramToken } = await inquirer.prompt([{
+      type: "password", name: "telegramToken", mask: "*",
+      message: editMode ? "Bot Token (Enter to keep):" : "Bot Token (from @BotFather):",
+      validate: (v) => (v.length > 10 || (editMode && v === "") ? true : "Too short"),
+    }]);
     if (telegramToken) config.set("telegram_token", telegramToken);
   }
 
-  // Step 4: WhatsApp config
+  // Step 4: WhatsApp
   if (interfaceMode === "whatsapp" || interfaceMode === "both") {
     console.log(chalk.hex("#e85d04")("\n━".repeat(50)));
     console.log(chalk.bold("  4. WHATSAPP"));
     console.log(chalk.hex("#e85d04")("━".repeat(50)));
-
+    if (editMode && config.get("whatsapp_token")) {
+      printInfo(`Current token: ${masked(config.get("whatsapp_token"))}`);
+    }
     const waAnswers = await inquirer.prompt([
-      {
-        type: "password",
-        name: "whatsappToken",
-        message: "WhatsApp API Access Token:",
-        mask: "*",
-        validate: (v) => (v.length > 10 || (editMode && v === "") ? true : "Token seems too short"),
-        default: editMode ? config.get("whatsapp_token") : undefined,
-      },
-      {
-        type: "input",
-        name: "whatsappPhoneId",
-        message: "WhatsApp Phone Number ID:",
-        default: config.get("whatsapp_phone_number_id") || undefined,
-      },
-      {
-        type: "input",
-        name: "whatsappVerifyToken",
-        message: "Webhook Verify Token:",
-        default: config.get("whatsapp_verify_token") || randomBytes(16).toString("hex"),
-      },
-      {
-        type: "input",
-        name: "whatsappPort",
-        message: "Webhook Port:",
-        default: config.get("whatsapp_port") || "8443",
-      },
+      { type: "password", name: "whatsappToken", message: "Access Token:", mask: "*",
+        validate: (v) => (v.length > 10 || (editMode && v === "") ? true : "Too short") },
+      { type: "input", name: "whatsappPhoneId", message: "Phone Number ID:", default: config.get("whatsapp_phone_number_id") || undefined },
+      { type: "input", name: "whatsappVerifyToken", message: "Verify Token:", default: config.get("whatsapp_verify_token") || randomBytes(16).toString("hex") },
+      { type: "input", name: "whatsappPort", message: "Port:", default: config.get("whatsapp_port") || "8443" },
     ]);
     if (waAnswers.whatsappToken) config.set("whatsapp_token", waAnswers.whatsappToken);
     config.set("whatsapp_phone_number_id", waAnswers.whatsappPhoneId || config.get("whatsapp_phone_number_id"));
@@ -184,171 +137,157 @@ export async function runSetup() {
     config.set("whatsapp_port", waAnswers.whatsappPort);
   }
 
-  // Step 5: LLM Provider
+  // Step 5: AI Provider (simplified — select provider, then enter key)
   console.log(chalk.hex("#e85d04")("\n━".repeat(50)));
-  console.log(chalk.bold("  5. LLM PROVIDER"));
+  console.log(chalk.bold("  5. AI PROVIDER"));
   console.log(chalk.hex("#e85d04")("━".repeat(50)));
 
-  const llmAnswers = await inquirer.prompt([
-    {
-      type: "password",
-      name: "apiKey",
-      message: editMode ? "API Key (Enter to keep current):" : "API Key:",
-      mask: "*",
-      validate: (v) => (v.length > 5 || (editMode && v === "") ? true : "Key seems too short"),
-      default: editMode ? config.get("openai_api_key") : undefined,
-    },
-    {
-      type: "input",
-      name: "apiBase",
-      message: "API Base URL:",
-      default: config.get("openai_api_base") || "https://inference.do-ai.run/v1",
-    },
-    {
-      type: "list",
-      name: "defaultModel",
-      message: "Default Model:",
-      choices: [
-        "llama3.3-70b-instruct",
-        "deepseek-r1-distill-llama-70b",
-        "anthropic-claude-sonnet-4",
-        "openai-gpt-4o",
-        new inquirer.Separator("── Google ──"),
-        "google:gemini-2.5-flash",
-        "google:gemini-2.5-pro",
-        new inquirer.Separator("── NVIDIA ──"),
-        "nvidia:meta/llama-3.3-70b-instruct",
-        "nvidia:deepseek-ai/deepseek-r1",
-        new inquirer.Separator("── HuggingFace ──"),
-        "hf:meta-llama/Llama-3.3-70B-Instruct",
-        new inquirer.Separator(),
-        { name: "Custom (type your own)", value: "__custom__" },
-      ],
-      default: config.get("default_model"),
-    },
-  ]);
+  const providerNames = Object.keys(PROVIDERS);
+  const { provider } = await inquirer.prompt([{
+    type: "list", name: "provider", message: "Select LLM provider:",
+    choices: providerNames,
+    default: (() => {
+      const currentBase = config.get("openai_api_base") || "";
+      for (const [name, p] of Object.entries(PROVIDERS)) {
+        if (p.base && currentBase.includes(new URL(p.base).hostname)) return name;
+      }
+      return "DigitalOcean Gradient AI";
+    })(),
+  }]);
 
-  let model = llmAnswers.defaultModel;
-  if (model === "__custom__") {
-    const { customModel } = await inquirer.prompt([
-      { type: "input", name: "customModel", message: "Custom model name:" },
-    ]);
-    model = customModel;
+  const providerInfo = PROVIDERS[provider];
+  let apiBase = providerInfo.base;
+
+  if (provider === "Custom URL") {
+    const { customBase } = await inquirer.prompt([{
+      type: "input", name: "customBase", message: "API Base URL:",
+      default: config.get("openai_api_base") || "https://",
+    }]);
+    apiBase = customBase;
   }
 
-  if (llmAnswers.apiKey) config.set("openai_api_key", llmAnswers.apiKey);
-  config.set("openai_api_base", llmAnswers.apiBase);
+  if (editMode && config.get("openai_api_key")) {
+    printInfo(`Current key: ${masked(config.get("openai_api_key"))}`);
+  }
+
+  const { apiKey } = await inquirer.prompt([{
+    type: "password", name: "apiKey", mask: "*",
+    message: editMode ? `${provider} API Key (Enter to keep):` : `${provider} API Key:`,
+    validate: (v) => (v.length > 5 || (editMode && v === "") ? true : "Too short"),
+  }]);
+
+  if (apiKey) config.set("openai_api_key", apiKey);
+  config.set("openai_api_base", apiBase);
+
+  // Model selection
+  const defaultModels = {
+    "DigitalOcean Gradient AI": ["llama3.3-70b-instruct", "deepseek-r1-distill-llama-70b", "anthropic-claude-sonnet-4", "openai-gpt-4o"],
+    "OpenAI": ["openai-gpt-4o", "openai-gpt-4o-mini", "openai-gpt-4.1", "openai-o3-mini"],
+    "Anthropic (via DO)": ["anthropic-claude-sonnet-4", "anthropic-claude-opus-4", "anthropic-claude-haiku-4.5"],
+    "Google Gemini": ["google:gemini-2.5-flash", "google:gemini-2.5-pro", "google:gemini-2.0-flash"],
+    "NVIDIA NIM": ["nvidia:meta/llama-3.3-70b-instruct", "nvidia:deepseek-ai/deepseek-r1", "nvidia:meta/llama-3.1-405b-instruct"],
+    "HuggingFace": ["hf:meta-llama/Llama-3.3-70B-Instruct", "hf:deepseek-ai/DeepSeek-R1", "hf:Qwen/Qwen3-235B-A22B"],
+    "OpenRouter": ["openrouter:anthropic/claude-3.5-sonnet", "openrouter:openai/gpt-4o", "openrouter:google/gemini-2.0-flash-001"],
+    "GitHub Models": ["github:gpt-4o", "github:Meta-Llama-3.1-70B-Instruct"],
+    "Ollama (local)": ["llama3.3", "mistral", "codellama"],
+    "Custom URL": [],
+  };
+
+  const modelChoices = [...(defaultModels[provider] || []), new inquirer.Separator(), { name: "Custom", value: "__custom__" }];
+  const { defaultModel } = await inquirer.prompt([{
+    type: "list", name: "defaultModel", message: "Default model:",
+    choices: modelChoices,
+    default: config.get("default_model"),
+  }]);
+
+  let model = defaultModel;
+  if (model === "__custom__") {
+    const { cm } = await inquirer.prompt([{ type: "input", name: "cm", message: "Model name:" }]);
+    model = cm;
+  }
   config.set("default_model", model);
 
-  // Step 6: Rate limiting & server
+  // Step 6: Limits
   console.log(chalk.hex("#e85d04")("\n━".repeat(50)));
-  console.log(chalk.bold("  6. RATE LIMITS & SERVER"));
+  console.log(chalk.bold("  6. LIMITS"));
   console.log(chalk.hex("#e85d04")("━".repeat(50)));
 
-  const serverAnswers = await inquirer.prompt([
-    {
-      type: "input",
-      name: "maxRpm",
-      message: "Max requests per minute (0 = unlimited):",
-      default: config.get("max_rpm") || "0",
-    },
-    {
-      type: "input",
-      name: "maxIterations",
-      message: "Max tool iterations per message:",
-      default: config.get("max_tool_iterations") || "10",
-    },
-    {
-      type: "input",
-      name: "maxHistory",
-      message: "Max conversation history messages:",
-      default: config.get("max_history_messages") || "20",
-    },
-    {
-      type: "input",
-      name: "remoteHost",
-      message: "Remote server IP (blank for local):",
-      default: config.get("remote_host") || "",
-    },
-    {
-      type: "input",
-      name: "remoteUser",
-      message: "SSH user:",
-      default: config.get("remote_user") || "root",
-      when: (a) => a.remoteHost !== "",
-    },
+  const limitsAnswers = await inquirer.prompt([
+    { type: "input", name: "maxRpm", message: "Max requests/minute (0 = unlimited):", default: config.get("max_rpm") || "0" },
+    { type: "input", name: "maxIterations", message: "Max tool iterations/message:", default: config.get("max_tool_iterations") || "10" },
+    { type: "input", name: "remoteHost", message: "Remote server IP (blank for local):", default: config.get("remote_host") || "" },
   ]);
 
-  config.set("max_rpm", serverAnswers.maxRpm);
-  config.set("max_tool_iterations", serverAnswers.maxIterations);
-  config.set("max_history_messages", serverAnswers.maxHistory);
-  config.set("remote_host", serverAnswers.remoteHost || "");
-  config.set("remote_user", serverAnswers.remoteUser || "root");
+  config.set("max_rpm", limitsAnswers.maxRpm);
+  config.set("max_tool_iterations", limitsAnswers.maxIterations);
+  config.set("remote_host", limitsAnswers.remoteHost || "");
 
-  // Step 7: Composio (optional)
+  // Step 7: Composio
   console.log(chalk.hex("#e85d04")("\n━".repeat(50)));
-  console.log(chalk.bold("  7. COMPOSIO (optional — 1000+ tool integrations)"));
+  console.log(chalk.bold("  7. COMPOSIO (optional)"));
   console.log(chalk.hex("#e85d04")("━".repeat(50)));
-  console.log(chalk.dim("  Get your key at app.composio.dev. Skip if not using.\n"));
-
-  const { composioKey } = await inquirer.prompt([
-    {
-      type: "input",
-      name: "composioKey",
-      message: "Composio API Key (Enter to skip):",
-      default: config.get("composio_api_key") || "",
-    },
-  ]);
+  if (editMode && config.get("composio_api_key")) {
+    printInfo(`Current: ${masked(config.get("composio_api_key"))}`);
+  }
+  const { composioKey } = await inquirer.prompt([{
+    type: "input", name: "composioKey", message: "Composio API Key (Enter to skip):",
+    default: config.get("composio_api_key") || "",
+  }]);
   if (composioKey) config.set("composio_api_key", composioKey);
 
-  // Step 8: Write .env
-  const spinner1 = ora("Writing .env configuration...").start();
+  // Write .env
+  const spinner1 = ora("Saving configuration...").start();
   const root = getProjectRoot();
   try {
     writeFileSync(join(root, ".env"), generateEnvContent());
-    spinner1.succeed(`Configuration saved`);
-  } catch (err) {
-    spinner1.warn("Could not write .env (will use stored config)");
-  }
+    spinner1.succeed("Configuration saved");
+  } catch { spinner1.warn("Could not write .env"); }
 
-  // Step 9: Install Python deps
+  // Install deps
   console.log("");
-  const { installDeps } = await inquirer.prompt([
-    {
-      type: "confirm",
-      name: "installDeps",
-      message: "Install/update Python dependencies?",
-      default: !editMode,
-    },
-  ]);
+  const { installDeps } = await inquirer.prompt([{
+    type: "confirm", name: "installDeps",
+    message: "Install/update Python dependencies?",
+    default: !editMode,
+  }]);
 
   if (installDeps) {
     const venvPath = join(root, "venv");
-    const requirementsPath = join(root, "requirements.txt");
-    if (existsSync(requirementsPath)) {
-      let pythonBin = "python3";
-      try { execSync(`${pythonBin} --version`, { encoding: "utf-8" }); }
-      catch { pythonBin = "python"; }
+    const reqPath = join(root, "requirements.txt");
+    if (!existsSync(reqPath)) {
+      printError("requirements.txt not found");
+    } else {
+      let py = "python3";
+      try { execSync(`${py} --version`, { encoding: "utf-8" }); }
+      catch { py = "python"; }
 
       if (!existsSync(venvPath)) {
         const sv = ora("Creating venv...").start();
         try {
-          execSync(`${pythonBin} -m venv "${venvPath}"`, { encoding: "utf-8", cwd: root, timeout: 30000 });
+          execSync(`${py} -m venv "${venvPath}"`, { encoding: "utf-8", cwd: root, timeout: 60000 });
           sv.succeed("Venv created");
-        } catch {
-          sv.fail("Venv creation failed — try: apt install python3.12-venv");
+        } catch (err) {
+          sv.fail("Venv failed");
+          // Try installing python3-venv
+          try {
+            const ver = execSync(`${py} --version`, { encoding: "utf-8" }).match(/(\d+\.\d+)/)?.[1] || "3";
+            execSync(`apt-get install -y python${ver}-venv 2>/dev/null || true`, { encoding: "utf-8", timeout: 60000 });
+            execSync(`${py} -m venv "${venvPath}"`, { encoding: "utf-8", cwd: root, timeout: 30000 });
+            printSuccess("Venv created (after installing python-venv package)");
+          } catch { printError("Could not create venv. Install python3-venv manually."); }
         }
       }
+
       if (existsSync(venvPath)) {
-        const sp = ora("Installing dependencies...").start();
+        const sp = ora("Installing Python dependencies...").start();
         try {
           const pip = join(venvPath, "bin", "pip");
-          execSync(`"${pip}" install --upgrade pip -q && "${pip}" install -r "${requirementsPath}" -q`, {
-            encoding: "utf-8", timeout: 180000, cwd: root,
-          });
+          execSync(`${pip} install --upgrade pip -q`, { encoding: "utf-8", timeout: 60000, cwd: root });
+          execSync(`${pip} install -r ${reqPath} -q`, { encoding: "utf-8", timeout: 180000, cwd: root });
           sp.succeed("Dependencies installed");
         } catch (err) {
-          sp.fail("pip install failed");
+          sp.fail("pip install failed: " + (err.stderr || err.message || "").slice(0, 200));
+          printInfo("Try manually: venv/bin/pip install -r requirements.txt");
         }
       }
     }
@@ -356,14 +295,14 @@ export async function runSetup() {
 
   // Summary
   console.log(chalk.hex("#e85d04")("\n━".repeat(50)));
-  console.log(chalk.bold(editMode ? "  ✓ CONFIG UPDATED" : "  ✓ SETUP COMPLETE"));
+  console.log(chalk.bold(editMode ? "  ✓ UPDATED" : "  ✓ SETUP COMPLETE"));
   console.log(chalk.hex("#e85d04")("━".repeat(50)));
   console.log("");
-  printSuccess(`Interface: ${config.get("interface_mode")}`);
+  printSuccess(`Provider: ${provider}`);
   printSuccess(`Model: ${config.get("default_model")}`);
+  printSuccess(`Interface: ${config.get("interface_mode")}`);
   printSuccess(`Storage: ${config.get("storage_mode")}`);
-  if (config.get("max_rpm") !== "0") printSuccess(`RPM limit: ${config.get("max_rpm")}`);
-  if (config.get("composio_api_key")) printSuccess("Composio: configured");
+  if (config.get("max_rpm") !== "0") printSuccess(`RPM: ${config.get("max_rpm")}/min`);
   console.log("");
   printInfo("Run: synthclaw start");
   console.log("");
