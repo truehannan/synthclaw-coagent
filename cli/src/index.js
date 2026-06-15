@@ -60,8 +60,14 @@ async function main() {
       break;
 
     case "agent":
-      const { runAgent } = await import("./commands/agent.js");
-      await runAgent(args.slice(1));
+      if (args.length <= 1) {
+        // No args — launch interactive dashboard
+        const { runDashboard } = await import("./commands/dashboard.js");
+        await runDashboard();
+      } else {
+        const { runAgent } = await import("./commands/agent.js");
+        await runAgent(args.slice(1));
+      }
       break;
 
     case "memory":
@@ -135,7 +141,7 @@ function showHelp() {
     `  ${chalk.cyan("plan")} <task>     Break a task into steps (no execution)`
   );
   console.log(
-    `  ${chalk.cyan("agent")} <task>    Autonomous mode — executes without asking`
+    `  ${chalk.cyan("agent")}          Interactive dashboard (no args) or autonomous exec (with task)`
   );
   console.log("");
 
