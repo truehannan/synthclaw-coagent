@@ -2,14 +2,13 @@
   "name": "synthclaw-coagent",
   "version": "1.0.0",
   "private": true,
-  "description": "SynthClaw CoAgent — Personal AI Agent (CLI in ./cli)",
+  "description": "SynthClaw CoAgent — Personal AI Agent",
   "scripts": {
-    "preinstall": "cd cli && npm install",
+    "setup": "cd cli && npm install && npm run build && npm link && echo '✓ synthclaw command ready'",
+    "install": "cd cli && npm install",
     "build": "cd cli && npm install && npm run build",
     "link": "cd cli && npm install && npm run build && npm link",
-    "postinstall": "cd cli && npm run build",
-    "start": "cd cli && npm run build && npm link && node -e \"console.log('synthclaw command ready')\"",
-    "setup": "cd cli && npm install && npm run build && npm link"
+    "postinstall": "cd cli && npm run build 2>/dev/null || true"
   },
   "engines": {
     "node": ">=18"
