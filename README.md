@@ -6,7 +6,7 @@
 | $$  \__/ /$$   /$$ /$$$$$$$  /$$$$$$  | $$$$$$$   /$$$$$$$| $$  /$$$$$$  /$$  /$$  /$$      | $$  \__/  /$$$$$$   /$$$$$$   /$$$$$$   /$$$$$$  /$$$$$$$  /$$$$$$  
 |  $$$$$$ | $$  | $$| $$__  $$|_  $$_/  | $$__  $$ /$$_____/| $$ |____  $$| $$ | $$ | $$      | $$       /$$__  $$ |____  $$ /$$__  $$ /$$__  $$| $$__  $$|_  $$_/  
  \____  $$| $$  | $$| $$  \ $$  | $$    | $$  \ $$| $$      | $$  /$$$$$$$| $$ | $$ | $$      | $$      | $$  \ $$  /$$$$$$$| $$  \ $$| $$$$$$$$| $$  \ $$  | $$    
- /$$  \ $$| $$  | $$| $$  | $$  | $$ /$$| $$  | $$| $$      | $$ /$$__  $$| $$ | $$ | $$      | $$    $$| $$  | $$ /$$__  $$| $$  | $$| $$_____/| $$  | $$  | $$ /$$
+ /$$  \ $$| $$  | $$| $$  | $$  | $$ /$$| $$  | $$| $$      | $$ /$$__  $$| $$ | $$ | $$      | $$    $$| $$  | $$ /$$__  $$ | $$  | $$| $$_____/| $$  | $$  | $$ /$$
 |  $$$$$$/|  $$$$$$$| $$  | $$  |  $$$$/| $$  | $$|  $$$$$$$| $$|  $$$$$$$|  $$$$$/$$$$/      |  $$$$$$/|  $$$$$$/|  $$$$$$$|  $$$$$$$|  $$$$$$$| $$  | $$  |  $$$$/
  \______/  \____  $$|__/  |__/   \___/  |__/  |__/ \_______/|__/ \_______/ \_____/\___/        \______/  \______/  \\_______/ \____  $$ \_______/|__/  |__/   \___/  
            /$$  | $$                                                                                                         /$$  \ $$                              
@@ -60,6 +60,8 @@ synthclaw agent       # interactive dashboard
 | `synthclaw model <name>` | Switch LLM model |
 | `synthclaw models` | List all available models |
 | `synthclaw deploy` | Deploy to remote VPS |
+| `synthclaw import skill <@owner/name>` | Install a skill from ClawHub registry |
+| `synthclaw search skill <query>` | Search skills on ClawHub registry |
 
 ---
 
@@ -130,6 +132,8 @@ exec_code(code="import json; print(json.dumps({'x': 42}))", lang="python")
 ```
 /skills install coding-agent          # search + install from GitHub
 /skills install https://url/skill.zip # direct URL
+synthclaw import skill @owner/name    # install from ClawHub registry
+synthclaw search skill <query>        # search ClawHub registry
 ```
 Or send a .zip file to the bot — auto-installs if it contains SKILL.md.
 
