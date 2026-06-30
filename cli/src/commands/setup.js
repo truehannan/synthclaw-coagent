@@ -75,7 +75,63 @@ export async function runSetup() {
         `curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${cfAnswers.cfApiToken}" "https://api.cloudflare.com/client/v4/accounts/${cfAnswers.cfAccountId}/d1/database/${cfAnswers.cfD1DatabaseId}"`,
         { encoding: "utf-8", timeout: 10000 }
       ).trim();
-      if (resp === "200") { spinnerCf.succeed("Connected"); }
+      if (resp === "200") {
+        spinnerCf.succeed("Connected");
+
+        // ── DB-first flow: Load existing config from D1 ──
+        const syncSpinner = ora("Loading config from D1...").start();
+        try {
+          const queryResp = execSync(
+            `curl -s -X POST -H "Authorization: Bearer ${cfAnswers.cfApiToken}" -H "Content-Type: application/json" ` +
+            `-d '{"sql":"SELECT key, value FROM config"}' ` +
+            `"https://api.cloudflare.com/client/v4/accounts/${cfAnswers.cfAccountId}/d1/database/${cfAnswers.cfD1DatabaseId}/query"`,
+            { encoding: "utf-8", timeout: 15000 }
+          );
+          const d1Data = JSON.parse(queryResp);
+          if (d1Data.success && d1Data.result && d1Data.result[0] && d1Data.result[0].results) {
+            const rows = d1Data.result[0].results;
+            let synced = 0;
+            // Map D1 config keys to local config keys
+            const keyMap = {
+              "interface_mode": "interface_mode",
+              "telegram_token": "telegram_token",
+              "whatsapp_token": "whatsapp_token",
+              "whatsapp_phone_number_id": "whatsapp_phone_number_id",
+              "whatsapp_verify_token": "whatsapp_verify_token",
+              "whatsapp_port": "whatsapp_port",
+              "openai_api_key": "openai_api_key",
+              "openai_api_base": "openai_api_base",
+              "default_model": "default_model",
+              "current_model": "default_model",
+              "max_rpm": "max_rpm",
+              "max_tool_iterations": "max_tool_iterations",
+              "composio_api_key": "composio_api_key",
+              "owner_telegram_id": "owner_telegram_id",
+            };
+            for (const row of rows) {
+              const localKey = keyMap[row.key];
+              if (localKey && row.value && row.value !== "null") {
+                // Only fill if local is empty
+                const current = config.get(localKey);
+                if (!current) {
+                  config.set(localKey, row.value);
+                  synced++;
+                }
+              }
+            }
+            if (synced > 0) {
+              syncSpinner.succeed(`Loaded ${synced} settings from D1`);
+              printInfo("Wizard will show stored values. Press Enter to keep them.\n");
+            } else {
+              syncSpinner.info("No stored config in D1 yet (fresh database)");
+            }
+          } else {
+            syncSpinner.info("D1 config table empty or not initialized yet");
+          }
+        } catch (syncErr) {
+          syncSpinner.info("Could not load config from D1 (will proceed with local values)");
+        }
+      }
       else {
         spinnerCf.warn(`HTTP ${resp} — check credentials`);
         const { fb } = await inquirer.prompt([{ type: "confirm", name: "fb", message: "Use local SQLite instead?", default: true }]);
@@ -179,7 +235,7 @@ export async function runSetup() {
   if (apiKey) config.set("openai_api_key", apiKey);
   config.set("openai_api_base", apiBase);
 
-  // Model selection
+  // Model selection — fetch live from provider if possible
   const defaultModels = {
     "DigitalOcean Gradient AI": ["llama3.3-70b-instruct", "deepseek-r1-distill-llama-70b", "anthropic-claude-sonnet-4", "openai-gpt-4o"],
     "OpenAI": ["openai-gpt-4o", "openai-gpt-4o-mini", "openai-gpt-4.1", "openai-o3-mini"],
@@ -193,7 +249,38 @@ export async function runSetup() {
     "Custom URL": [],
   };
 
-  const modelChoices = [...(defaultModels[provider] || []), new inquirer.Separator(), { name: "Custom", value: "__custom__" }];
+  // Try to fetch live models from the selected provider
+  let liveModels = null;
+  const effectiveKey = apiKey || config.get("openai_api_key");
+  if (effectiveKey && providerInfo.base) {
+    const fetchSpinner = ora("Fetching available models from provider...").start();
+    try {
+      const modelsUrl = `${providerInfo.base}/models`;
+      const headers = { "Authorization": `Bearer ${effectiveKey}`, "Content-Type": "application/json" };
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      const resp = await fetch(modelsUrl, { headers, signal: controller.signal });
+      clearTimeout(timeout);
+      if (resp.ok) {
+        const data = await resp.json();
+        const items = data.data || data.models || [];
+        liveModels = items.map(item => typeof item === "string" ? item : (item.id || item.name || "")).filter(Boolean).slice(0, 30);
+        if (liveModels.length > 0) {
+          fetchSpinner.succeed(`Found ${liveModels.length} models from ${provider}`);
+        } else {
+          fetchSpinner.info("No models returned, using defaults");
+          liveModels = null;
+        }
+      } else {
+        fetchSpinner.info(`Could not fetch live models (HTTP ${resp.status}), using defaults`);
+      }
+    } catch (err) {
+      fetchSpinner.info("Could not fetch live models, using defaults");
+    }
+  }
+
+  const modelList = liveModels || defaultModels[provider] || [];
+  const modelChoices = [...modelList.slice(0, 25), new inquirer.Separator(), { name: "Custom", value: "__custom__" }];
   const { defaultModel } = await inquirer.prompt([{
     type: "list", name: "defaultModel", message: "Default model:",
     choices: modelChoices,
@@ -242,6 +329,45 @@ export async function runSetup() {
     writeFileSync(join(root, ".env"), generateEnvContent());
     spinner1.succeed("Configuration saved");
   } catch { spinner1.warn("Could not write .env"); }
+
+  // Sync config to D1 if cloudflare mode
+  if (config.get("storage_mode") === "cloudflare" && config.get("cf_api_token")) {
+    const d1Spinner = ora("Syncing config to D1...").start();
+    try {
+      const cfToken = config.get("cf_api_token");
+      const cfAccount = config.get("cf_account_id");
+      const cfDb = config.get("cf_d1_database_id");
+      // Push key config values to D1
+      const configPairs = {
+        interface_mode: config.get("interface_mode"),
+        telegram_token: config.get("telegram_token"),
+        openai_api_key: config.get("openai_api_key"),
+        openai_api_base: config.get("openai_api_base"),
+        default_model: config.get("default_model"),
+        max_rpm: config.get("max_rpm"),
+        max_tool_iterations: config.get("max_tool_iterations"),
+        composio_api_key: config.get("composio_api_key"),
+      };
+      // Build batch SQL statements
+      const statements = Object.entries(configPairs)
+        .filter(([_, v]) => v)
+        .map(([k, v]) => `INSERT OR REPLACE INTO config (key, value) VALUES ('${k}', '${(v || "").replace(/'/g, "''")}');`)
+        .join(" ");
+      if (statements) {
+        execSync(
+          `curl -s -X POST -H "Authorization: Bearer ${cfToken}" -H "Content-Type: application/json" ` +
+          `-d '{"sql":"${statements}"}' ` +
+          `"https://api.cloudflare.com/client/v4/accounts/${cfAccount}/d1/database/${cfDb}/query"`,
+          { encoding: "utf-8", timeout: 15000 }
+        );
+        d1Spinner.succeed("Config synced to D1");
+      } else {
+        d1Spinner.info("No config to sync");
+      }
+    } catch (err) {
+      d1Spinner.warn("D1 sync failed (config saved locally only)");
+    }
+  }
 
   // Install deps
   console.log("");

@@ -159,6 +159,12 @@ MAX_RPM = int(_clean_env("MAX_RPM", "0") or "0")  # 0 = unlimited
 COMPOSIO_API_KEY = _clean_env("COMPOSIO_API_KEY")
 STORAGE_MODE = _clean_env("STORAGE_MODE", "local")  # local or cloudflare
 
+# ── Cloudflare D1 config ──────────────────────────────────────────────────────
+CF_ACCOUNT_ID = _clean_env("CF_ACCOUNT_ID")
+CF_D1_DATABASE_ID = _clean_env("CF_D1_DATABASE_ID")
+CF_API_TOKEN = _clean_env("CF_API_TOKEN")
+CF_R2_BUCKET = _clean_env("CF_R2_BUCKET")
+
 # ── Model pricing (USD per 1M tokens) ──────────────────────────────────────
 # (in, out) = confirmed pricing from DO docs / provider published rates
 # ~(in, out) = educated estimates based on model size, capability, provider pricing patterns

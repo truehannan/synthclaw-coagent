@@ -1,3 +1,4 @@
+from __future__ import annotations
 import csv
 import json
 import logging
@@ -1329,6 +1330,204 @@ def composio_execute(tool_slug: str, args: str = "{}", connected_account_id: str
         return {"error": str(e)}
 
 
+# ── Skill management tools ─────────────────────────────────────────────────────
+
+def install_skill(source: str, name: str = "") -> dict:
+    """Install a skill from a source URI.
+    source formats:
+      - URL to .zip: https://example.com/skill.zip
+      - GitHub repo: github:owner/repo
+      - ClawHub: clawhub:@owner/skill-name
+    The source is recorded in skill_sources (D1/local) for auto-reinstall.
+    """
+    import zipfile
+    import io
+    import shutil
+    from memory import add_skill_source, list_skill_sources
+
+    SKILLS_DIR = Path(os.getenv("SYNTHCLAW_BASE_DIR", "/opt/agent")) / ".skills"
+    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+
+    source = source.strip()
+    source_type = "url"
+    source_uri = source
+
+    try:
+        if source.startswith("clawhub:"):
+            # ClawHub format: clawhub:@owner/name
+            source_type = "clawhub"
+            source_uri = source
+            # ClawHub resolves to GitHub for now
+            ref = source.replace("clawhub:", "").lstrip("@")
+            zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
+            skill_name = name or ref.split("/")[-1]
+        elif source.startswith("github:"):
+            source_type = "github"
+            source_uri = source
+            ref = source.replace("github:", "")
+            zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
+            skill_name = name or ref.split("/")[-1]
+        elif source.startswith("http"):
+            zip_url = source
+            skill_name = name or source.split("/")[-1].replace(".zip", "")
+        else:
+            # Assume it's a GitHub search term
+            source_type = "github"
+            search_url = f"https://api.github.com/search/repositories?q={source}+skill+in:name&sort=stars&per_page=1"
+            resp = requests.get(search_url, timeout=15)
+            if resp.status_code == 200:
+                items = resp.json().get("items", [])
+                if items:
+                    repo = items[0]
+                    source_uri = f"github:{repo['full_name']}"
+                    zip_url = f"https://github.com/{repo['full_name']}/archive/refs/heads/{repo.get('default_branch', 'main')}.zip"
+                    skill_name = name or repo["name"]
+                else:
+                    return {"error": f"No skill found matching: {source}"}
+            else:
+                return {"error": f"GitHub search failed: {resp.status_code}"}
+
+        # Download and extract
+        resp = requests.get(zip_url, timeout=60)
+        if resp.status_code != 200:
+            return {"error": f"Failed to download: HTTP {resp.status_code}"}
+
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            # Extract to a temp dir, then move to skills dir
+            names = zf.namelist()
+            # Most GitHub zips have a top-level folder like "repo-main/"
+            top_dirs = set()
+            for n in names:
+                parts = n.split("/")
+                if len(parts) > 1:
+                    top_dirs.add(parts[0])
+
+            dest = SKILLS_DIR / skill_name
+            if dest.exists():
+                shutil.rmtree(dest)
+
+            if len(top_dirs) == 1:
+                # Single top-level dir — extract its contents directly
+                top_dir = list(top_dirs)[0]
+                dest.mkdir(parents=True, exist_ok=True)
+                for member in zf.namelist():
+                    if member.startswith(top_dir + "/") and not member.endswith("/"):
+                        rel_path = member[len(top_dir) + 1:]
+                        if rel_path:
+                            target = dest / rel_path
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            with zf.open(member) as src, open(target, "wb") as dst:
+                                dst.write(src.read())
+            else:
+                zf.extractall(dest)
+
+        # Register source in DB
+        add_skill_source(skill_name, source_type, source_uri)
+
+        return {
+            "success": True,
+            "name": skill_name,
+            "source": source_uri,
+            "path": str(dest),
+            "files": len(list(dest.rglob("*"))),
+        }
+
+    except zipfile.BadZipFile:
+        return {"error": "Downloaded file is not a valid zip archive"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def uninstall_skill(name: str) -> dict:
+    """Remove an installed skill and its source record."""
+    import shutil
+    from memory import remove_skill_source
+
+    SKILLS_DIR = Path(os.getenv("SYNTHCLAW_BASE_DIR", "/opt/agent")) / ".skills"
+    skill_path = SKILLS_DIR / name
+
+    removed_files = False
+    if skill_path.exists() and skill_path.is_dir():
+        shutil.rmtree(skill_path)
+        removed_files = True
+
+    removed_source = remove_skill_source(name)
+
+    if not removed_files and not removed_source:
+        return {"error": f"Skill '{name}' not found"}
+
+    return {"success": True, "name": name, "removed_files": removed_files, "removed_source": removed_source}
+
+
+def list_skills_with_sources() -> dict:
+    """List all installed skills with their source information."""
+    from memory import list_skill_sources
+
+    SKILLS_DIR = Path(os.getenv("SYNTHCLAW_BASE_DIR", "/opt/agent")) / ".skills"
+    sources = list_skill_sources()
+    source_map = {s["name"]: s for s in sources}
+
+    skills = []
+    if SKILLS_DIR.exists():
+        for d in sorted(SKILLS_DIR.iterdir()):
+            if d.is_dir():
+                source_info = source_map.get(d.name, {})
+                skill_md = d / "SKILL.md"
+                readme = d / "README.md"
+                desc_file = skill_md if skill_md.exists() else (readme if readme.exists() else None)
+                desc = ""
+                if desc_file:
+                    content = desc_file.read_text(encoding="utf-8", errors="ignore")
+                    for line in content.split("\n"):
+                        line = line.strip().lstrip("#").strip()
+                        if line and not line.startswith("---"):
+                            desc = line[:100]
+                            break
+                skills.append({
+                    "name": d.name,
+                    "description": desc,
+                    "source_type": source_info.get("source_type", "unknown"),
+                    "source_uri": source_info.get("source_uri", "local"),
+                    "auto_update": source_info.get("auto_update", False),
+                })
+
+    # Also include sources not yet installed locally
+    for name, src in source_map.items():
+        if not any(s["name"] == name for s in skills):
+            skills.append({
+                "name": name,
+                "description": "(not installed locally)",
+                "source_type": src["source_type"],
+                "source_uri": src["source_uri"],
+                "auto_update": src.get("auto_update", True),
+                "needs_install": True,
+            })
+
+    return {"skills": skills, "count": len(skills)}
+
+
+def reinstall_all_skills() -> dict:
+    """Reinstall all skills from their stored sources.
+    Called on fresh install when D1 has skill_sources but local .skills is empty.
+    """
+    from memory import list_skill_sources
+
+    sources = list_skill_sources()
+    if not sources:
+        return {"message": "No skill sources registered", "installed": 0}
+
+    installed = 0
+    errors = []
+    for src in sources:
+        result = install_skill(src["source_uri"], name=src["name"])
+        if result.get("success"):
+            installed += 1
+        else:
+            errors.append(f"{src['name']}: {result.get('error', 'unknown')}")
+
+    return {"installed": installed, "total": len(sources), "errors": errors}
+
+
 # ── Tool registry ─────────────────────────────────────────────────────────────
 
 TOOL_REGISTRY = {
@@ -1629,6 +1828,30 @@ TOOL_REGISTRY = {
             "args": "str (JSON arguments for the tool)",
             "connected_account_id": "str (optional)",
         },
+    },
+    # ── Skill management tools ─────────────────────────────────────────
+    "install_skill": {
+        "fn": install_skill,
+        "description": "Install a skill from a source (GitHub repo, URL to zip, or search term). Registered in D1 for auto-reinstall on fresh installs.",
+        "params": {
+            "source": "str (github:owner/repo, clawhub:@owner/name, https://url.zip, or search term)",
+            "name": "str (optional — override skill name)",
+        },
+    },
+    "uninstall_skill": {
+        "fn": uninstall_skill,
+        "description": "Remove an installed skill and its source record.",
+        "params": {"name": "str (skill name to remove)"},
+    },
+    "list_skills_with_sources": {
+        "fn": list_skills_with_sources,
+        "description": "List all installed skills with their source information (for reinstall). Shows which are from D1 vs local-only.",
+        "params": {},
+    },
+    "reinstall_all_skills": {
+        "fn": reinstall_all_skills,
+        "description": "Reinstall all skills from stored sources (D1). Use on fresh install to restore skill set.",
+        "params": {},
     },
 }
 

@@ -34,6 +34,24 @@ logger = logging.getLogger(__name__)
 mem.init_db()
 cfg.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
+# Auto-reinstall skills from D1 sources on fresh install
+def _auto_reinstall_skills():
+    """If D1 has skill_sources but local .skills is empty, reinstall all."""
+    try:
+        skills_dir = cfg.BASE_DIR / ".skills"
+        has_local_skills = skills_dir.exists() and any(skills_dir.iterdir())
+        if not has_local_skills:
+            sources = mem.list_skill_sources()
+            if sources:
+                from tools import reinstall_all_skills
+                logger.info(f"Auto-reinstalling {len(sources)} skills from sources...")
+                result = reinstall_all_skills()
+                logger.info(f"Skills reinstall: {result.get('installed', 0)}/{result.get('total', 0)} installed")
+    except Exception as e:
+        logger.warning(f"Auto-reinstall skills failed: {e}")
+
+_auto_reinstall_skills()
+
 client = OpenAI(api_key=cfg.OPENAI_API_KEY, base_url=cfg.OPENAI_API_BASE)
 CLIENT_CACHE: dict[tuple[str, str], OpenAI] = {}
 
@@ -61,7 +79,6 @@ PROVIDER_META = {
     "Google": {"slug": "gg", "emoji": "🔵"},
 }
 OPENAI_DIRECT_API_BASE = "https://api.openai.com/v1"
-DO_MODELS_CACHE: dict[str, object] = {"ts": 0.0, "models": set()}
 
 
 def _provider_from_model(model: str) -> str:
@@ -122,33 +139,16 @@ def _provider_fallback_key(provider: str) -> str | None:
     return None
 
 
-def _get_do_available_models() -> set[str] | None:
-    """Return available model IDs from DigitalOcean endpoint (cached)."""
-    now = time.time()
-    if now - float(DO_MODELS_CACHE.get("ts", 0.0)) < 300:
-        models = DO_MODELS_CACHE.get("models")
-        return set(models) if isinstance(models, set) else None
-    try:
-        c = OpenAI(api_key=cfg.OPENAI_API_KEY, base_url=cfg.OPENAI_API_BASE)
-        data = c.models.list()
-        model_ids = {m.id for m in data.data}
-        DO_MODELS_CACHE["ts"] = now
-        DO_MODELS_CACHE["models"] = model_ids
-        return model_ids
-    except Exception as e:
-        logger.warning(f"Could not fetch DO model list: {e}")
-        return None
-
-
 def _get_provider_models(provider: str) -> list[str]:
-    models = list(cfg.MODEL_CATALOG.get(provider, []))
-    if provider != "DigitalOcean":
-        return models
-    available = _get_do_available_models()
-    if not available:
-        return models
-    filtered = [m for m in models if m in available]
-    return filtered if filtered else models
+    """Get models for a provider — uses live fetch with 5-min cache, falls back to catalog."""
+    try:
+        from model_fetcher import get_models_for_provider
+        live = get_models_for_provider(provider)
+        if live:
+            return live
+    except Exception as e:
+        logger.debug(f"model_fetcher unavailable for {provider}: {e}")
+    return list(cfg.MODEL_CATALOG.get(provider, []))
 
 
 def _resolve_client_and_model(selected_model: str) -> tuple[OpenAI, str, str]:
@@ -1392,6 +1392,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/models — Switch model via buttons\n"
         "/usage — Per\\-model pricing & token usage\n"
         "/providerkey — Add provider key via popup\n"
+        "/providers — Manage all provider API keys\n"
         "/status — Show running services\n"
         "/creds — List stored credentials\n"
         "/storekey \\<NAME\\> \\<VALUE\\> — Store a key directly \\(bypasses AI\\)\n"
@@ -1780,6 +1781,124 @@ async def handle_providerkey_button(update: Update, context: ContextTypes.DEFAUL
     )
 
 
+async def cmd_providers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/providers — Show all providers, their key status, and manage keys.
+    Shows inline buttons to add/update/delete keys per provider.
+    """
+    if not is_owner(update.effective_user.id):
+        return
+
+    lines = ["🔌 *AI Providers*\n"]
+    buttons = []
+
+    for provider, meta in PROVIDER_META.items():
+        key_name = _provider_key_name(provider)
+        has_key = bool(mem.get_credential(key_name)) if key_name else False
+
+        # Special case: DigitalOcean uses OPENAI_API_KEY from env
+        if provider == "DigitalOcean" and not has_key:
+            has_key = bool(cfg.OPENAI_API_KEY)
+
+        status = "✅" if has_key else "❌"
+        emoji = meta.get("emoji", "•")
+        slug = meta.get("slug", "")
+
+        # Count models for this provider
+        try:
+            from model_fetcher import get_models_for_provider
+            model_count = len(get_models_for_provider(provider))
+        except Exception:
+            model_count = len(cfg.MODEL_CATALOG.get(provider, []))
+
+        lines.append(f"{status} {emoji} *{provider}* — {model_count} models")
+
+        # Build button row: [Add/Update] [Delete] per provider
+        row = []
+        btn_label = "Update 🔑" if has_key else "Add 🔑"
+        row.append(InlineKeyboardButton(f"{emoji} {btn_label}", callback_data=f"prov_key_{slug}"))
+        if has_key and provider != "DigitalOcean":
+            row.append(InlineKeyboardButton("🗑️ Delete", callback_data=f"prov_del_{slug}"))
+        buttons.append(row)
+
+    lines.append("")
+    lines.append("Tap a button to add/update/delete API keys:")
+
+    kb = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text(
+        "\n".join(lines),
+        reply_markup=kb,
+        parse_mode="Markdown",
+    )
+
+
+async def handle_providers_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline button clicks for /providers command."""
+    query = update.callback_query
+    if not is_owner(query.from_user.id):
+        await query.answer("Unauthorized", show_alert=True)
+        return
+
+    data = query.data or ""
+    chat_id = query.message.chat_id
+
+    if data.startswith("prov_key_"):
+        # User wants to add/update a key — set pending state
+        slug = data.replace("prov_key_", "")
+        provider = _provider_from_slug(slug)
+        provider_lower = provider.lower().replace(" ", "")
+
+        # Map to the providerkey format
+        pkey_map = {
+            "DigitalOcean": "do",
+            "Anthropic": "anthropic",
+            "OpenAI": "openai",
+            "OpenRouter": "openrouter",
+            "GitHub": "github",
+            "NVIDIA": "nvidia",
+            "HuggingFace": "hf",
+            "Google": "google",
+        }
+        pkey_name = pkey_map.get(provider, slug)
+        mem.set_config(_pending_provider_key_cfg(chat_id), pkey_name)
+        await query.answer()
+        await query.edit_message_text(
+            f"Send your *{provider}* API key now\\.\n"
+            f"I will validate format before storing\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    if data.startswith("prov_del_"):
+        # User wants to delete a key
+        slug = data.replace("prov_del_", "")
+        provider = _provider_from_slug(slug)
+        key_name = _provider_key_name(provider)
+
+        if key_name:
+            # Delete from credentials
+            import sqlite3 as _sqlite3
+            try:
+                conn = _sqlite3.connect(cfg.DB_PATH)
+                conn.execute("DELETE FROM credentials WHERE name=?", (key_name,))
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+
+            # Also delete from D1 if active
+            if mem._use_d1:
+                try:
+                    mem._d1._query("DELETE FROM credentials WHERE name = ?1", [key_name])
+                except Exception:
+                    pass
+
+        await query.answer(f"Deleted {provider} key")
+        await query.edit_message_text(f"🗑️ Deleted API key for *{provider}*", parse_mode="Markdown")
+        return
+
+    await query.answer()
+
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id):
         return
@@ -1940,14 +2059,19 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Pull latest code from GitHub, install deps, and restart service."""
+    """Hard-reset to latest upstream, rebuild CLI, install Python deps, restart service."""
     if not is_owner(update.effective_user.id):
         return
-    msg = await update.message.reply_text("⏳ Updating agent from GitHub…")
+    msg = await update.message.reply_text("⏳ Updating agent — fetching + hard reset to origin/main…")
     try:
         proc = await asyncio.create_subprocess_shell(
-            "cd /opt/agent && git fetch origin main && git merge --ff-only origin/main && "
-            "/opt/agent/venv/bin/pip install -r requirements.txt 2>&1 && "
+            "cd /opt/agent && "
+            "git fetch origin && "
+            "git reset --hard origin/main && "
+            "npm install --prefix cli && "
+            "npm run build --prefix cli && "
+            "npm link --prefix cli 2>/dev/null || true && "
+            "/opt/agent/venv/bin/pip install -r requirements.txt -q 2>&1 && "
             "systemctl restart agent && sleep 2 && systemctl is-active agent",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
@@ -1955,7 +2079,7 @@ async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stdout, _ = await proc.communicate()
         result = stdout.decode(errors="ignore")[-500:]  # Last 500 chars
         if proc.returncode == 0:
-            await msg.edit_text(f"✅ Update complete and restarted:\n```\n{result}\n```", parse_mode="Markdown")
+            await msg.edit_text(f"✅ Update complete (hard-reset + rebuild):\n```\n{result}\n```", parse_mode="Markdown")
         else:
             await msg.edit_text(f"⚠️ Update had issues:\n```\n{result}\n```", parse_mode="Markdown")
     except Exception as e:
@@ -2824,6 +2948,7 @@ def main():
     app.add_handler(CommandHandler("creds",    cmd_creds))
     app.add_handler(CommandHandler("storekey", cmd_storekey))
     app.add_handler(CommandHandler("providerkey", cmd_providerkey))
+    app.add_handler(CommandHandler("providers", cmd_providers))
     app.add_handler(CommandHandler("memory",  cmd_memory_cmd))
     app.add_handler(CommandHandler("run",     cmd_run))
     app.add_handler(CommandHandler("ping",    cmd_ping))
@@ -2839,7 +2964,8 @@ def main():
     app.add_handler(CommandHandler("usage",   cmd_usage))
     app.add_handler(CallbackQueryHandler(handle_continue_button, pattern=r"^cont_"))
     app.add_handler(CallbackQueryHandler(handle_providerkey_button, pattern=r"^pkey_"))
-    app.add_handler(CallbackQueryHandler(handle_provider_button, pattern=r"^(prov_|models_home)"))
+    app.add_handler(CallbackQueryHandler(handle_providers_button, pattern=r"^prov_(key|del)_"))
+    app.add_handler(CallbackQueryHandler(handle_provider_button, pattern=r"^(prov_(?!key|del)|models_home)"))
     app.add_handler(CallbackQueryHandler(handle_model_button, pattern="^model_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 

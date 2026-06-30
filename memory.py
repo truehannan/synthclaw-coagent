@@ -1,12 +1,53 @@
+from __future__ import annotations
 import sqlite3
 import json
+import logging
 from pathlib import Path
 from datetime import datetime, date
 from cryptography.fernet import Fernet
 from config import DB_PATH, BASE_DIR
 
+logger = logging.getLogger(__name__)
+
 KEY_FILE = BASE_DIR / ".fernet_key"
 CONTEXT_DIR = BASE_DIR / "context"
+
+# ── D1 backend routing ───────────────────────────────────────────────────────
+# When D1 is configured, all DB operations go through d1_storage module.
+# Local SQLite remains as offline fallback.
+
+_use_d1: bool = False
+_d1 = None  # lazy import
+
+
+def _init_d1_backend():
+    """Try to initialize D1 backend from environment/config."""
+    global _use_d1, _d1
+    import os
+    account_id = os.getenv("CF_ACCOUNT_ID", "").strip()
+    database_id = os.getenv("CF_D1_DATABASE_ID", "").strip()
+    api_token = os.getenv("CF_API_TOKEN", "").strip()
+    storage_mode = os.getenv("STORAGE_MODE", "local").strip().lower()
+
+    if storage_mode == "cloudflare" and account_id and database_id and api_token:
+        try:
+            import d1_storage
+            d1_storage.configure(account_id, database_id, api_token)
+            if d1_storage.init_d1():
+                _d1 = d1_storage
+                _use_d1 = True
+                logger.info("D1 storage backend active")
+                return
+        except Exception as e:
+            logger.warning(f"D1 init failed, falling back to local SQLite: {e}")
+    _use_d1 = False
+
+
+# Initialize D1 on module load (non-blocking — falls back silently)
+try:
+    _init_d1_backend()
+except Exception:
+    _use_d1 = False
 
 
 def get_fernet() -> Fernet:
@@ -116,12 +157,28 @@ def init_db():
         )
     """)
 
+    # Skill sources table — tracks where skills come from for reinstall
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS skill_sources (
+            id          INTEGER PRIMARY KEY,
+            name        TEXT UNIQUE NOT NULL,
+            source_type TEXT NOT NULL,
+            source_uri  TEXT NOT NULL,
+            version     TEXT DEFAULT '',
+            auto_update INTEGER DEFAULT 1,
+            installed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
 
 
 def add_long_term_fact(chat_id: int, fact: str, importance: int = 1, source: str = "auto"):
     """Insert/update a durable memory fact with dedupe per chat."""
+    if _use_d1:
+        return _d1.add_long_term_fact(chat_id, fact, importance, source)
     clean = (fact or "").strip()
     if not clean:
         return
@@ -142,6 +199,8 @@ def add_long_term_fact(chat_id: int, fact: str, importance: int = 1, source: str
 
 def get_long_term_facts(chat_id: int, limit: int = 40) -> list[dict]:
     """Return durable memory facts ordered by importance then recency."""
+    if _use_d1:
+        return _d1.get_long_term_facts(chat_id, limit)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
@@ -160,6 +219,8 @@ def get_long_term_facts(chat_id: int, limit: int = 40) -> list[dict]:
 # ── Conversation history ────────────────────────────────────────────────────
 
 def get_history(chat_id: int, limit: int = 20) -> list[dict]:
+    if _use_d1:
+        return _d1.get_history(chat_id, limit)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
@@ -172,6 +233,8 @@ def get_history(chat_id: int, limit: int = 20) -> list[dict]:
 
 
 def save_message(chat_id: int, role: str, content: str):
+    if _use_d1:
+        return _d1.save_message(chat_id, role, content)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
@@ -183,6 +246,8 @@ def save_message(chat_id: int, role: str, content: str):
 
 
 def clear_history(chat_id: int):
+    if _use_d1:
+        return _d1.clear_history(chat_id)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("DELETE FROM messages WHERE chat_id=?", (chat_id,))
@@ -204,6 +269,8 @@ def save_task_state(
     last_error: str | None = None,
 ):
     """Persist an in-progress agent loop so it can be resumed after a checkpoint."""
+    if _use_d1:
+        return _d1.save_task_state(chat_id, messages, media, model, step_count, attempt_step, stall_count, last_sig, last_error)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
@@ -227,6 +294,8 @@ def save_task_state(
 
 def load_task_state(chat_id: int) -> dict | None:
     """Return saved task state or None if nothing is saved for this chat."""
+    if _use_d1:
+        return _d1.load_task_state(chat_id)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
@@ -252,6 +321,8 @@ def load_task_state(chat_id: int) -> dict | None:
 
 def clear_task_state(chat_id: int):
     """Remove any saved checkpoint for this chat (called on fresh start or successful finish)."""
+    if _use_d1:
+        return _d1.clear_task_state(chat_id)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("DELETE FROM task_state WHERE chat_id=?", (chat_id,))
@@ -264,6 +335,20 @@ def clear_task_state(chat_id: int):
 def store_credential(name: str, value: str, description: str = ""):
     f = get_fernet()
     enc = f.encrypt(value.encode())
+    if _use_d1:
+        # Store base64 string in D1 (can't store raw bytes)
+        import base64
+        _d1.store_credential(name, base64.b64encode(enc).decode(), description)
+        # Also store locally as fallback
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO credentials (name, enc_value, description) VALUES (?,?,?)", (name, enc, description))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        return
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
@@ -276,6 +361,16 @@ def store_credential(name: str, value: str, description: str = ""):
 
 def get_credential(name: str) -> str | None:
     f = get_fernet()
+    if _use_d1:
+        enc_b64 = _d1.get_credential(name)
+        if enc_b64:
+            import base64
+            try:
+                enc = base64.b64decode(enc_b64)
+                return f.decrypt(enc).decode()
+            except Exception:
+                pass
+        # Fallback to local
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT enc_value FROM credentials WHERE name=?", (name,))
@@ -285,6 +380,8 @@ def get_credential(name: str) -> str | None:
 
 
 def list_credentials() -> list[dict]:
+    if _use_d1:
+        return _d1.list_credentials()
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT name, description, created_at FROM credentials")
@@ -296,6 +393,18 @@ def list_credentials() -> list[dict]:
 # ── Memory (key-value) ───────────────────────────────────────────────────────
 
 def set_memory(key: str, value: str):
+    if _use_d1:
+        _d1.set_memory(key, value)
+        # Also store locally
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO memory (key, value) VALUES (?,?)", (key, value))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        return
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
@@ -306,6 +415,11 @@ def set_memory(key: str, value: str):
 
 
 def get_memory(key: str) -> str | None:
+    if _use_d1:
+        val = _d1.get_memory(key)
+        if val is not None:
+            return val
+        # Fallback to local
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT value FROM memory WHERE key=?", (key,))
@@ -315,6 +429,8 @@ def get_memory(key: str) -> str | None:
 
 
 def get_all_memory() -> dict:
+    if _use_d1:
+        return _d1.get_all_memory()
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT key, value FROM memory")
@@ -326,6 +442,11 @@ def get_all_memory() -> dict:
 # ── App config ───────────────────────────────────────────────────────────────
 
 def get_config(key: str, default=None) -> str | None:
+    if _use_d1:
+        val = _d1.get_config(key, default)
+        if val is not None:
+            return val
+        # Fallback to local
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT value FROM config WHERE key=?", (key,))
@@ -335,6 +456,18 @@ def get_config(key: str, default=None) -> str | None:
 
 
 def set_config(key: str, value: str):
+    if _use_d1:
+        _d1.set_config(key, value)
+        # Also store locally
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?,?)", (key, value))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        return
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?,?)", (key, value))
@@ -345,6 +478,8 @@ def set_config(key: str, value: str):
 # ── Conversation summaries ───────────────────────────────────────────────────
 
 def count_messages(chat_id: int) -> int:
+    if _use_d1:
+        return _d1.count_messages(chat_id)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM messages WHERE chat_id=?", (chat_id,))
@@ -355,6 +490,8 @@ def count_messages(chat_id: int) -> int:
 
 def get_oldest_messages(chat_id: int, limit: int) -> list[dict]:
     """Get the oldest N messages for a chat (for summarization)."""
+    if _use_d1:
+        return _d1.get_oldest_messages(chat_id, limit)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
@@ -370,6 +507,8 @@ def delete_messages_by_ids(msg_ids: list[int]):
     """Delete messages by their IDs (after summarization)."""
     if not msg_ids:
         return
+    if _use_d1:
+        return _d1.delete_messages_by_ids(msg_ids)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     placeholders = ",".join("?" for _ in msg_ids)
@@ -380,6 +519,8 @@ def delete_messages_by_ids(msg_ids: list[int]):
 
 def save_summary(chat_id: int, summary: str, msg_count: int):
     """Save a conversation summary (cumulative — replaces previous)."""
+    if _use_d1:
+        return _d1.save_summary(chat_id, summary, msg_count)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     # Keep only one summary per chat — replace on update
@@ -394,6 +535,8 @@ def save_summary(chat_id: int, summary: str, msg_count: int):
 
 def get_summary(chat_id: int) -> str | None:
     """Get the latest conversation summary for a chat."""
+    if _use_d1:
+        return _d1.get_summary(chat_id)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
@@ -502,6 +645,8 @@ def get_recent_sessions(chat_id: int, days: int = 3) -> str:
 
 def record_model_usage(model: str, input_tokens: int, output_tokens: int):
     """Persist token usage for one LLM call."""
+    if _use_d1:
+        return _d1.record_model_usage(model, input_tokens, output_tokens)
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -512,12 +657,13 @@ def record_model_usage(model: str, input_tokens: int, output_tokens: int):
         conn.commit()
         conn.close()
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"record_model_usage failed: {e}")
+        logger.error(f"record_model_usage failed: {e}")
 
 
 def get_model_usage_summary() -> dict[str, dict]:
     """Return {model: {input_tokens, output_tokens, calls}} for all recorded usage."""
+    if _use_d1:
+        return _d1.get_model_usage_summary()
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -532,8 +678,7 @@ def get_model_usage_summary() -> dict[str, dict]:
             for row in rows
         }
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"get_model_usage_summary failed: {e}")
+        logger.error(f"get_model_usage_summary failed: {e}")
         return {}
 
 
@@ -573,6 +718,8 @@ def register_dynamic_tool(
     docs_url: str = "",
 ) -> bool:
     """Register or update a dynamic API tool."""
+    if _use_d1:
+        return _d1.register_dynamic_tool(name, base_url, auth_cred, auth_type, auth_header, auth_prefix, endpoints, description, docs_url)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
@@ -598,6 +745,8 @@ def register_dynamic_tool(
 
 def get_dynamic_tool(name: str) -> dict | None:
     """Get a single dynamic tool by name."""
+    if _use_d1:
+        return _d1.get_dynamic_tool(name)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
@@ -625,6 +774,8 @@ def get_dynamic_tool(name: str) -> dict | None:
 
 def list_dynamic_tools() -> list[dict]:
     """List all registered dynamic tools."""
+    if _use_d1:
+        return _d1.list_dynamic_tools()
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
@@ -640,6 +791,8 @@ def list_dynamic_tools() -> list[dict]:
 
 def update_dynamic_tool_endpoints(name: str, endpoints: list):
     """Update the endpoints list for a dynamic tool."""
+    if _use_d1:
+        return _d1.update_dynamic_tool_endpoints(name, endpoints)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
@@ -652,6 +805,8 @@ def update_dynamic_tool_endpoints(name: str, endpoints: list):
 
 def remove_dynamic_tool(name: str) -> bool:
     """Delete a dynamic tool."""
+    if _use_d1:
+        return _d1.remove_dynamic_tool(name)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("DELETE FROM dynamic_tools WHERE name = ?", (name.lower().strip(),))
@@ -659,3 +814,82 @@ def remove_dynamic_tool(name: str) -> bool:
     conn.commit()
     conn.close()
     return deleted
+
+
+
+# ── Skill sources ─────────────────────────────────────────────────────────────
+# Track where skills are installed from so they can be auto-reinstalled on fresh
+# installs when D1 is configured.
+
+def add_skill_source(name: str, source_type: str, source_uri: str, version: str = "", auto_update: bool = True):
+    """Register a skill source.
+    source_type: 'clawhub', 'url', or 'github'
+    source_uri: full URI like 'clawhub:@owner/name', 'url:https://...', 'github:owner/repo'
+    """
+    if _use_d1:
+        return _d1.add_skill_source(name, source_type, source_uri, version, auto_update)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR REPLACE INTO skill_sources (name, source_type, source_uri, version, auto_update, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+        (name, source_type, source_uri, version, 1 if auto_update else 0),
+    )
+    conn.commit()
+    conn.close()
+
+
+def remove_skill_source(name: str) -> bool:
+    """Remove a skill source record."""
+    if _use_d1:
+        return _d1.remove_skill_source(name)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM skill_sources WHERE name = ?", (name,))
+    deleted = c.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def list_skill_sources() -> list[dict]:
+    """List all registered skill sources."""
+    if _use_d1:
+        return _d1.list_skill_sources()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT name, source_type, source_uri, version, auto_update, installed_at, updated_at FROM skill_sources ORDER BY name")
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {
+            "name": r[0],
+            "source_type": r[1],
+            "source_uri": r[2],
+            "version": r[3] or "",
+            "auto_update": bool(r[4]),
+            "installed_at": r[5] or "",
+            "updated_at": r[6] or "",
+        }
+        for r in rows
+    ]
+
+
+def get_skill_source(name: str) -> dict | None:
+    """Get a specific skill source by name."""
+    if _use_d1:
+        return _d1.get_skill_source(name)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT name, source_type, source_uri, version, auto_update FROM skill_sources WHERE name = ?", (name,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "name": row[0],
+        "source_type": row[1],
+        "source_uri": row[2],
+        "version": row[3] or "",
+        "auto_update": bool(row[4]),
+    }
