@@ -77,6 +77,7 @@ PROVIDER_META = {
     "NVIDIA": {"slug": "nv", "emoji": "🟩"},
     "HuggingFace": {"slug": "hf", "emoji": "🤗"},
     "Google": {"slug": "gg", "emoji": "🔵"},
+    "Cloudflare": {"slug": "cf", "emoji": "🔶"},
 }
 OPENAI_DIRECT_API_BASE = "https://api.openai.com/v1"
 
@@ -92,6 +93,8 @@ def _provider_from_model(model: str) -> str:
         return "HuggingFace"
     if model.startswith("google:"):
         return "Google"
+    if model.startswith("cloudflare:"):
+        return "Cloudflare"
     if model.startswith("anthropic-"):
         return "Anthropic"
     if model.startswith("openai-"):
@@ -114,6 +117,8 @@ def _provider_key_name(provider: str) -> str:
         return "HUGGINGFACE_API_KEY"
     if provider == "Google":
         return "GOOGLE_AI_API_KEY"
+    if provider == "Cloudflare":
+        return "CLOUDFLARE_API_KEY"
     return "OPENAI_API_KEY"
 
 
@@ -130,6 +135,12 @@ def _provider_base_url(provider: str) -> str:
         return cfg.HUGGINGFACE_API_BASE
     if provider == "Google":
         return cfg.GOOGLE_AI_API_BASE
+    if provider == "Cloudflare":
+        # Cloudflare needs account_id in URL
+        account_id = cfg.CF_ACCOUNT_ID or ""
+        if account_id:
+            return f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+        return cfg.OPENAI_API_BASE
     return cfg.OPENAI_API_BASE
 
 
@@ -715,6 +726,8 @@ def _providerkey_name(provider: str) -> str | None:
         return "HUGGINGFACE_API_KEY"
     if p in ("google", "gg", "gemini"):
         return "GOOGLE_AI_API_KEY"
+    if p in ("cloudflare", "cf"):
+        return "CLOUDFLARE_API_KEY"
     return None
 
 

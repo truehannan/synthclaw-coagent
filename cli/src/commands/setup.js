@@ -25,6 +25,7 @@ const PROVIDERS = {
   "NVIDIA NIM": { base: "https://integrate.api.nvidia.com/v1", prefix: "nvapi-" },
   "HuggingFace": { base: "https://router.huggingface.co/v1", prefix: "hf_" },
   "OpenRouter": { base: "https://openrouter.ai/api/v1", prefix: "sk-or-" },
+  "Cloudflare Workers AI": { base: "", prefix: "" },
   "GitHub Models": { base: "https://models.inference.ai.azure.com", prefix: "ghp_" },
   "Ollama (local)": { base: "http://localhost:11434/v1", prefix: "" },
   "Custom URL": { base: "", prefix: "" },
@@ -146,13 +147,14 @@ export async function runSetup() {
   console.log(chalk.hex("#e85d04")("━".repeat(50)));
 
   const { interfaceMode } = await inquirer.prompt([{
-    type: "list", name: "interfaceMode", message: "Messaging platform?",
+    type: "list", name: "interfaceMode", message: "Interface mode?",
     choices: [
+      { name: "CLI only (no messaging platform)", value: "cli" },
       { name: "Telegram", value: "telegram" },
       { name: "WhatsApp", value: "whatsapp" },
-      { name: "Both", value: "both" },
+      { name: "Both (Telegram + WhatsApp)", value: "both" },
     ],
-    default: config.get("interface_mode"),
+    default: config.get("interface_mode") || "cli",
   }]);
   config.set("interface_mode", interfaceMode);
 
@@ -220,6 +222,15 @@ export async function runSetup() {
       default: config.get("openai_api_base") || "https://",
     }]);
     apiBase = customBase;
+  } else if (provider === "Cloudflare Workers AI") {
+    const cfAiAnswers = await inquirer.prompt([
+      { type: "input", name: "cfAiAccountId", message: "Cloudflare Account ID:", default: config.get("cf_account_id") || undefined },
+      { type: "password", name: "cfAiToken", message: "Cloudflare API Token:", mask: "*" },
+    ]);
+    config.set("cf_account_id", cfAiAnswers.cfAiAccountId);
+    apiBase = `https://api.cloudflare.com/client/v4/accounts/${cfAiAnswers.cfAiAccountId}/ai/v1`;
+    // Store the token as the API key for this provider
+    config.set("openai_api_key", cfAiAnswers.cfAiToken);
   }
 
   if (editMode && config.get("openai_api_key")) {

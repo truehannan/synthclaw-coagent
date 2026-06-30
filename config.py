@@ -148,6 +148,14 @@ MODEL_CATALOG = {
         "google:gemini-1.5-pro",
         "google:gemini-1.5-flash",
     ],
+    "Cloudflare": [
+        "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "cloudflare:@cf/meta/llama-3.1-8b-instruct",
+        "cloudflare:@cf/mistral/mistral-7b-instruct-v0.2-lora",
+        "cloudflare:@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+        "cloudflare:@cf/qwen/qwen1.5-14b-chat-awq",
+        "cloudflare:@hf/google/gemma-7b-it",
+    ],
 }
 
 AVAILABLE_MODELS = [m for provider_models in MODEL_CATALOG.values() for m in provider_models]

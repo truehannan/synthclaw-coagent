@@ -1,27 +1,54 @@
 import chalk from "chalk";
-import { SYNTHCLAW_ASCII } from "./ascii.js";
+import { SYNTHCLAW_BLOCK } from "./ascii.js";
 
 const args = process.argv.slice(2);
-const command = args[0] || "help";
+const command = args[0] || ""; // Default: launch dashboard (no command)
+
+const RED = chalk.hex("#cc0000");
 
 function showBanner() {
-  console.log(chalk.hex("#e85d04")(SYNTHCLAW_ASCII));
+  for (const row of SYNTHCLAW_BLOCK) {
+    console.log("  " + RED(row));
+  }
   console.log(
-    chalk.dim("  Personal AI Agent — Telegram & WhatsApp — Self-hosted\n")
+    chalk.dim("  Personal AI Agent — CLI / Telegram / WhatsApp\n")
   );
 }
 
 async function main() {
   switch (command) {
+    case "":
+    case "agent":
+      // No args or `agent` with no task = launch interactive dashboard
+      if (command === "agent" && args.length > 1) {
+        const { runAgent } = await import("./commands/agent.js");
+        await runAgent(args.slice(1));
+      } else {
+        const { runDashboard } = await import("./commands/dashboard.js");
+        await runDashboard();
+      }
+      break;
+
     case "setup":
-      showBanner();
+      // Setup now launches dashboard which auto-triggers wizard if unconfigured
+      // But also support standalone for backward compat
       const { runSetup } = await import("./commands/setup.js");
+      showBanner();
       await runSetup();
       break;
 
     case "start":
-      const { runStart } = await import("./commands/start.js");
-      await runStart(args.slice(1));
+      // If remote host configured, start the agent service remotely
+      // Otherwise launch the interactive dashboard
+      const { config: startConfig } = await import("./utils.js");
+      if (startConfig.get("remote_host") || startConfig.get("interface_mode") === "telegram" || startConfig.get("interface_mode") === "whatsapp" || startConfig.get("interface_mode") === "both") {
+        const { runStart } = await import("./commands/start.js");
+        await runStart(args.slice(1));
+      } else {
+        // CLI-only mode: launch dashboard
+        const { runDashboard: runDash } = await import("./commands/dashboard.js");
+        await runDash();
+      }
       break;
 
     case "stop":
@@ -57,17 +84,6 @@ async function main() {
     case "plan":
       const { runPlan } = await import("./commands/plan.js");
       await runPlan(args.slice(1));
-      break;
-
-    case "agent":
-      if (args.length <= 1) {
-        // No args — launch interactive dashboard
-        const { runDashboard } = await import("./commands/dashboard.js");
-        await runDashboard();
-      } else {
-        const { runAgent } = await import("./commands/agent.js");
-        await runAgent(args.slice(1));
-      }
       break;
 
     case "memory":
@@ -119,7 +135,7 @@ async function main() {
 
     case "--version":
     case "-v":
-      console.log("synthclaw v1.0.0");
+      console.log("synthclaw v2.0.0");
       break;
 
     default:
@@ -130,64 +146,45 @@ async function main() {
 }
 
 function showHelp() {
+  const c = chalk.cyan;
+  const d = chalk.dim;
   console.log(chalk.bold("USAGE"));
-  console.log(`  ${chalk.cyan("synthclaw")} ${chalk.yellow("<command>")} [options]\n`);
+  console.log(`  ${c("synthclaw")} ${chalk.yellow("[command]")} [options]\n`);
+  console.log(d("  No command = launch interactive dashboard (setup + chat + AI)\n"));
 
-  console.log(chalk.bold("SETUP & LIFECYCLE"));
-  console.log(
-    `  ${chalk.cyan("setup")}          Interactive wizard — configure credentials & settings`
-  );
-  console.log(
-    `  ${chalk.cyan("deploy")}         Deploy agent to a remote VPS (scp + setup)`
-  );
-  console.log(
-    `  ${chalk.cyan("start")}          Start the agent (runs persistently in background)`
-  );
-  console.log(`  ${chalk.cyan("stop")}           Stop the running agent`);
-  console.log(`  ${chalk.cyan("status")}         Show agent & service status`);
-  console.log(`  ${chalk.cyan("logs")}           Tail agent logs`);
+  console.log(chalk.bold("MAIN"));
+  console.log(`  ${c("(no command)")}   Launch JARVIS-like dashboard (auto-setup if needed)`);
+  console.log(`  ${c("start")}          Start agent service (Telegram/WhatsApp) or dashboard (CLI mode)`);
+  console.log(`  ${c("setup")}          Run setup wizard standalone`);
+  console.log("");
+
+  console.log(chalk.bold("LIFECYCLE"));
+  console.log(`  ${c("stop")}           Stop the running agent`);
+  console.log(`  ${c("status")}         Show agent & service status`);
+  console.log(`  ${c("logs")}           Tail agent logs`);
+  console.log(`  ${c("update")}         Hard-reset to latest upstream + rebuild`);
+  console.log(`  ${c("deploy")}         Deploy agent to a remote VPS`);
   console.log("");
 
   console.log(chalk.bold("AI & EXECUTION"));
-  console.log(
-    `  ${chalk.cyan("run")} <cmd>       Execute a shell command on the agent server`
-  );
-  console.log(
-    `  ${chalk.cyan("plan")} <task>     Break a task into steps (no execution)`
-  );
-  console.log(
-    `  ${chalk.cyan("agent")}          Interactive dashboard (no args) or autonomous exec (with task)`
-  );
+  console.log(`  ${c("agent")} <task>    Autonomous execution (with task arg)`);
+  console.log(`  ${c("run")} <cmd>       Execute a shell command`);
+  console.log(`  ${c("plan")} <task>     Break task into steps (no execution)`);
+  console.log(`  ${c("models")}         List all available models (live fetch)`);
+  console.log(`  ${c("model")} <name>    Switch LLM model`);
   console.log("");
 
-  console.log(chalk.bold("MEMORY & CREDENTIALS"));
-  console.log(`  ${chalk.cyan("memory")}         Show all remembered facts`);
-  console.log(
-    `  ${chalk.cyan("memory set")} <k> <v>  Remember a fact`
-  );
-  console.log(`  ${chalk.cyan("creds")}          List stored credentials`);
-  console.log(
-    `  ${chalk.cyan("creds set")} <name> <value>  Store an encrypted credential`
-  );
+  console.log(chalk.bold("DATA"));
+  console.log(`  ${c("memory")}         Show remembered facts`);
+  console.log(`  ${c("creds")}          List stored credentials`);
+  console.log(`  ${c("clear")}          Wipe conversation history`);
+  console.log(`  ${c("ping")}           Check if agent is alive`);
   console.log("");
 
-  console.log(chalk.bold("MODEL MANAGEMENT"));
-  console.log(`  ${chalk.cyan("model")}          Show current model`);
-  console.log(`  ${chalk.cyan("model")} <name>   Switch LLM model`);
-  console.log(`  ${chalk.cyan("models")}         List all available models`);
-  console.log("");
-
-  console.log(chalk.bold("UTILITY"));
-  console.log(`  ${chalk.cyan("ping")}           Check if the agent is alive`);
-  console.log(`  ${chalk.cyan("clear")}          Wipe conversation history`);
-  console.log(`  ${chalk.cyan("help")}           Show this help message`);
-  console.log("");
-
-  console.log(chalk.dim("Examples:"));
-  console.log(chalk.dim("  synthclaw setup"));
-  console.log(chalk.dim("  synthclaw start"));
-  console.log(chalk.dim('  synthclaw agent "deploy a node server on port 3000"'));
-  console.log(chalk.dim('  synthclaw run "systemctl status nginx"'));
+  console.log(d("Examples:"));
+  console.log(d("  synthclaw                     # Launch dashboard"));
+  console.log(d("  synthclaw start               # Start service or dashboard"));
+  console.log(d('  synthclaw agent "deploy nginx" # Autonomous task'));
   console.log("");
 }
 
