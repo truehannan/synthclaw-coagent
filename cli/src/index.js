@@ -95,6 +95,11 @@ async function main() {
       await runDeploy(args.slice(1));
       break;
 
+    case "update":
+      const { runUpdate } = await import("./commands/update.js");
+      await runUpdate();
+      break;
+
     case "import":
       const { runImport } = await import("./commands/skillhub.js");
       await runImport(args.slice(1));
