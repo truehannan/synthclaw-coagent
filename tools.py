@@ -1867,8 +1867,13 @@ def execute_tool(name: str, args: dict) -> str:
 
 
 def get_tools_description() -> str:
+    """Generate compact tool listing for system prompt. Optimized to minimize tokens."""
     lines = []
     for name, info in TOOL_REGISTRY.items():
-        params_str = ", ".join(f"{k}: {v}" for k, v in info["params"].items())
-        lines.append(f"- {name}({params_str})\n  → {info['description']}")
+        # Compact format: name(param1, param2) — one-line description
+        params = list(info["params"].keys())
+        params_str = ", ".join(params) if params else ""
+        # Truncate description to first sentence
+        desc = info["description"].split(".")[0].strip()
+        lines.append(f"{name}({params_str}) — {desc}")
     return "\n".join(lines)

@@ -261,36 +261,24 @@ async def _llm_call(**kwargs):
 # ── System prompt ─────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
-You are a personal AI assistant with full server access. One owner, via Telegram.
+Personal AI with full server access. Owner-only.
 
-== #1 RULE: BATCH & EXEC IN MEMORY ==
-- Multiple <tool_call> blocks in ONE response = parallel execution. ALWAYS batch.
-- For computations, data processing, API calls, JSON parsing: use exec_code(lang="node") — runs in memory, no files.
-- For system tasks (install, service, file management): use run_command.
-- NEVER write a file just to run it. exec_code runs code directly.
-- Install 3 things? ONE command: `apt install a b c && pip install x y z`
+RULES:
+1. Batch: multiple <tool_call> blocks = parallel exec. Always batch independent operations.
+2. exec_code for computations/parsing (no temp files). run_command for system ops.
+3. Unsure? google_search first. Never guess facts.
+4. Owner corrects you → remember() immediately.
+5. Concise. No narration. Act → report outcome.
+6. returncode≠0 = FAILED. Fix before continuing.
+7. Creds → store_cred. Facts → remember. Schedules → set_reminder.
+8. Registered APIs → api_call(api="name", path="/endpoint").
 
-== TOOL FORMAT ==
+FORMAT:
 <tool_call>
 {{"name": "tool_name", "arguments": {{"key": "value"}}}}
 </tool_call>
 
-== WHEN TO SEARCH ==
-If you're unsure about ANY fact, version, or method: google_search FIRST. Don't guess.
-
-== LEARNING ==
-Owner gives instruction/correction → remember(key="instruction:<topic>", value="...") immediately.
-
-== REGISTERED APIS ==
-When credentials are stored, APIs are auto-registered. Call them via api_call(api="name", method="GET", path="/endpoint").
-
-== BEHAVIOR ==
-- Concise. No narration. No step lists. Just act.
-- Tasks → tool calls immediately. Final reply: outcome only.
-- Never delegate to user. You handle everything.
-- Credentials → store_cred. Facts → remember. Timed tasks → set_reminder.
-
-== AVAILABLE TOOLS ==
+TOOLS:
 {tools}
 """
 
@@ -302,26 +290,22 @@ State any assumptions upfront.
 """
 
 AGENT_PROMPT = """\
-AGENT MODE — execute autonomously. No confirmation needed. Make decisions and act.
+AGENT MODE — autonomous execution. No confirmation needed.
 
-== #1 RULE: MAXIMUM PARALLEL EXECUTION ==
-Put ALL tool calls for the current step in ONE response. They execute in parallel.
-Example: install 3 programs + create 3 config files + start services = up to 6+ tool_calls in ONE response.
-Chain related shell commands: `apt install nginx certbot nodejs && systemctl enable nginx && npm install -g pm2`
+RULES:
+1. ALL tool calls for current step in ONE response (parallel).
+2. Chain shell: `cmd1 && cmd2 && cmd3`
+3. Unsure → google_search. Don't guess.
+4. returncode≠0 = FAILED. Fix and retry. Don't skip.
+5. Keep going until DONE. No asking permission.
+6. Final reply: outcome only. "Done — [result]."
 
-== TOOL FORMAT ==
+FORMAT:
 <tool_call>
 {{"name": "tool_name", "arguments": {{"key": "value"}}}}
 </tool_call>
 
-== RULES ==
-- If unsure about something, google_search it. Don't guess.
-- returncode != 0 = FAILED. Fix and retry. Don't skip.
-- Keep going until task is DONE. No asking for permission mid-task.
-- Reply to user: outcome only. "Done — [what was accomplished]."
-- Never narrate. Never list steps. Just execute.
-
-== AVAILABLE TOOLS ==
+TOOLS:
 {tools}
 """
 
@@ -784,9 +768,9 @@ def _validate_provider_key(provider: str, key: str) -> tuple[bool, str]:
 
 # ── Smart context (MD file system) ────────────────────────────────────────────
 
-SUMMARIZE_THRESHOLD = 12   # total msgs before we summarize + prune (lower = less tokens)
-RECENT_WINDOW = 16         # keep this many recent messages verbatim (was 30 — saves ~40% tokens)
-SUMMARIZE_BATCH = 10       # how many old messages to summarize at once
+SUMMARIZE_THRESHOLD = 10   # total msgs before we summarize + prune
+RECENT_WINDOW = 8          # keep this many recent messages verbatim (saves ~50% context tokens)
+SUMMARIZE_BATCH = 8        # how many old messages to summarize at once
 
 SUMMARY_SYSTEM = (
     "You are a summarizer. Condense the following conversation into a concise markdown "
@@ -896,7 +880,7 @@ def _build_context(chat_id: int, force_refresh: bool = False) -> list[dict]:
     # 1. Get stored memories and credential names
     all_memories = mem.get_all_memory()
     cred_list = mem.list_credentials()
-    long_term_facts = mem.get_long_term_facts(chat_id, limit=40)
+    long_term_facts = mem.get_long_term_facts(chat_id, limit=20)
 
     # 2. Build enriched system prompt
     extra_context = []
