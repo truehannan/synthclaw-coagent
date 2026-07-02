@@ -1,6 +1,7 @@
 # SynthClaw CoAgent
 
 <p align="center"><img src=/public/icon.png alt=synthclaw style="length: 100px; width: 100px;"/></p>
+
 ![Size](https://img.shields.io/github/repo-size/truehannan/synthclaw-coagent?style=for-the-badge&color=8b5cf6&labelColor=1B1B1B) ![Language](https://img.shields.io/github/languages/top/truehannan/synthclaw-coagent?style=for-the-badge&color=00bf63&labelColor=1B1B1B)
 
 **Your personal AI agent with full server control, 50 tools, 8 LLM providers, 1000+ app integrations, and an interactive CLI dashboard.**
