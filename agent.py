@@ -14,7 +14,7 @@ from telegram.ext import (
     filters, ContextTypes,
 )
 import memory as mem
-from tools import execute_tool, get_tools_description, TOOL_REGISTRY
+from tools import execute_tool, get_tools_description, get_tools_for_groups, detect_intent_groups, TOOL_REGISTRY
 import config as cfg
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -272,13 +272,15 @@ RULES:
 6. returncode≠0 = FAILED. Fix before continuing.
 7. Creds → store_cred. Facts → remember. Schedules → set_reminder.
 8. Registered APIs → api_call(api="name", path="/endpoint").
+9. Composio apps → composio_execute(tool_slug, args). Check connection first.
+10. If a tool you need isn't listed below, it may be in another group — describe what you need.
 
 FORMAT:
 <tool_call>
 {{"name": "tool_name", "arguments": {{"key": "value"}}}}
 </tool_call>
 
-TOOLS:
+TOOLS (relevant to current request):
 {tools}
 """
 
@@ -919,17 +921,43 @@ def _build_context(chat_id: int, force_refresh: bool = False) -> list[dict]:
         if api_lines:
             extra_context.append(f"\n== REGISTERED APIs (call via api_call tool) ==\n" + "\n".join(api_lines))
 
-    system = SYSTEM_PROMPT.format(tools=get_tools_description())
-    if extra_context:
-        system += "\n" + "\n".join(extra_context)
+    # Inject connected Composio apps so the agent knows what integrations are ready
+    try:
+        composio_key = mem.get_credential("COMPOSIO_API_KEY") or cfg.COMPOSIO_API_KEY
+        if composio_key:
+            # Check if we have cached connection list (avoid API call every message)
+            cached_conns = mem.get_memory("_composio_connections_cache")
+            if cached_conns:
+                extra_context.append(f"\n== CONNECTED APPS (via Composio — use composio_discover then composio_execute) ==\n{cached_conns}")
+            else:
+                extra_context.append("\n== COMPOSIO (1000+ app integrations available) ==\nUse composio_check_connection(app) to check, composio_discover(app, action) to find tools, composio_execute(slug, args) to run. Multi-account: composio_connect(app, label).")
+    except Exception:
+        pass
 
-    # Inject relevant skill instructions based on latest user message
+    # ── Branch-style system prompt: detect intent, inject relevant tool groups ──
+    # Get latest user message for intent detection
     latest_user_msg = ""
     history = mem.get_history(chat_id, RECENT_WINDOW)
     for msg in reversed(history):
         if msg.get("role") == "user":
             latest_user_msg = msg.get("content", "")
             break
+
+    # Detect which tool groups are needed
+    active_groups = detect_intent_groups(latest_user_msg)
+
+    # Also add integrations group if any connected apps or APIs exist
+    if dynamic_apis:
+        active_groups = list(set(active_groups) | {"integrations"})
+
+    # Build tools section with only relevant groups
+    tools_text = get_tools_for_groups(active_groups)
+
+    system = SYSTEM_PROMPT.format(tools=tools_text)
+    if extra_context:
+        system += "\n" + "\n".join(extra_context)
+
+    # Inject relevant skill instructions
     skill_context = _get_relevant_skills(latest_user_msg)
     if skill_context:
         system += f"\n\n== SKILL INSTRUCTIONS (follow these for the current task) ==\n{skill_context}"

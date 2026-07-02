@@ -1303,16 +1303,26 @@ def list_apis() -> dict:
     return {"apis": tools, "count": len(tools)}
 
 
-def composio_execute(tool_slug: str, args: str = "{}", connected_account_id: str = "") -> dict:
-    """Execute a Composio tool action. Composio provides 1000+ app integrations (Gmail, Slack, GitHub, etc.).
+def composio_execute(tool_slug: str, args: str = "{}", connected_account_id: str = "", account_label: str = "") -> dict:
+    """Execute a Composio tool action. Composio provides 1000+ app integrations.
     tool_slug: the Composio tool slug (e.g. 'GMAIL_SEND_EMAIL', 'GITHUB_CREATE_ISSUE')
     args: JSON string of arguments for the tool
-    connected_account_id: optional, Composio connected account ID"""
+    connected_account_id: optional, specific account ID
+    account_label: optional, pick account by label (e.g. 'work', 'personal')"""
     from config import COMPOSIO_API_KEY
-    from memory import get_credential
+    from memory import get_credential, get_memory
     api_key = get_credential("COMPOSIO_API_KEY") or COMPOSIO_API_KEY
     if not api_key:
         return {"error": "Composio not configured. Store COMPOSIO_API_KEY first."}
+
+    # Resolve connected account ID from label if needed
+    if not connected_account_id and account_label:
+        # Look up label → account_id mapping from memory
+        label_key = f"composio_account:{account_label}"
+        stored_id = get_memory(label_key)
+        if stored_id:
+            connected_account_id = stored_id
+
     try:
         body = {"arguments": json.loads(args) if isinstance(args, str) else args}
         if connected_account_id:
@@ -1325,7 +1335,260 @@ def composio_execute(tool_slug: str, args: str = "{}", connected_account_id: str
         if resp.status_code in (200, 201):
             data = resp.json()
             return {"success": True, "tool": tool_slug, "result": data}
+        if resp.status_code == 401:
+            return {"error": "Composio API key invalid or expired. Update with: store_cred(COMPOSIO_API_KEY, <key>)"}
+        if resp.status_code == 404:
+            return {"error": f"Tool '{tool_slug}' not found. Use composio_discover to find the correct slug."}
         return {"error": f"Composio returned {resp.status_code}", "details": resp.text[:500]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def composio_discover(app: str, action: str = "") -> dict:
+    """Discover available Composio tools for an app and their argument schemas.
+    ALWAYS call this before composio_execute to find the correct tool_slug and required arguments.
+    app: app name (e.g. 'gmail', 'slack', 'github', 'notion', 'discord')
+    action: optional action keyword to filter (e.g. 'send', 'create', 'list')
+    Returns: tool slugs with descriptions and required parameters."""
+    from config import COMPOSIO_API_KEY
+    from memory import get_credential
+    api_key = get_credential("COMPOSIO_API_KEY") or COMPOSIO_API_KEY
+    if not api_key:
+        return {"error": "Composio not configured. Store COMPOSIO_API_KEY first."}
+
+    try:
+        headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+        # Search for tools matching the app
+        search_query = f"{app} {action}".strip()
+        resp = requests.get(
+            f"https://backend.composio.dev/api/v3.1/tools",
+            headers=headers,
+            params={"search": search_query, "limit": 10},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return {"error": f"Composio search failed: {resp.status_code}"}
+
+        data = resp.json()
+        items = data.get("items", data) if isinstance(data, dict) else data
+        if not items or not isinstance(items, list):
+            return {"tools": [], "count": 0, "note": f"No tools found for '{search_query}'. Try broader search."}
+
+        tools_found = []
+        for t in items[:10]:
+            tool_info = {
+                "slug": t.get("slug", t.get("name", "?")),
+                "description": (t.get("description", "") or "")[:120],
+                "app": t.get("appName", t.get("app_name", app)),
+            }
+            # Get parameter schema if available
+            params = t.get("parameters", t.get("inputParameters", t.get("schema", {})))
+            if isinstance(params, dict):
+                required = params.get("required", [])
+                properties = params.get("properties", {})
+                if properties:
+                    tool_info["params"] = {
+                        k: {"type": v.get("type", "string"), "required": k in required, "desc": (v.get("description", "") or "")[:60]}
+                        for k, v in list(properties.items())[:8]
+                    }
+            tools_found.append(tool_info)
+
+        return {
+            "tools": tools_found,
+            "count": len(tools_found),
+            "usage": "Call composio_execute(tool_slug='SLUG', args='{\"param\": \"value\"}') to execute.",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def composio_check_connection(app: str) -> dict:
+    """Check if an app is connected via Composio. If not, returns OAuth URL to connect.
+    ALWAYS call this before executing a Composio tool to ensure the app is authorized.
+    app: app name (e.g. 'gmail', 'slack', 'github')
+    Returns: connection status, connected accounts with labels, or OAuth URL."""
+    from config import COMPOSIO_API_KEY
+    from memory import get_credential, get_all_memory
+    api_key = get_credential("COMPOSIO_API_KEY") or COMPOSIO_API_KEY
+    if not api_key:
+        return {"error": "Composio not configured. Store COMPOSIO_API_KEY first."}
+
+    try:
+        headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+        resp = requests.get(
+            f"https://backend.composio.dev/api/v3.1/connectedAccounts",
+            headers=headers, timeout=15,
+        )
+        if resp.status_code != 200:
+            return {"error": f"Composio API error: {resp.status_code}"}
+
+        data = resp.json()
+        accounts = data.get("items", data) if isinstance(data, dict) else data
+        if not isinstance(accounts, list):
+            accounts = []
+
+        # Filter accounts for this app
+        app_lower = app.lower()
+        matching = [
+            a for a in accounts
+            if (a.get("appName", "") or "").lower() == app_lower or
+               (a.get("app_name", "") or "").lower() == app_lower
+        ]
+
+        # Load labels from memory
+        all_mem = get_all_memory()
+        label_map = {}
+        for k, v in all_mem.items():
+            if k.startswith("composio_account:"):
+                label = k.replace("composio_account:", "")
+                label_map[v] = label
+
+        if matching:
+            connected = []
+            for acc in matching:
+                acc_id = acc.get("id", acc.get("connectedAccountId", ""))
+                label = label_map.get(acc_id, "default")
+                connected.append({
+                    "id": acc_id,
+                    "label": label,
+                    "status": acc.get("status", "active"),
+                    "created": acc.get("createdAt", "")[:10],
+                })
+            return {
+                "connected": True,
+                "app": app,
+                "accounts": connected,
+                "count": len(connected),
+                "note": "App is connected. Use composio_execute with the tool slug.",
+            }
+        else:
+            # Not connected — initiate connection to get OAuth URL
+            try:
+                connect_resp = requests.post(
+                    f"https://backend.composio.dev/api/v3.1/connectedAccounts",
+                    headers=headers,
+                    json={"integrationId": app_lower, "redirectUri": "https://backend.composio.dev/"},
+                    timeout=15,
+                )
+                if connect_resp.status_code in (200, 201):
+                    connect_data = connect_resp.json()
+                    url = connect_data.get("redirectUrl", connect_data.get("connectionUrl", connect_data.get("url", "")))
+                    return {
+                        "connected": False,
+                        "app": app,
+                        "action_required": "User must authorize via OAuth",
+                        "oauth_url": url,
+                        "instruction": f"Send this link to the user: {url}\nAfter they authorize, the app will be connected.",
+                    }
+                return {
+                    "connected": False,
+                    "app": app,
+                    "error": f"Could not initiate connection: {connect_resp.status_code}",
+                }
+            except Exception as ce:
+                return {"connected": False, "app": app, "error": str(ce)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def composio_connect(app: str, label: str = "default") -> dict:
+    """Connect a new account for an app via OAuth. Supports multiple accounts with labels.
+    app: app name (e.g. 'gmail', 'slack', 'github')
+    label: label for this account (e.g. 'work', 'personal', 'company')
+    Returns: OAuth URL for user to authorize, or success if no OAuth needed."""
+    from config import COMPOSIO_API_KEY
+    from memory import get_credential, set_memory
+    api_key = get_credential("COMPOSIO_API_KEY") or COMPOSIO_API_KEY
+    if not api_key:
+        return {"error": "Composio not configured. Store COMPOSIO_API_KEY first."}
+
+    try:
+        headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+        resp = requests.post(
+            f"https://backend.composio.dev/api/v3.1/connectedAccounts",
+            headers=headers,
+            json={"integrationId": app.lower(), "redirectUri": "https://backend.composio.dev/"},
+            timeout=15,
+        )
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            url = data.get("redirectUrl", data.get("connectionUrl", data.get("url", "")))
+            account_id = data.get("id", data.get("connectedAccountId", ""))
+
+            # Store label → account mapping in memory
+            if account_id and label:
+                set_memory(f"composio_account:{label}", account_id)
+
+            if url:
+                return {
+                    "success": True,
+                    "app": app,
+                    "label": label,
+                    "oauth_url": url,
+                    "account_id": account_id,
+                    "instruction": f"Send this OAuth link to the user to authorize their {label} {app} account: {url}",
+                }
+            return {
+                "success": True,
+                "app": app,
+                "label": label,
+                "account_id": account_id,
+                "note": f"{app} connected as '{label}' (no OAuth required).",
+            }
+        return {"error": f"Connection failed: {resp.status_code}", "details": resp.text[:300]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def composio_list_connections() -> dict:
+    """List all connected Composio app accounts with their labels.
+    Shows which apps are authorized and ready to use."""
+    from config import COMPOSIO_API_KEY
+    from memory import get_credential, get_all_memory
+    api_key = get_credential("COMPOSIO_API_KEY") or COMPOSIO_API_KEY
+    if not api_key:
+        return {"error": "Composio not configured. Store COMPOSIO_API_KEY first."}
+
+    try:
+        headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+        resp = requests.get(
+            f"https://backend.composio.dev/api/v3.1/connectedAccounts",
+            headers=headers, timeout=15,
+        )
+        if resp.status_code != 200:
+            return {"error": f"Composio API error: {resp.status_code}"}
+
+        data = resp.json()
+        accounts = data.get("items", data) if isinstance(data, dict) else data
+        if not isinstance(accounts, list):
+            accounts = []
+
+        # Load labels from memory
+        all_mem = get_all_memory()
+        label_map = {}
+        for k, v in all_mem.items():
+            if k.startswith("composio_account:"):
+                label = k.replace("composio_account:", "")
+                label_map[v] = label
+
+        connections = []
+        for acc in accounts[:50]:
+            acc_id = acc.get("id", acc.get("connectedAccountId", ""))
+            connections.append({
+                "app": acc.get("appName", acc.get("app_name", "?")),
+                "label": label_map.get(acc_id, "default"),
+                "id": acc_id,
+                "status": acc.get("status", "active"),
+            })
+
+        if not connections:
+            return {
+                "connections": [],
+                "count": 0,
+                "note": "No apps connected yet. Use composio_connect(app, label) to connect one.",
+            }
+
+        return {"connections": connections, "count": len(connections)}
     except Exception as e:
         return {"error": str(e)}
 
@@ -1870,12 +2133,41 @@ TOOL_REGISTRY = {
     },
     "composio_execute": {
         "fn": composio_execute,
-        "description": "Execute any Composio tool (1000+ apps: Gmail, Slack, GitHub, Notion, etc). Use /connectors to connect apps first.",
+        "description": "Execute a Composio tool action. MUST call composio_discover first to get the correct slug and args. Supports multi-account via account_label.",
         "params": {
-            "tool_slug": "str (e.g. GMAIL_SEND_EMAIL, GITHUB_CREATE_ISSUE, SLACK_SEND_MESSAGE)",
-            "args": "str (JSON arguments for the tool)",
-            "connected_account_id": "str (optional)",
+            "tool_slug": "str (e.g. GMAIL_SEND_EMAIL — get from composio_discover)",
+            "args": "str (JSON arguments — get schema from composio_discover)",
+            "connected_account_id": "str (optional, specific account ID)",
+            "account_label": "str (optional, e.g. 'work' or 'personal' to pick account)",
         },
+    },
+    "composio_discover": {
+        "fn": composio_discover,
+        "description": "REQUIRED before composio_execute. Discovers tool slugs and their parameter schemas for an app. Shows what actions are available and what arguments they need.",
+        "params": {
+            "app": "str (app name: gmail, slack, github, notion, discord, linear, etc.)",
+            "action": "str (optional filter: send, create, list, update, delete)",
+        },
+    },
+    "composio_check_connection": {
+        "fn": composio_check_connection,
+        "description": "Check if an app is connected via Composio. Returns status + OAuth URL if not connected. ALWAYS check before executing.",
+        "params": {
+            "app": "str (app name: gmail, slack, github, etc.)",
+        },
+    },
+    "composio_connect": {
+        "fn": composio_connect,
+        "description": "Connect a new app account via OAuth. Supports multiple accounts with labels (e.g. work Gmail + personal Gmail).",
+        "params": {
+            "app": "str (app name: gmail, slack, github, etc.)",
+            "label": "str (account label: 'work', 'personal', 'company' — default: 'default')",
+        },
+    },
+    "composio_list_connections": {
+        "fn": composio_list_connections,
+        "description": "List all connected Composio app accounts with labels. Shows which integrations are active.",
+        "params": {},
     },
     # ── Skill management tools ─────────────────────────────────────────
     "install_skill": {
@@ -1924,4 +2216,116 @@ def get_tools_description() -> str:
         # Truncate description to first sentence
         desc = info["description"].split(".")[0].strip()
         lines.append(f"{name}({params_str}) — {desc}")
+    return "\n".join(lines)
+
+
+# ── Branch/Tree tool groups (for selective injection) ─────────────────────────
+
+TOOL_GROUPS = {
+    "core": [
+        "run_command", "write_file", "read_file", "exec_code",
+        "think", "ask_user", "remember", "recall",
+    ],
+    "system": [
+        "spawn_service", "stop_service", "service_status", "check_port",
+        "kill_process", "system_info", "tail_logs", "run_commands",
+    ],
+    "files": [
+        "list_files", "read_files", "write_files", "search_files",
+        "patch_file", "summarize_file", "read_csv", "query_csv",
+    ],
+    "web": [
+        "http_request", "web_search", "google_search", "scrape_page",
+        "scrape_selector", "download_url", "watch_url",
+    ],
+    "media": [
+        "send_media", "list_media", "generate_image", "run_python",
+    ],
+    "scheduling": [
+        "schedule_task", "set_reminder", "list_cron", "remove_cron",
+    ],
+    "credentials": [
+        "store_cred", "get_cred", "send_email", "send_telegram_message",
+    ],
+    "data": [
+        "sqlite_query", "redis_get", "redis_set",
+    ],
+    "integrations": [
+        "register_api", "api_call", "list_apis",
+        "composio_discover", "composio_check_connection", "composio_execute",
+        "composio_connect", "composio_list_connections",
+    ],
+    "skills": [
+        "install_skill", "uninstall_skill", "list_skills_with_sources", "reinstall_all_skills",
+    ],
+}
+
+# Intent keywords that trigger each group
+TOOL_GROUP_TRIGGERS = {
+    "system": ["server", "service", "deploy", "systemd", "process", "port", "kill", "restart", "uptime", "status", "nginx", "docker", "pm2"],
+    "files": ["file", "read", "write", "create", "edit", "search", "find", "csv", "directory", "folder", "path", "patch"],
+    "web": ["search", "web", "scrape", "url", "http", "fetch", "download", "website", "api", "curl", "request"],
+    "media": ["photo", "image", "video", "audio", "media", "picture", "generate", "send file", "screenshot"],
+    "scheduling": ["remind", "schedule", "cron", "timer", "alarm", "daily", "hourly", "every", "recurring", "notification"],
+    "credentials": ["key", "secret", "credential", "password", "token", "store", "encrypt", "email", "smtp", "telegram"],
+    "data": ["database", "sqlite", "redis", "sql", "query", "table", "cache", "db"],
+    "integrations": ["composio", "gmail", "slack", "github", "notion", "api", "integration", "connect", "oauth", "stripe", "vercel", "cloudflare", "send email", "create issue", "discord", "linear", "hubspot", "calendar", "drive", "sheets", "trello", "jira", "asana"],
+    "skills": ["skill", "install", "package", "clawhub", "uninstall", "plugin"],
+}
+
+
+def detect_intent_groups(user_message: str) -> list:
+    """Detect which tool groups are relevant based on user message content.
+    Returns list of group names to inject. Always includes 'core'.
+    """
+    if not user_message:
+        return ["core"]
+
+    msg_lower = user_message.lower()
+    active_groups = {"core"}  # always present
+
+    for group, keywords in TOOL_GROUP_TRIGGERS.items():
+        for kw in keywords:
+            if kw in msg_lower:
+                active_groups.add(group)
+                break
+
+    # If no specific group detected (just chatting), include core only
+    # But if the message looks like a task (imperative, action words), include system + files
+    if len(active_groups) == 1:
+        task_indicators = ["install", "create", "build", "run", "deploy", "setup", "configure", "fix", "update", "make", "start", "stop", "check"]
+        if any(w in msg_lower for w in task_indicators):
+            active_groups.add("system")
+            active_groups.add("files")
+
+    return list(active_groups)
+
+
+def get_tools_for_groups(groups: list) -> str:
+    """Get compact tool descriptions for only the specified groups.
+    Used by branched system prompt to inject relevant tools only.
+    """
+    seen = set()
+    lines = []
+    for group in groups:
+        tool_names = TOOL_GROUPS.get(group, [])
+        for name in tool_names:
+            if name in seen or name not in TOOL_REGISTRY:
+                continue
+            seen.add(name)
+            info = TOOL_REGISTRY[name]
+            params = list(info["params"].keys())
+            params_str = ", ".join(params) if params else ""
+            desc = info["description"].split(".")[0].strip()
+            lines.append(f"{name}({params_str}) — {desc}")
+
+    # Add a note about other available groups
+    all_groups = set(TOOL_GROUPS.keys())
+    inactive = all_groups - set(groups)
+    if inactive:
+        inactive_tools = []
+        for g in sorted(inactive):
+            inactive_tools.extend(TOOL_GROUPS[g])
+        lines.append(f"\n[{len(inactive_tools)} more tools available in: {', '.join(sorted(inactive))}. Ask if needed.]")
+
     return "\n".join(lines)
