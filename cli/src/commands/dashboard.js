@@ -503,19 +503,18 @@ export async function runDashboard() {
   }
 
   console.log("  " + D("Type a message, / for commands, or /help."));
+  console.log("  " + RD("─".repeat(50)));
   console.log("");
 
-  // Animate icon every second
+  // Animate icon every second (visual only, no redraws)
   const iconTimer = setInterval(() => { iconFrame = (iconFrame + 1) % 2; }, 1000);
 
-  // Refresh metrics every 30s
-  const refreshTimer = setInterval(() => {
-    process.stdout.write("\x1b7\x1b[H" + renderPanel() + "\n\x1b8");
-  }, 30000);
+  // NO auto-refresh — header stays static, user types /status to refresh
+  // This prevents overwriting chat text
 
   const rl = createInterface({
     input: process.stdin, output: process.stdout,
-    prompt: "  " + R("▸ "),
+    prompt: "\n  " + RD(BOX.v) + " " + R("▸") + " ",
     completer: (line) => {
       if (line === "/") return [CMD_MENU.map(c=>c.value), line];
       if (line.startsWith("/")) return [CMD_MENU.map(c=>c.value).filter(c=>c.startsWith(line)), line];
@@ -539,7 +538,7 @@ export async function runDashboard() {
   });
 
   rl.on("close", () => {
-    clearInterval(iconTimer); clearInterval(refreshTimer);
+    clearInterval(iconTimer);
     console.log(D("\n  Session closed.\n"));
     process.exit(0);
   });
