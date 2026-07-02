@@ -1,12 +1,12 @@
 <p align="center"><img src=/public/icon.png alt=synthclaw style="length: 100px; width: 100px;"/></p>
 
 <h1 align="center">SynthClaw CoAgent</h1>
-      
-![Size](https://img.shields.io/github/repo-size/truehannan/synthclaw-coagent?style=for-the-badge&color=8b5cf6&labelColor=1B1B1B)![Language](https://img.shields.io/github/languages/top/truehannan/synthclaw-coagent?style=for-the-badge&color=00bf63&labelColor=1B1B1B) <a href="https://twitter.com/intent/follow?screen_name=truehannan"><img src="https://img.shields.io/twitter/follow/truehannan.svg?label=Follow%20@truehannan" alt="Follow @truehannan" /></a> <a href="https://github.com/truehannan/synthclaw-coagent/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="Medusa is released under the MIT license." /></a>
-
-<a href="https://www.producthunt.com/products/synthclaw-coagent?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-synthclaw-coagent" target="_blank" rel="noopener noreferrer"><img alt="SynthClaw CoAgent - Synthclaw is alternative to OpenClaw with no missed feature | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1186019&amp;theme=light&amp;t=1782968063484"></a>
 
 **Your personal AI agent with full server control, 50 tools, 8 LLM providers, 1000+ app integrations, and an interactive CLI dashboard.**
+      
+![Size](https://img.shields.io/github/repo-size/truehannan/synthclaw-coagent?style=for-the-badge&color=8b5cf6&labelColor=1B1B1B)![Language](https://img.shields.io/github/languages/top/truehannan/synthclaw-coagent?style=for-the-badge&color=00bf63&labelColor=1B1B1B)![Stars](https://img.shields.io/github/stars/truehannan/synthclaw-coagent?style=for-the-badge&color=00bf63&labelColor=1B1B1B)![Contributors](https://img.shields.io/github/contributors/truehannan/synthclaw-coagent?style=for-the-badge&color=00bf63&labelColor=1B1B1B) <a href="https://twitter.com/intent/follow?screen_name=truehannan"><img src="https://img.shields.io/twitter/follow/truehannan.svg?label=Follow%20@truehannan" alt="Follow @truehannan" /></a> <a href="https://github.com/truehannan/synthclaw-coagent/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="Medusa is released under the MIT license." /></a>
+
+<p align="center"><a href="https://www.producthunt.com/products/synthclaw-coagent?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-synthclaw-coagent" target="_blank" rel="noopener noreferrer"><img alt="SynthClaw CoAgent - Synthclaw is alternative to OpenClaw with no missed feature | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1186019&amp;theme=light&amp;t=1782968063484"></a></p>
 
 ---
 
@@ -170,6 +170,8 @@ Options include:
 │api_call │  │  +Fernet  │  │ Skills  │
 └─────────┘  └───────────┘  └─────────┘
 ```
+
+[![Star History](https://api.star-history.com/svg?repos=truehannan/synthclaw-coagent&type=Date&theme=dark)](https://star-history.com/#truehannan/synthclaw-coagent&Date)
 
 ---
 
