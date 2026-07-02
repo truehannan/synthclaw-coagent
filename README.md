@@ -120,8 +120,6 @@ exec_code(code="import json; print(json.dumps({'x': 42}))", lang="python")
 
 ### Skills
 ```
-/skills install coding-agent          # search + install from GitHub
-/skills install https://url/skill.zip # direct URL
 ```
 Or send a .zip file to the bot — auto-installs if it contains SKILL.md.
 
@@ -182,3 +180,6 @@ Source Available — Non-Commercial. Free for personal use.
 ---
 
 **Made by [@truehannan](https://github.com/truehannan)**
+/skills install @user/skill-name      # install from ClawHub (clawhub.ai) — primary source
+/skills install coding-agent          # bare name — searches ClawHub, then GitHub
+/skills install https://url/skill.zip # direct URL
