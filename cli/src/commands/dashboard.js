@@ -3,6 +3,7 @@ import { execSync } from "child_process";
 import { createInterface } from "readline";
 import { existsSync, writeFileSync } from "fs";
 import { join } from "path";
+import os from "os";
 import inquirer from "inquirer";
 import { config, generateEnvContent, getProjectRoot } from "../utils.js";
 import { SYNTHCLAW_BLOCK, ICON_FRAME_1, ICON_FRAME_2 } from "../ascii.js";
@@ -52,12 +53,73 @@ function stepClear() {
 // ══════════════════════════════════════════════════════════════════════════════
 function getMetrics() {
   const m = { cpu:0, mem:0, memUsed:0, memTotal:0, disk:0, uptime:"", ip:"", host:"" };
-  try { const la = execSync("cat /proc/loadavg",{encoding:"utf-8",timeout:2000}).split(" "); const c = parseInt(execSync("nproc",{encoding:"utf-8",timeout:2000}))||1; m.cpu = Math.min(100, Math.round((parseFloat(la[0])/c)*100)); } catch{}
-  try { const mi = execSync("free -m|awk 'NR==2{print $3,$2}'",{encoding:"utf-8",timeout:2000}).trim().split(" "); m.memUsed=+mi[0]||0; m.memTotal=+mi[1]||1; m.mem=Math.round((m.memUsed/m.memTotal)*100); } catch{}
-  try { m.disk = parseInt(execSync("df -h /|awk 'NR==2{print $5}'",{encoding:"utf-8",timeout:2000}))||0; } catch{}
-  try { m.uptime = execSync("uptime -p",{encoding:"utf-8",timeout:2000}).trim().replace("up ",""); } catch{}
-  try { m.host = execSync("hostname",{encoding:"utf-8",timeout:2000}).trim(); } catch{}
-  try { m.ip = execSync("hostname -I|awk '{print $1}'",{encoding:"utf-8",timeout:2000}).trim(); } catch{}
+  const isWin = process.platform === "win32";
+
+  // Hostname — works cross-platform via Node os module
+  try { m.host = os.hostname() || ""; } catch {}
+  if (!m.host) { try { m.host = execSync(isWin ? "hostname" : "hostname", {encoding:"utf-8",timeout:2000,stdio:["pipe","pipe","pipe"]}).trim(); } catch{} }
+
+  // CPU load
+  try {
+    if (isWin) {
+      const out = execSync('wmic cpu get loadpercentage /value 2>nul', {encoding:"utf-8",timeout:3000,stdio:["pipe","pipe","pipe"]});
+      const match = out.match(/LoadPercentage=(\d+)/);
+      if (match) m.cpu = parseInt(match[1]) || 0;
+    } else {
+      const la = execSync("cat /proc/loadavg",{encoding:"utf-8",timeout:2000,stdio:["pipe","pipe","pipe"]}).split(" ");
+      const c = parseInt(execSync("nproc",{encoding:"utf-8",timeout:2000,stdio:["pipe","pipe","pipe"]}))||1;
+      m.cpu = Math.min(100, Math.round((parseFloat(la[0])/c)*100));
+    }
+  } catch{}
+
+  // Memory
+  try {
+    if (isWin) {
+      const out = execSync('wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /value 2>nul', {encoding:"utf-8",timeout:3000,stdio:["pipe","pipe","pipe"]});
+      const free = parseInt((out.match(/FreePhysicalMemory=(\d+)/)||[])[1]) || 0;
+      const total = parseInt((out.match(/TotalVisibleMemorySize=(\d+)/)||[])[1]) || 1;
+      m.memTotal = Math.round(total / 1024); // KB to MB
+      m.memUsed = Math.round((total - free) / 1024);
+      m.mem = Math.round((m.memUsed / m.memTotal) * 100);
+    } else {
+      const mi = execSync("free -m|awk 'NR==2{print $3,$2}'",{encoding:"utf-8",timeout:2000,stdio:["pipe","pipe","pipe"]}).trim().split(" ");
+      m.memUsed=+mi[0]||0; m.memTotal=+mi[1]||1; m.mem=Math.round((m.memUsed/m.memTotal)*100);
+    }
+  } catch{}
+
+  // Disk
+  try {
+    if (isWin) {
+      const out = execSync('wmic logicaldisk where "DeviceID=\'C:\'" get Size,FreeSpace /value 2>nul', {encoding:"utf-8",timeout:3000,stdio:["pipe","pipe","pipe"]});
+      const free = parseInt((out.match(/FreeSpace=(\d+)/)||[])[1]) || 0;
+      const total = parseInt((out.match(/Size=(\d+)/)||[])[1]) || 1;
+      m.disk = Math.round(((total - free) / total) * 100);
+    } else {
+      m.disk = parseInt(execSync("df -h /|awk 'NR==2{print $5}'",{encoding:"utf-8",timeout:2000,stdio:["pipe","pipe","pipe"]}))||0;
+    }
+  } catch{}
+
+  // Uptime
+  try {
+    if (isWin) {
+      const sysUp = os.uptime() || 0;
+      const hrs = Math.floor(sysUp / 3600);
+      const mins = Math.floor((sysUp % 3600) / 60);
+      m.uptime = hrs > 24 ? `${Math.floor(hrs/24)}d ${hrs%24}h` : `${hrs}h ${mins}m`;
+    } else {
+      m.uptime = execSync("uptime -p",{encoding:"utf-8",timeout:2000,stdio:["pipe","pipe","pipe"]}).trim().replace("up ","");
+    }
+  } catch{ m.uptime = "?"; }
+
+  // IP
+  try {
+    if (isWin) {
+      m.ip = "localhost";
+    } else {
+      m.ip = execSync("hostname -I|awk '{print $1}'",{encoding:"utf-8",timeout:2000,stdio:["pipe","pipe","pipe"]}).trim();
+    }
+  } catch{ m.ip = "localhost"; }
+
   return m;
 }
 const cpuHist = new Array(16).fill(0);
