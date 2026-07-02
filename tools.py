@@ -1333,11 +1333,12 @@ def composio_execute(tool_slug: str, args: str = "{}", connected_account_id: str
 # ── Skill management tools ─────────────────────────────────────────────────────
 
 def install_skill(source: str, name: str = "") -> dict:
-    """Install a skill from a source URI.
-    source formats:
-      - URL to .zip: https://example.com/skill.zip
-      - GitHub repo: github:owner/repo
-      - ClawHub: clawhub:@owner/skill-name
+    """Install a skill from ClawHub or other sources.
+    source formats (priority order):
+      - @user/skill — ClawHub package (primary, fetched from clawhub.ai)
+      - clawhub:@user/skill — explicit ClawHub prefix
+      - github:owner/repo — GitHub repository
+      - https://url.zip — direct URL
     The source is recorded in skill_sources (D1/local) for auto-reinstall.
     """
     import zipfile
@@ -1349,50 +1350,97 @@ def install_skill(source: str, name: str = "") -> dict:
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
     source = source.strip()
-    source_type = "url"
+    source_type = "clawhub"
     source_uri = source
+    zip_url = None
+    skill_name = ""
 
     try:
-        if source.startswith("clawhub:"):
-            # ClawHub format: clawhub:@owner/name
+        # ── ClawHub as PRIMARY source ─────────────────────────────────────
+        # Accepts: @user/skill, clawhub:@user/skill, user/skill (if contains /)
+        is_clawhub = (
+            source.startswith("@") or
+            source.startswith("clawhub:") or
+            ("/" in source and not source.startswith("http") and not source.startswith("github:"))
+        )
+
+        if is_clawhub:
             source_type = "clawhub"
-            source_uri = source
-            # ClawHub resolves to GitHub for now
-            ref = source.replace("clawhub:", "").lstrip("@")
-            zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
+            ref = source.replace("clawhub:", "").lstrip("@").strip()
+            source_uri = f"@{ref}"
             skill_name = name or ref.split("/")[-1]
+
+            # Try ClawHub API first
+            clawhub_url = f"https://clawhub.ai/api/packages/{ref}/download"
+            try:
+                resp = requests.get(clawhub_url, timeout=20, allow_redirects=True)
+                if resp.status_code == 200 and len(resp.content) > 100:
+                    zip_url = "__clawhub_direct__"
+                    # Content is already downloaded
+                    clawhub_content = resp.content
+                elif resp.status_code == 302 or resp.status_code == 301:
+                    # Redirect to actual download URL
+                    zip_url = resp.headers.get("Location", "")
+                else:
+                    # ClawHub unavailable — fall back to GitHub
+                    zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
+            except Exception:
+                # ClawHub down — fall back to GitHub
+                zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
+
         elif source.startswith("github:"):
             source_type = "github"
             source_uri = source
             ref = source.replace("github:", "")
             zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
             skill_name = name or ref.split("/")[-1]
+
         elif source.startswith("http"):
+            source_type = "url"
             zip_url = source
             skill_name = name or source.split("/")[-1].replace(".zip", "")
+
         else:
-            # Assume it's a GitHub search term
-            source_type = "github"
-            search_url = f"https://api.github.com/search/repositories?q={source}+skill+in:name&sort=stars&per_page=1"
-            resp = requests.get(search_url, timeout=15)
-            if resp.status_code == 200:
-                items = resp.json().get("items", [])
-                if items:
-                    repo = items[0]
-                    source_uri = f"github:{repo['full_name']}"
-                    zip_url = f"https://github.com/{repo['full_name']}/archive/refs/heads/{repo.get('default_branch', 'main')}.zip"
-                    skill_name = name or repo["name"]
+            # Bare word — search ClawHub first, then GitHub
+            source_type = "clawhub"
+            source_uri = f"@synthclaw/{source}"
+            skill_name = name or source
+            # Try clawhub.ai search
+            clawhub_url = f"https://clawhub.ai/api/packages/synthclaw/{source}/download"
+            try:
+                resp = requests.get(clawhub_url, timeout=15, allow_redirects=True)
+                if resp.status_code == 200 and len(resp.content) > 100:
+                    zip_url = "__clawhub_direct__"
+                    clawhub_content = resp.content
                 else:
-                    return {"error": f"No skill found matching: {source}"}
-            else:
-                return {"error": f"GitHub search failed: {resp.status_code}"}
+                    # Fall back to GitHub search
+                    search_url = f"https://api.github.com/search/repositories?q={source}+skill+in:name&sort=stars&per_page=1"
+                    gh_resp = requests.get(search_url, timeout=15)
+                    if gh_resp.status_code == 200:
+                        items = gh_resp.json().get("items", [])
+                        if items:
+                            repo = items[0]
+                            source_type = "github"
+                            source_uri = f"github:{repo['full_name']}"
+                            zip_url = f"https://github.com/{repo['full_name']}/archive/refs/heads/{repo.get('default_branch', 'main')}.zip"
+                            skill_name = name or repo["name"]
+                        else:
+                            return {"error": f"No skill found matching: {source}. Try @user/skill format."}
+                    else:
+                        return {"error": f"Search failed. Use @user/skill format for ClawHub packages."}
+            except Exception:
+                return {"error": f"Could not resolve skill: {source}. Use @user/skill format."}
 
         # Download and extract
-        resp = requests.get(zip_url, timeout=60)
-        if resp.status_code != 200:
-            return {"error": f"Failed to download: HTTP {resp.status_code}"}
+        if zip_url == "__clawhub_direct__":
+            zip_content = clawhub_content
+        else:
+            resp = requests.get(zip_url, timeout=60)
+            if resp.status_code != 200:
+                return {"error": f"Failed to download: HTTP {resp.status_code}"}
+            zip_content = resp.content
 
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        with zipfile.ZipFile(io.BytesIO(zip_content)) as zf:
             # Extract to a temp dir, then move to skills dir
             names = zf.namelist()
             # Most GitHub zips have a top-level folder like "repo-main/"
@@ -1832,9 +1880,9 @@ TOOL_REGISTRY = {
     # ── Skill management tools ─────────────────────────────────────────
     "install_skill": {
         "fn": install_skill,
-        "description": "Install a skill from a source (GitHub repo, URL to zip, or search term). Registered in D1 for auto-reinstall on fresh installs.",
+        "description": "Install a skill from ClawHub (@user/skill) or GitHub. ClawHub is the primary source (clawhub.ai). Also accepts github:owner/repo or direct URLs.",
         "params": {
-            "source": "str (github:owner/repo, clawhub:@owner/name, https://url.zip, or search term)",
+            "source": "str (@user/skill for ClawHub, github:owner/repo, or https://url.zip)",
             "name": "str (optional — override skill name)",
         },
     },

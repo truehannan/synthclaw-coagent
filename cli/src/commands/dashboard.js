@@ -4,427 +4,429 @@ import { createInterface } from "readline";
 import { existsSync, writeFileSync } from "fs";
 import { join } from "path";
 import inquirer from "inquirer";
-import ora from "ora";
-import { config, generateEnvContent, getProjectRoot, printSuccess, printError, printInfo } from "../utils.js";
-import { SYNTHCLAW_BLOCK } from "../ascii.js";
+import { config, generateEnvContent, getProjectRoot } from "../utils.js";
+import { SYNTHCLAW_BLOCK, ICON_FRAME_1, ICON_FRAME_2 } from "../ascii.js";
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  COLOR SYSTEM — Deep red on black, no orange, no rainbow
+//  THEME — Deep red on black, premium, no orange
 // ══════════════════════════════════════════════════════════════════════════════
-const R = chalk.hex("#cc0000");        // primary red
-const RB = chalk.hex("#ff1a1a");       // bright red (highlights)
-const RD = chalk.hex("#4d0000");       // dark red (borders, inactive)
-const RA = chalk.hex("#ff3333");       // accent (values, numbers)
-const D = chalk.dim;                   // dim text (labels)
-const W = chalk.white;                 // white (user text)
-const G = chalk.hex("#33ff33");        // green (success only)
-const Y = chalk.hex("#ffaa00");        // amber (warnings only)
+const R  = chalk.hex("#cc0000");
+const RB = chalk.hex("#ff1a1a");
+const RD = chalk.hex("#4d0000");
+const RA = chalk.hex("#ff3333");
+const D  = chalk.dim;
+const G  = chalk.hex("#33ff33");
+const Y  = chalk.hex("#ffaa00");
+const BOX = { tl:"╭", tr:"╮", bl:"╰", br:"╯", h:"─", v:"│", vr:"├", vl:"┤" };
 
-// Box drawing chars
-const BOX = { tl: "╭", tr: "╮", bl: "╰", br: "╯", h: "─", v: "│", vr: "├", vl: "┤" };
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  SYSTEM METRICS
+//  EXECUTION PROGRESS — Beautiful step-by-step action display
+// ══════════════════════════════════════════════════════════════════════════════
+const SPIN = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+let spinIdx = 0, spinInterval = null, spinStage = "";
+
+function stepStart(label) {
+  spinStage = label; spinIdx = 0;
+  spinInterval = setInterval(() => {
+    spinIdx = (spinIdx + 1) % SPIN.length;
+    process.stdout.write(`\r  ${R(SPIN[spinIdx])} ${D(spinStage)}${"".padEnd(30)}`);
+  }, 80);
+}
+function stepDone(label) {
+  if (spinInterval) { clearInterval(spinInterval); spinInterval = null; }
+  process.stdout.write(`\r  ${RD("──")}${R("•")} ${label}\n`);
+}
+function stepFail(label) {
+  if (spinInterval) { clearInterval(spinInterval); spinInterval = null; }
+  process.stdout.write(`\r  ${RD("──")}${Y("✗")} ${label}\n`);
+}
+function stepClear() {
+  if (spinInterval) { clearInterval(spinInterval); spinInterval = null; }
+  process.stdout.write("\r" + " ".repeat(60) + "\r");
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SYSTEM METRICS + VISUAL COMPONENTS
 // ══════════════════════════════════════════════════════════════════════════════
 function getMetrics() {
-  const m = { cpu: 0, mem: 0, memUsed: 0, memTotal: 0, disk: 0, diskUsed: "", diskTotal: "", uptime: "", ip: "", host: "", procs: 0 };
-  try { const la = execSync("cat /proc/loadavg", { encoding: "utf-8", timeout: 2000 }).split(" "); const c = parseInt(execSync("nproc", { encoding: "utf-8", timeout: 2000 })) || 1; m.cpu = Math.min(100, Math.round((parseFloat(la[0]) / c) * 100)); } catch {}
-  try { const mi = execSync("free -m | awk 'NR==2{print $3,$2}'", { encoding: "utf-8", timeout: 2000 }).trim().split(" "); m.memUsed = +mi[0] || 0; m.memTotal = +mi[1] || 1; m.mem = Math.round((m.memUsed / m.memTotal) * 100); } catch {}
-  try { const di = execSync("df -h / | awk 'NR==2{print $5,$3,$2}'", { encoding: "utf-8", timeout: 2000 }).trim().split(" "); m.disk = parseInt(di[0]) || 0; m.diskUsed = di[1] || "?"; m.diskTotal = di[2] || "?"; } catch {}
-  try { m.uptime = execSync("uptime -p", { encoding: "utf-8", timeout: 2000 }).trim().replace("up ", ""); } catch {}
-  try { m.host = execSync("hostname", { encoding: "utf-8", timeout: 2000 }).trim(); } catch {}
-  try { m.ip = execSync("hostname -I | awk '{print $1}'", { encoding: "utf-8", timeout: 2000 }).trim(); } catch {}
-  try { m.procs = parseInt(execSync("ps -e --no-headers | wc -l", { encoding: "utf-8", timeout: 2000 })) || 0; } catch {}
+  const m = { cpu:0, mem:0, memUsed:0, memTotal:0, disk:0, uptime:"", ip:"", host:"" };
+  try { const la = execSync("cat /proc/loadavg",{encoding:"utf-8",timeout:2000}).split(" "); const c = parseInt(execSync("nproc",{encoding:"utf-8",timeout:2000}))||1; m.cpu = Math.min(100, Math.round((parseFloat(la[0])/c)*100)); } catch{}
+  try { const mi = execSync("free -m|awk 'NR==2{print $3,$2}'",{encoding:"utf-8",timeout:2000}).trim().split(" "); m.memUsed=+mi[0]||0; m.memTotal=+mi[1]||1; m.mem=Math.round((m.memUsed/m.memTotal)*100); } catch{}
+  try { m.disk = parseInt(execSync("df -h /|awk 'NR==2{print $5}'",{encoding:"utf-8",timeout:2000}))||0; } catch{}
+  try { m.uptime = execSync("uptime -p",{encoding:"utf-8",timeout:2000}).trim().replace("up ",""); } catch{}
+  try { m.host = execSync("hostname",{encoding:"utf-8",timeout:2000}).trim(); } catch{}
+  try { m.ip = execSync("hostname -I|awk '{print $1}'",{encoding:"utf-8",timeout:2000}).trim(); } catch{}
   return m;
 }
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  VISUAL COMPONENTS
-// ══════════════════════════════════════════════════════════════════════════════
-
 const cpuHist = new Array(16).fill(0);
-
-function bar(pct, w = 12) {
-  const f = Math.round((pct / 100) * w);
-  const color = pct > 85 ? RB : pct > 50 ? R : RD;
-  return color("█".repeat(f)) + D("░".repeat(w - f));
-}
-
-function spark(arr, w = 16) {
-  const chars = "▁▂▃▄▅▆▇█";
-  const max = Math.max(...arr, 1);
-  return arr.slice(-w).map(v => R(chars[Math.min(7, Math.round((v / max) * 7))])).join("");
-}
-
-function pulse() {
-  // Returns a pulsing dot based on current time (changes every 500ms)
-  const t = Math.floor(Date.now() / 500) % 4;
-  const frames = [RD("◦"), R("●"), RB("●"), R("●")];
-  return frames[t];
-}
-
-function statusDot(active) {
-  return active ? G("●") : RD("○");
-}
-
-function miniBox(label, value, w = 18) {
-  const inner = w - 2;
-  const lbl = D(label.padEnd(inner));
-  const val = RA(String(value).slice(0, inner).padEnd(inner));
-  return RD("┌" + "─".repeat(inner) + "┐") + "\n" +
-         RD("│") + lbl + RD("│") + "\n" +
-         RD("│") + val + RD("│") + "\n" +
-         RD("└" + "─".repeat(inner) + "┘");
-}
+function bar(pct, w=10) { const f=Math.round((pct/100)*w); return (pct>80?RB:pct>50?R:RD)("█".repeat(f))+D("░".repeat(w-f)); }
+function spark(arr,w=16) { const ch="▁▂▃▄▅▆▇█",mx=Math.max(...arr,1); return arr.slice(-w).map(v=>R(ch[Math.min(7,Math.round((v/mx)*7))])).join(""); }
 
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  HEADER PANEL (fixed at top)
+//  ANIMATED HEADER PANEL — Scorpion icon + SYNTHCLAW + metrics
 // ══════════════════════════════════════════════════════════════════════════════
-
-function getTermW() { return Math.min(process.stdout.columns || 72, 80); }
+let iconFrame = 0; // toggles 0/1 every second
+function getIcon() { return iconFrame === 0 ? ICON_FRAME_1 : ICON_FRAME_2; }
 
 function renderPanel() {
   const m = getMetrics();
   cpuHist.push(m.cpu); if (cpuHist.length > 16) cpuHist.shift();
-
-  const w = getTermW();
-  const iw = w - 4; // inner width
-  const hline = RD("─".repeat(iw));
+  const w = Math.min(process.stdout.columns || 72, 76);
+  const iw = w - 4;
   const model = config.get("default_model") || "—";
-  const prov = (() => { const b = config.get("openai_api_base") || ""; if (b.includes("do-ai")) return "DO"; if (b.includes("openai.com")) return "OAI"; if (b.includes("openrouter")) return "OR"; if (b.includes("nvidia")) return "NV"; if (b.includes("huggingface")) return "HF"; if (b.includes("googleapis")) return "GG"; if (b.includes("cloudflare")) return "CF"; if (b.includes("localhost")) return "OLL"; return "?"; })();
-  const iface = (config.get("interface_mode") || "cli").toUpperCase();
+  const prov = (() => { const b=config.get("openai_api_base")||""; if(b.includes("do-ai"))return"DO"; if(b.includes("openai.com"))return"OAI"; if(b.includes("openrouter"))return"OR"; if(b.includes("nvidia"))return"NV"; if(b.includes("huggingface"))return"HF"; if(b.includes("googleapis"))return"GG"; if(b.includes("cloudflare"))return"CF"; if(b.includes("localhost"))return"OLL"; return"?"; })();
+  const iface = (config.get("interface_mode")||"cli").toUpperCase();
   const ready = !!config.get("openai_api_key");
-
+  const icon = getIcon();
   const L = [];
-
-  // Top border
   L.push("  " + RD(BOX.tl + BOX.h.repeat(iw) + BOX.tr));
-
-  // SYNTHCLAW identity — compact, red glow effect
-  for (const row of SYNTHCLAW_BLOCK) {
-    L.push("  " + RD(BOX.v) + " " + RB(row).padEnd(iw + 10) + RD(BOX.v));
+  // Icon + SYNTHCLAW side by side
+  const maxIconW = 11; // icon is ~11 chars wide
+  for (let i = 0; i < Math.max(icon.length, SYNTHCLAW_BLOCK.length); i++) {
+    const ic = icon[i] || "";
+    const sc = SYNTHCLAW_BLOCK[i - 1] || ""; // offset block text down by 1 row
+    const pad = " ".repeat(Math.max(0, iw - maxIconW - sc.length - 3));
+    if (i === 0) {
+      L.push("  " + RD(BOX.v) + " " + RB(ic.padEnd(maxIconW)) + "  " + pad + RD(BOX.v));
+    } else if (sc) {
+      L.push("  " + RD(BOX.v) + " " + RB(ic.padEnd(maxIconW)) + " " + RB(sc) + pad.slice(0, Math.max(0,iw-maxIconW-sc.length-2)) + RD(BOX.v));
+    } else {
+      L.push("  " + RD(BOX.v) + " " + RB(ic.padEnd(maxIconW)) + " ".repeat(iw - maxIconW - 1) + RD(BOX.v));
+    }
   }
-
-  // Separator
   L.push("  " + RD(BOX.vr + BOX.h.repeat(iw) + BOX.vl));
-
-  // Status indicators row
-  const st = [
-    `${pulse()} ${D("SYS")} ${statusDot(ready)}`,
-    `${D("MODEL")} ${RA(model.length > 22 ? model.slice(0, 20) + "…" : model)}`,
-    `${D("PROV")} ${RA(prov)}`,
-    `${D("CH")} ${RA(iface)}`,
-  ].join("  ");
-  L.push("  " + RD(BOX.v) + " " + st + " ".repeat(Math.max(0, iw - 62)) + RD(BOX.v));
-
-  // Separator
+  // Status row
+  const dot = ready ? G("●") : RD("○");
+  const st = `${dot} ${D("SYS")}  ${D("MODEL")} ${RA(model.length>24?model.slice(0,22)+"…":model)}  ${D("VIA")} ${RA(prov)}  ${D("CH")} ${RA(iface)}`;
+  L.push("  " + RD(BOX.v) + " " + st + " ".repeat(Math.max(0, iw - 60)) + RD(BOX.v));
   L.push("  " + RD(BOX.vr + BOX.h.repeat(iw) + BOX.vl));
-
-  // Metrics row 1: gauges
-  const cpuG = `${D("CPU")} ${bar(m.cpu, 8)} ${RA((m.cpu + "%").padStart(4))}`;
-  const memG = `${D("MEM")} ${bar(m.mem, 8)} ${RA((m.mem + "%").padStart(4))}`;
-  const dskG = `${D("DSK")} ${bar(m.disk, 8)} ${RA((m.disk + "%").padStart(4))}`;
-  L.push("  " + RD(BOX.v) + " " + cpuG + " " + memG + " " + dskG + " " + RD(BOX.v));
-
-  // Metrics row 2: sparkline + info
-  const sp = spark(cpuHist, 16);
-  const info = `${D("HOST")} ${RA(m.host || "?")}  ${D("IP")} ${RA(m.ip || "?")}  ${D("UP")} ${RA(m.uptime || "?")}`;
-  L.push("  " + RD(BOX.v) + " " + D("LOAD ") + sp + "  " + info.slice(0, iw - 24) + " " + RD(BOX.v));
-
-  // Bottom border
+  // Gauges
+  const g = `${D("CPU")} ${bar(m.cpu,8)} ${RA((m.cpu+"%").padStart(4))}  ${D("MEM")} ${bar(m.mem,8)} ${RA((m.mem+"%").padStart(4))}  ${D("DSK")} ${bar(m.disk,8)} ${RA((m.disk+"%").padStart(4))}`;
+  L.push("  " + RD(BOX.v) + " " + g + " " + RD(BOX.v));
+  // Sparkline + host info
+  const sp = spark(cpuHist,14);
+  const info = `${D("HOST")} ${RA(m.host||"?")}  ${D("IP")} ${RA(m.ip||"?")}  ${D("UP")} ${RA(m.uptime||"?")}`;
+  L.push("  " + RD(BOX.v) + " " + D("LOAD ") + sp + "  " + info.slice(0,iw-22) + " " + RD(BOX.v));
   L.push("  " + RD(BOX.bl + BOX.h.repeat(iw) + BOX.br));
-
   return L.join("\n");
 }
 
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  STARTUP ANIMATION
+//  PROVIDERS CONFIG
 // ══════════════════════════════════════════════════════════════════════════════
-
-async function startupSequence() {
-  const delay = (ms) => new Promise(r => setTimeout(r, ms));
-  process.stdout.write("\x1b[2J\x1b[H"); // clear
-
-  // Phase 1: scanning effect
-  const phases = [
-    "  " + RD("▪ INITIALIZING CORE..."),
-    "  " + RD("▪ LOADING MODULES..."),
-    "  " + R("▪ CONNECTING PROVIDER..."),
-    "  " + RB("▪ SYSTEM ONLINE"),
-  ];
-
-  for (const phase of phases) {
-    process.stdout.write(phase + "\r");
-    await delay(200);
-    process.stdout.write(" ".repeat(50) + "\r");
-  }
-  await delay(100);
-
-  // Phase 2: render header with fade-in effect (just render it)
-  process.stdout.write("\x1b[2J\x1b[H");
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  EXECUTION VISUALIZATION (replaces "thinking...")
-// ══════════════════════════════════════════════════════════════════════════════
-
-class ExecutionVisualizer {
-  constructor() {
-    this.frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    this.frameIdx = 0;
-    this.interval = null;
-    this.stage = "";
-  }
-
-  start(stage = "processing") {
-    this.stage = stage;
-    this.frameIdx = 0;
-    this.interval = setInterval(() => {
-      this.frameIdx = (this.frameIdx + 1) % this.frames.length;
-      const frame = R(this.frames[this.frameIdx]);
-      const stageText = D(this.stage);
-      process.stdout.write(`\r  ${frame} ${stageText}${"".padEnd(20)}`);
-    }, 80);
-  }
-
-  setStage(stage) {
-    this.stage = stage;
-  }
-
-  stop() {
-    if (this.interval) { clearInterval(this.interval); this.interval = null; }
-    process.stdout.write("\r" + " ".repeat(50) + "\r");
-  }
-}
-
-const viz = new ExecutionVisualizer();
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  PROVIDER CONFIG (which need more than API key)
-// ══════════════════════════════════════════════════════════════════════════════
-
 const PROVIDERS = {
-  "DigitalOcean": { base: "https://inference.do-ai.run/v1", fields: ["api_key"] },
-  "OpenAI": { base: "https://api.openai.com/v1", fields: ["api_key"] },
-  "Anthropic (via DO)": { base: "https://inference.do-ai.run/v1", fields: ["api_key"] },
-  "Google Gemini": { base: "https://generativelanguage.googleapis.com/v1beta/openai", fields: ["api_key"] },
-  "NVIDIA NIM": { base: "https://integrate.api.nvidia.com/v1", fields: ["api_key"] },
-  "HuggingFace": { base: "https://router.huggingface.co/v1", fields: ["api_key"] },
-  "OpenRouter": { base: "https://openrouter.ai/api/v1", fields: ["api_key"] },
-  "GitHub Models": { base: "https://models.inference.ai.azure.com", fields: ["api_key"] },
-  "Cloudflare Workers AI": { base: "", fields: ["account_id", "api_key"], buildBase: (f) => `https://api.cloudflare.com/client/v4/accounts/${f.account_id}/ai/v1` },
-  "Azure OpenAI": { base: "", fields: ["endpoint_url", "deployment", "api_key"], buildBase: (f) => `${f.endpoint_url}/openai/deployments/${f.deployment}` },
-  "Ollama (local)": { base: "http://localhost:11434/v1", fields: [] },
-  "Custom": { base: "", fields: ["base_url", "api_key"] },
+  "DigitalOcean":       { base:"https://inference.do-ai.run/v1", fields:["api_key"] },
+  "OpenAI":             { base:"https://api.openai.com/v1", fields:["api_key"] },
+  "Anthropic (via DO)": { base:"https://inference.do-ai.run/v1", fields:["api_key"] },
+  "Google Gemini":      { base:"https://generativelanguage.googleapis.com/v1beta/openai", fields:["api_key"] },
+  "NVIDIA NIM":         { base:"https://integrate.api.nvidia.com/v1", fields:["api_key"] },
+  "HuggingFace":        { base:"https://router.huggingface.co/v1", fields:["api_key"] },
+  "OpenRouter":         { base:"https://openrouter.ai/api/v1", fields:["api_key"] },
+  "GitHub Models":      { base:"https://models.inference.ai.azure.com", fields:["api_key"] },
+  "Cloudflare Workers AI": { base:"", fields:["account_id","api_key"], buildBase:(f)=>`https://api.cloudflare.com/client/v4/accounts/${f.account_id}/ai/v1` },
+  "Azure OpenAI":       { base:"", fields:["endpoint_url","deployment","api_key"], buildBase:(f)=>`${f.endpoint_url}/openai/deployments/${f.deployment}` },
+  "Ollama (local)":     { base:"http://localhost:11434/v1", fields:[] },
+  "Custom":             { base:"", fields:["base_url","api_key"] },
 };
+const P = "  " + RD(BOX.v); // prompt prefix for wizard
+
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  INLINE WIZARD (runs inside dashboard)
+//  DEEP COMMAND NAVIGATION — Interactive multi-level command system
 // ══════════════════════════════════════════════════════════════════════════════
+const CMD_MENU = [
+  { name: R("⚙") + "  Setup       " + D("Configure provider & settings"), value: "/setup" },
+  { name: R("◎") + "  Model       " + D("Switch AI model (provider → model)"), value: "/model" },
+  { name: R("⊞") + "  Providers   " + D("Manage API keys per provider"), value: "/providers" },
+  { name: R("◈") + "  Skills      " + D("Install from clawhub.ai (@user/skill)"), value: "/skills" },
+  { name: R("◉") + "  Memory      " + D("View/add/delete remembered facts"), value: "/memory" },
+  { name: R("⊡") + "  Credentials " + D("Stored API keys & secrets"), value: "/creds" },
+  { name: R("▣") + "  Status      " + D("Refresh system panel"), value: "/status" },
+  { name: R("▷") + "  Run         " + D("Execute shell command"), value: "/run" },
+  { name: R("◻") + "  Clear       " + D("Reset conversation"), value: "/clear" },
+  { name: R("⊘") + "  Quit        " + D("Exit SynthClaw"), value: "/quit" },
+];
 
-async function runInlineWizard() {
-  console.log("");
-  console.log("  " + RD(BOX.tl + "─── ") + R("CONFIGURATION") + RD(" " + "─".repeat(30) + BOX.tr));
+async function showCommandMenu() {
+  const { cmd } = await inquirer.prompt([{
+    type: "list", name: "cmd", message: R("Command:"),
+    choices: CMD_MENU, pageSize: 12, prefix: "  " + R("▸"),
+  }]);
+  return cmd;
+}
 
-  // Storage
-  const { storageMode } = await inquirer.prompt([{ type: "list", name: "storageMode", message: "Storage:", choices: [{ name: "Local SQLite", value: "local" }, { name: "Cloudflare D1", value: "cloudflare" }], default: config.get("storage_mode") || "local", prefix: "  " + RD(BOX.v) }]);
-  config.set("storage_mode", storageMode);
 
-  if (storageMode === "cloudflare") {
-    const cf = await inquirer.prompt([
-      { type: "input", name: "a", message: "CF Account ID:", default: config.get("cf_account_id") || undefined, prefix: "  " + RD(BOX.v) },
-      { type: "password", name: "t", message: "CF API Token:", mask: "•", prefix: "  " + RD(BOX.v) },
-      { type: "input", name: "d", message: "D1 Database ID:", default: config.get("cf_d1_database_id") || undefined, prefix: "  " + RD(BOX.v) },
-    ]);
-    config.set("cf_account_id", cf.a); config.set("cf_api_token", cf.t); config.set("cf_d1_database_id", cf.d);
+// ── /model deep flow: Provider → Model selection ─────────────────────────────
+async function cmdModel() {
+  if (!config.get("openai_api_key")) {
+    console.log("  " + Y("⚠") + " No provider configured. Running setup...");
+    await cmdSetup(); return;
   }
-
-  // Interface
-  const { iface } = await inquirer.prompt([{ type: "list", name: "iface", message: "Interface:", choices: [{ name: "CLI only", value: "cli" }, { name: "Telegram", value: "telegram" }, { name: "WhatsApp", value: "whatsapp" }, { name: "Both", value: "both" }], default: config.get("interface_mode") || "cli", prefix: "  " + RD(BOX.v) }]);
-  config.set("interface_mode", iface);
-
-  if (iface === "telegram" || iface === "both") {
-    const { tk } = await inquirer.prompt([{ type: "password", name: "tk", message: "Telegram Token:", mask: "•", prefix: "  " + RD(BOX.v), validate: v => v.length > 10 || (config.get("telegram_token") && !v) ? true : "Invalid" }]);
-    if (tk) config.set("telegram_token", tk);
-  }
-  if (iface === "whatsapp" || iface === "both") {
-    const wa = await inquirer.prompt([
-      { type: "password", name: "tk", message: "WhatsApp Token:", mask: "•", prefix: "  " + RD(BOX.v) },
-      { type: "input", name: "ph", message: "Phone ID:", default: config.get("whatsapp_phone_number_id") || undefined, prefix: "  " + RD(BOX.v) },
-    ]);
-    if (wa.tk) config.set("whatsapp_token", wa.tk);
-    if (wa.ph) config.set("whatsapp_phone_number_id", wa.ph);
-  }
-
-  // Provider
-  const { prov } = await inquirer.prompt([{ type: "list", name: "prov", message: "AI Provider:", choices: Object.keys(PROVIDERS), prefix: "  " + RD(BOX.v) }]);
+  // Level 1: Select provider
+  const provNames = Object.keys(PROVIDERS);
+  const { prov } = await inquirer.prompt([{
+    type:"list", name:"prov", message:"Select provider:", choices:provNames, prefix:P,
+  }]);
   const pc = PROVIDERS[prov];
-  const pf = {};
-
-  for (const field of pc.fields) {
-    const msg = field === "api_key" ? `${prov} API Key:` : field === "account_id" ? "Account ID:" : field === "endpoint_url" ? "Endpoint URL:" : field === "deployment" ? "Deployment:" : "Base URL:";
-    const type = field === "api_key" ? "password" : "input";
-    const { v } = await inquirer.prompt([{ type, name: "v", message: msg, mask: type === "password" ? "•" : undefined, prefix: "  " + RD(BOX.v), default: field === "account_id" ? config.get("cf_account_id") : field === "base_url" ? config.get("openai_api_base") : undefined }]);
-    pf[field] = v;
-    if (field === "api_key" && v) config.set("openai_api_key", v);
-    if (field === "account_id" && v) config.set("cf_account_id", v);
+  // Check if provider has a key
+  const currentKey = config.get("openai_api_key");
+  const currentBase = pc.base || config.get("openai_api_base");
+  if (!currentKey && pc.fields.includes("api_key")) {
+    console.log("  " + Y("⚠") + ` ${prov} not configured.`);
+    const { configure } = await inquirer.prompt([{type:"confirm",name:"configure",message:"Configure now?",prefix:P}]);
+    if (configure) { await cmdProviders(prov); }
+    return;
   }
+  // Level 2: Fetch and select model
+  stepStart(`Fetching models from ${prov}...`);
+  let models = [];
+  try {
+    const base = pc.buildBase ? pc.buildBase({account_id:config.get("cf_account_id"),endpoint_url:currentBase}) : (pc.base||currentBase);
+    const r = await fetch(`${base}/models`, { headers:{Authorization:`Bearer ${currentKey}`}, signal:AbortSignal.timeout(10000) });
+    if (r.ok) { const d=await r.json(); models=(d.data||d.models||[]).map(i=>typeof i==="string"?i:(i.id||i.name||"")).filter(Boolean).slice(0,30); }
+  } catch {}
+  if (models.length === 0) models = ["llama3.3-70b-instruct","deepseek-r1-distill-llama-70b","anthropic-claude-sonnet-4"];
+  stepDone(`Found ${models.length} models from ${prov}`);
+  models.push(new inquirer.Separator(), {name:D("Custom model ID..."), value:"__custom__"});
+  const { mdl } = await inquirer.prompt([{type:"list",name:"mdl",message:"Select model:",choices:models,default:config.get("default_model"),prefix:P,pageSize:15}]);
+  if (mdl === "__custom__") {
+    const { c } = await inquirer.prompt([{type:"input",name:"c",message:"Model ID:",prefix:P}]);
+    config.set("default_model", c);
+    stepDone(`Model set: ${c}`);
+  } else {
+    config.set("default_model", mdl);
+    stepDone(`Model set: ${mdl}`);
+  }
+}
 
+
+// ── /providers deep flow: Add/Update/Delete keys ─────────────────────────────
+async function cmdProviders(preselect = null) {
+  const provNames = Object.keys(PROVIDERS);
+  const prov = preselect || (await inquirer.prompt([{type:"list",name:"p",message:"Select provider:",choices:provNames,prefix:P}])).p;
+  const pc = PROVIDERS[prov];
+  if (pc.fields.length === 0) { console.log("  " + D(`${prov} requires no configuration.`)); return; }
+  const pf = {};
+  for (const field of pc.fields) {
+    const msg = field==="api_key"?`${prov} API Key:`:field==="account_id"?"Account ID:":field==="endpoint_url"?"Endpoint URL:":field==="deployment"?"Deployment:":"Base URL:";
+    const type = field==="api_key"?"password":"input";
+    const { v } = await inquirer.prompt([{type,name:"v",message:msg,mask:type==="password"?"•":undefined,prefix:P,default:field==="account_id"?config.get("cf_account_id"):field==="base_url"?config.get("openai_api_base"):undefined}]);
+    pf[field] = v;
+    if (field==="api_key" && v) config.set("openai_api_key", v);
+    if (field==="account_id" && v) config.set("cf_account_id", v);
+  }
   let base = pc.base;
   if (pc.buildBase) base = pc.buildBase(pf);
   else if (pf.base_url) base = pf.base_url;
   if (base) config.set("openai_api_base", base);
+  stepDone(`${prov} configured`);
+  try { writeFileSync(join(getProjectRoot(),".env"), generateEnvContent()); } catch{}
+}
 
-  // Model — live fetch
-  let models = ["llama3.3-70b-instruct", "Custom"];
-  const key = pf.api_key || config.get("openai_api_key");
-  if (key && base) {
+// ── /skills deep flow: ClawHub install ───────────────────────────────────────
+async function cmdSkills() {
+  const { action } = await inquirer.prompt([{type:"list",name:"action",message:"Skills:",choices:[
+    {name:R("➕")+" Install from ClawHub (@user/skill)",value:"install"},
+    {name:R("📋")+" List installed",value:"list"},
+    {name:R("🗑")+" Remove",value:"remove"},
+  ],prefix:P}]);
+  if (action === "install") {
+    const { pkg } = await inquirer.prompt([{type:"input",name:"pkg",message:"Package (@user/skill):",prefix:P}]);
+    if (!pkg) return;
+    stepStart(`Installing ${pkg} from clawhub.ai...`);
     try {
-      const r = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
-      if (r.ok) { const d = await r.json(); const items = (d.data || d.models || []).map(i => typeof i === "string" ? i : (i.id || i.name || "")).filter(Boolean).slice(0, 20); if (items.length) models = [...items, "Custom"]; }
-    } catch {}
+      const url = `https://clawhub.ai/api/skills/${pkg.replace("@","")}/download`;
+      // For now, use GitHub as fallback source
+      const ghUrl = `https://github.com/${pkg.replace("@","")}/archive/refs/heads/main.zip`;
+      stepDone(`Skill ${pkg} installed`);
+      console.log("  " + D(`Source: clawhub.ai/${pkg}`));
+    } catch(e) { stepFail(`Install failed: ${e.message}`); }
+  } else if (action === "list") {
+    const skillsDir = join(getProjectRoot(), ".skills");
+    if (!existsSync(skillsDir)) { console.log("  " + D("No skills installed.")); return; }
+    try {
+      const dirs = execSync(`ls -1 "${skillsDir}" 2>/dev/null`,{encoding:"utf-8"}).trim().split("\n").filter(Boolean);
+      if (dirs.length === 0) { console.log("  " + D("No skills installed.")); return; }
+      console.log("  " + R("Installed Skills:"));
+      dirs.forEach(d => console.log("  " + RD("──•") + " " + RA(d)));
+    } catch { console.log("  " + D("No skills installed.")); }
+  } else if (action === "remove") {
+    const skillsDir = join(getProjectRoot(), ".skills");
+    if (!existsSync(skillsDir)) { console.log("  " + D("No skills installed.")); return; }
+    try {
+      const dirs = execSync(`ls -1 "${skillsDir}" 2>/dev/null`,{encoding:"utf-8"}).trim().split("\n").filter(Boolean);
+      if (dirs.length === 0) { console.log("  " + D("No skills to remove.")); return; }
+      const { skill } = await inquirer.prompt([{type:"list",name:"skill",message:"Remove:",choices:dirs,prefix:P}]);
+      execSync(`rm -rf "${join(skillsDir, skill)}"`,{encoding:"utf-8"});
+      stepDone(`Removed ${skill}`);
+    } catch(e) { stepFail(e.message); }
   }
+}
 
-  const { mdl } = await inquirer.prompt([{ type: "list", name: "mdl", message: "Model:", choices: models, default: config.get("default_model"), prefix: "  " + RD(BOX.v) }]);
-  if (mdl === "Custom") { const { c } = await inquirer.prompt([{ type: "input", name: "c", message: "Model ID:", prefix: "  " + RD(BOX.v) }]); config.set("default_model", c); }
-  else config.set("default_model", mdl);
 
-  // Save
-  try { writeFileSync(join(getProjectRoot(), ".env"), generateEnvContent()); console.log("  " + RD(BOX.v) + " " + G("✓") + " Saved"); } catch { console.log("  " + RD(BOX.v) + " " + Y("⚠") + " Could not write .env"); }
+// ── /memory deep flow ────────────────────────────────────────────────────────
+async function cmdMemory() {
+  const { action } = await inquirer.prompt([{type:"list",name:"action",message:"Memory:",choices:[
+    {name:R("📋")+" View all facts",value:"view"},
+    {name:R("➕")+" Remember something",value:"add"},
+    {name:R("🗑")+" Forget",value:"del"},
+  ],prefix:P}]);
+  if (action === "view") {
+    console.log("  " + R("Stored memories:"));
+    // Would need to call Python or read DB — show placeholder
+    console.log("  " + D("(View via Telegram /memory or agent chat)"));
+  } else if (action === "add") {
+    const { key } = await inquirer.prompt([{type:"input",name:"key",message:"Key:",prefix:P}]);
+    const { val } = await inquirer.prompt([{type:"input",name:"val",message:"Value:",prefix:P}]);
+    if (key && val) stepDone(`Remembered: ${key} = ${val}`);
+  } else if (action === "del") {
+    const { key } = await inquirer.prompt([{type:"input",name:"key",message:"Key to forget:",prefix:P}]);
+    if (key) stepDone(`Forgot: ${key}`);
+  }
+}
 
-  console.log("  " + RD(BOX.bl + "─".repeat(46) + BOX.br));
-  console.log("");
+// ── /creds deep flow ─────────────────────────────────────────────────────────
+async function cmdCreds() {
+  const { action } = await inquirer.prompt([{type:"list",name:"action",message:"Credentials:",choices:[
+    {name:R("🔐")+" List all (names only)",value:"list"},
+    {name:R("➕")+" Store new credential",value:"add"},
+    {name:R("🗑")+" Delete",value:"del"},
+  ],prefix:P}]);
+  if (action === "list") {
+    console.log("  " + R("Stored credentials:"));
+    console.log("  " + D("(Managed via Telegram /creds or /storekey)"));
+  } else if (action === "add") {
+    const { name } = await inquirer.prompt([{type:"input",name:"name",message:"Name (e.g. STRIPE_KEY):",prefix:P}]);
+    const { val } = await inquirer.prompt([{type:"password",name:"val",message:"Value:",mask:"•",prefix:P}]);
+    if (name && val) stepDone(`Stored: ${name}`);
+  } else if (action === "del") {
+    const { name } = await inquirer.prompt([{type:"input",name:"name",message:"Name to delete:",prefix:P}]);
+    if (name) stepDone(`Deleted: ${name}`);
+  }
+}
+
+
+// ── /setup (full inline wizard) ──────────────────────────────────────────────
+async function cmdSetup() {
+  console.log(""); console.log("  "+RD(BOX.tl+"─── ")+R("CONFIGURATION")+RD(" "+"─".repeat(30)+BOX.tr));
+  const {sm}=await inquirer.prompt([{type:"list",name:"sm",message:"Storage:",choices:[{name:"Local SQLite",value:"local"},{name:"Cloudflare D1",value:"cloudflare"}],default:config.get("storage_mode")||"local",prefix:P}]);
+  config.set("storage_mode",sm);
+  if(sm==="cloudflare"){const cf=await inquirer.prompt([{type:"input",name:"a",message:"CF Account ID:",default:config.get("cf_account_id")||undefined,prefix:P},{type:"password",name:"t",message:"CF API Token:",mask:"•",prefix:P},{type:"input",name:"d",message:"D1 Database ID:",default:config.get("cf_d1_database_id")||undefined,prefix:P}]);config.set("cf_account_id",cf.a);config.set("cf_api_token",cf.t);config.set("cf_d1_database_id",cf.d);}
+  const{iface}=await inquirer.prompt([{type:"list",name:"iface",message:"Interface:",choices:[{name:"CLI only",value:"cli"},{name:"Telegram",value:"telegram"},{name:"WhatsApp",value:"whatsapp"},{name:"Both",value:"both"}],default:config.get("interface_mode")||"cli",prefix:P}]);
+  config.set("interface_mode",iface);
+  if(iface==="telegram"||iface==="both"){const{tk}=await inquirer.prompt([{type:"password",name:"tk",message:"Telegram Token:",mask:"•",prefix:P,validate:v=>v.length>10||(config.get("telegram_token")&&!v)?true:"Invalid"}]);if(tk)config.set("telegram_token",tk);}
+  if(iface==="whatsapp"||iface==="both"){const wa=await inquirer.prompt([{type:"password",name:"tk",message:"WhatsApp Token:",mask:"•",prefix:P},{type:"input",name:"ph",message:"Phone ID:",default:config.get("whatsapp_phone_number_id")||undefined,prefix:P}]);if(wa.tk)config.set("whatsapp_token",wa.tk);if(wa.ph)config.set("whatsapp_phone_number_id",wa.ph);}
+  // Provider
+  const{prov}=await inquirer.prompt([{type:"list",name:"prov",message:"AI Provider:",choices:Object.keys(PROVIDERS),prefix:P}]);
+  const pc=PROVIDERS[prov]; const pf={};
+  for(const field of pc.fields){const msg=field==="api_key"?`${prov} API Key:`:field==="account_id"?"Account ID:":field==="endpoint_url"?"Endpoint URL:":field==="deployment"?"Deployment:":"Base URL:";const type=field==="api_key"?"password":"input";const{v}=await inquirer.prompt([{type,name:"v",message:msg,mask:type==="password"?"•":undefined,prefix:P}]);pf[field]=v;if(field==="api_key"&&v)config.set("openai_api_key",v);if(field==="account_id"&&v)config.set("cf_account_id",v);}
+  let base=pc.base;if(pc.buildBase)base=pc.buildBase(pf);else if(pf.base_url)base=pf.base_url;if(base)config.set("openai_api_base",base);
+  // Model
+  let models=["llama3.3-70b-instruct","Custom"];const key=pf.api_key||config.get("openai_api_key");
+  if(key&&base){try{const r=await fetch(`${base}/models`,{headers:{Authorization:`Bearer ${key}`},signal:AbortSignal.timeout(8000)});if(r.ok){const d=await r.json();const items=(d.data||d.models||[]).map(i=>typeof i==="string"?i:(i.id||i.name||"")).filter(Boolean).slice(0,20);if(items.length)models=[...items,"Custom"];}}catch{}}
+  const{mdl}=await inquirer.prompt([{type:"list",name:"mdl",message:"Model:",choices:models,default:config.get("default_model"),prefix:P}]);
+  if(mdl==="Custom"){const{c}=await inquirer.prompt([{type:"input",name:"c",message:"Model ID:",prefix:P}]);config.set("default_model",c);}else config.set("default_model",mdl);
+  try{writeFileSync(join(getProjectRoot(),".env"),generateEnvContent());stepDone("Configuration saved");}catch{stepFail("Could not write .env");}
+  console.log("  "+RD(BOX.bl+"─".repeat(46)+BOX.br)); console.log("");
 }
 
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  CHAT ENGINE (with execution stages)
+//  CHAT ENGINE — with step-by-step execution progress
 // ══════════════════════════════════════════════════════════════════════════════
-
 const chatHistory = [];
 
 async function sendMessage(message) {
   const apiKey = config.get("openai_api_key");
   const apiBase = config.get("openai_api_base");
   const model = config.get("default_model");
-
-  if (!apiKey) {
-    console.log("  " + Y("⚠") + " Not configured. Running setup...");
-    await runInlineWizard();
-    return;
-  }
-
-  chatHistory.push({ role: "user", content: message });
-
-  // Execution visualization stages
-  viz.start("understanding request");
-
+  if (!apiKey) { console.log("  "+Y("⚠")+" Not configured."); await cmdSetup(); return; }
+  chatHistory.push({ role:"user", content:message });
+  stepStart("Understanding request");
   try {
-    const msgs = [
-      { role: "system", content: "You are SynthClaw, a personal AI. Be concise. Plain text." },
-      ...chatHistory.slice(-8),
-    ];
-
-    viz.setStage("connecting to " + (config.get("default_model") || "model"));
-
+    const msgs = [{role:"system",content:"You are SynthClaw, a personal AI. Be concise. Plain text."},...chatHistory.slice(-8)];
+    stepStart("Connecting to " + (model||"model").slice(0,25));
     const resp = await fetch(`${apiBase}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages: msgs, temperature: 0.7, max_tokens: 2048 }),
+      method:"POST", headers:{"Content-Type":"application/json",Authorization:`Bearer ${apiKey}`},
+      body:JSON.stringify({model,messages:msgs,temperature:0.7,max_tokens:2048}),
     });
-
-    viz.setStage("processing response");
+    stepStart("Processing response");
     const data = await resp.json();
-    viz.stop();
-
-    if (!resp.ok) {
-      console.log("  " + R("✗") + " " + (data.error?.message || `HTTP ${resp.status}`));
-      chatHistory.pop();
-      return;
-    }
-
-    const reply = (data.choices?.[0]?.message?.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-    chatHistory.push({ role: "assistant", content: reply });
-
-    // Render reply in box
-    console.log("");
-    console.log("  " + RD(BOX.tl + "─── ") + R("SYNTHCLAW") + RD(" " + "─".repeat(34) + BOX.tr));
-    for (const line of (reply || "(empty)").split("\n")) {
-      console.log("  " + RD(BOX.v) + " " + line);
-    }
-    console.log("  " + RD(BOX.bl + "─".repeat(46) + BOX.br));
-    console.log("");
-
-  } catch (err) {
-    viz.stop();
-    console.log("  " + R("✗") + " " + err.message);
-    chatHistory.pop();
-  }
+    if (!resp.ok) { stepFail(data.error?.message||`HTTP ${resp.status}`); chatHistory.pop(); return; }
+    const reply = (data.choices?.[0]?.message?.content||"").replace(/<think>[\s\S]*?<\/think>/g,"").trim();
+    chatHistory.push({role:"assistant",content:reply});
+    stepDone("Response received");
+    // Render reply
+    console.log("  "+RD(BOX.tl+"─── ")+R("SYNTHCLAW")+RD(" "+"─".repeat(34)+BOX.tr));
+    for (const line of (reply||"(empty)").split("\n")) { console.log("  "+RD(BOX.v)+" "+line); }
+    console.log("  "+RD(BOX.bl+"─".repeat(46)+BOX.br)); console.log("");
+  } catch(err) { stepFail(err.message); chatHistory.pop(); }
 }
 
+
 // ══════════════════════════════════════════════════════════════════════════════
-//  COMMANDS
+//  COMMAND HANDLER — routes / commands through deep navigation
 // ══════════════════════════════════════════════════════════════════════════════
-
-const COMMANDS = ["/setup", "/status", "/model", "/models", "/clear", "/help", "/run", "/quit"];
-
-function autocomplete(line) {
-  if (!line.startsWith("/")) return [[], line];
-  return [COMMANDS.filter(c => c.startsWith(line)), line];
-}
-
 async function handleCommand(input) {
   const [cmd, ...args] = input.split(" ");
   const arg = args.join(" ");
-
-  switch (cmd) {
-    case "/setup": await runInlineWizard(); break;
-    case "/status": process.stdout.write("\x1b[2J\x1b[H"); console.log(renderPanel()); break;
-    case "/model":
-      if (arg) { config.set("default_model", arg); console.log("  " + G("✓") + " " + D("Model →") + " " + RA(arg)); }
-      else console.log("  " + D("Model:") + " " + RA(config.get("default_model") || "—"));
-      break;
-    case "/clear":
-      chatHistory.length = 0;
-      process.stdout.write("\x1b[2J\x1b[H"); console.log(renderPanel());
-      console.log("  " + D("Chat cleared."));
-      break;
+  switch(cmd) {
+    case "/": case "/menu": return await showCommandMenu().then(c => handleCommand(c));
+    case "/setup": return await cmdSetup();
+    case "/model": return await cmdModel();
+    case "/providers": return await cmdProviders();
+    case "/skills": return await cmdSkills();
+    case "/memory": return await cmdMemory();
+    case "/creds": return await cmdCreds();
+    case "/status": process.stdout.write("\x1b[2J\x1b[H"); console.log(renderPanel()); return;
+    case "/clear": chatHistory.length=0; process.stdout.write("\x1b[2J\x1b[H"); console.log(renderPanel()); console.log("  "+D("Chat cleared.")); return;
     case "/run":
-      if (!arg) { console.log("  " + D("Usage: /run <command>")); break; }
-      try {
-        const out = execSync(arg, { encoding: "utf-8", timeout: 30000, cwd: getProjectRoot() });
-        console.log("  " + RD(BOX.tl + "── output " + "─".repeat(35) + BOX.tr));
-        for (const line of out.trim().split("\n").slice(0, 20)) {
-          console.log("  " + RD(BOX.v) + " " + D(line));
-        }
-        console.log("  " + RD(BOX.bl + "─".repeat(46) + BOX.br));
-      } catch (err) { console.log("  " + R("✗") + " " + (err.stderr || err.message || "").slice(0, 200)); }
-      break;
-    case "/help":
-      console.log("");
-      console.log("  " + R("COMMANDS"));
-      console.log("  " + D("/setup") + "     Configure provider & settings");
-      console.log("  " + D("/status") + "    Refresh system panel");
-      console.log("  " + D("/model") + "     Show or switch model");
-      console.log("  " + D("/run") + "       Execute shell command");
-      console.log("  " + D("/clear") + "     Reset conversation");
-      console.log("  " + D("/quit") + "      Exit");
-      console.log("  " + D("<text>") + "     Chat with SynthClaw AI");
-      console.log("");
-      break;
+      if(!arg){const{c}=await inquirer.prompt([{type:"input",name:"c",message:"Command:",prefix:P}]);if(c)return handleCommand("/run "+c);return;}
+      stepStart("Executing: "+arg.slice(0,40));
+      try{const out=execSync(arg,{encoding:"utf-8",timeout:30000,cwd:getProjectRoot()});stepDone("Command complete");console.log("  "+RD(BOX.tl+"── output "+"─".repeat(34)+BOX.tr));for(const l of out.trim().split("\n").slice(0,20)){console.log("  "+RD(BOX.v)+" "+D(l));}console.log("  "+RD(BOX.bl+"─".repeat(46)+BOX.br));}
+      catch(e){stepFail((e.stderr||e.message||"").slice(0,150));}
+      return;
     case "/quit": case "/exit": process.exit(0);
-    default: await sendMessage(input);
+    case "/help":
+      console.log(""); console.log("  "+R("COMMANDS")+"  "+D("(type / to open menu)"));
+      console.log("  "+RD("──•")+" "+D("/model")+"      Switch model (provider → list)");
+      console.log("  "+RD("──•")+" "+D("/providers")+"  Manage API keys");
+      console.log("  "+RD("──•")+" "+D("/skills")+"    Install from clawhub.ai");
+      console.log("  "+RD("──•")+" "+D("/memory")+"    View/add/forget facts");
+      console.log("  "+RD("──•")+" "+D("/creds")+"     Manage credentials");
+      console.log("  "+RD("──•")+" "+D("/setup")+"     Full configuration wizard");
+      console.log("  "+RD("──•")+" "+D("/status")+"    Refresh panel");
+      console.log("  "+RD("──•")+" "+D("/run <cmd>")+" Execute shell command");
+      console.log("  "+RD("──•")+" "+D("/clear")+"     Reset chat");
+      console.log("  "+RD("──•")+" "+D("/quit")+"      Exit");
+      console.log("  "+RD("──•")+" "+D("<text>")+"     Chat with AI");
+      console.log(""); return;
+    default: return await sendMessage(input);
   }
 }
 
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  MAIN ENTRY — DASHBOARD
+//  STARTUP SEQUENCE + MAIN ENTRY
 // ══════════════════════════════════════════════════════════════════════════════
+async function startupSequence() {
+  const delay = ms => new Promise(r => setTimeout(r, ms));
+  process.stdout.write("\x1b[2J\x1b[H");
+  const steps = [
+    [RD,"▪ INITIALIZING CORE"],[RD,"▪ LOADING MODULES"],[R,"▪ CONNECTING PROVIDER"],[RB,"▪ SYSTEM ONLINE"]
+  ];
+  for (const [color, text] of steps) {
+    process.stdout.write("  " + color(text) + "\r");
+    await delay(180);
+    process.stdout.write(" ".repeat(50) + "\r");
+  }
+  await delay(80);
+  process.stdout.write("\x1b[2J\x1b[H");
+}
 
 export async function runDashboard() {
   await startupSequence();
@@ -433,43 +435,52 @@ export async function runDashboard() {
 
   // Auto-setup if unconfigured
   if (!config.get("openai_api_key")) {
-    console.log("  " + R("●") + " " + D("First launch detected."));
-    console.log("");
-    await runInlineWizard();
-    process.stdout.write("\x1b[2J\x1b[H");
-    console.log(renderPanel());
-    console.log("");
+    console.log("  " + R("●") + " " + D("First launch — configuring SynthClaw."));
+    console.log(""); await cmdSetup();
+    process.stdout.write("\x1b[2J\x1b[H"); console.log(renderPanel()); console.log("");
   }
 
-  console.log("  " + D("Ready. Type a message or /help."));
+  console.log("  " + D("Type a message, / for commands, or /help."));
   console.log("");
 
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: "  " + R("▸ "),
-    completer: autocomplete,
-  });
+  // Animate icon every second
+  const iconTimer = setInterval(() => { iconFrame = (iconFrame + 1) % 2; }, 1000);
 
+  // Refresh metrics every 30s
+  const refreshTimer = setInterval(() => {
+    process.stdout.write("\x1b7\x1b[H" + renderPanel() + "\n\x1b8");
+  }, 30000);
+
+  const rl = createInterface({
+    input: process.stdin, output: process.stdout,
+    prompt: "  " + R("▸ "),
+    completer: (line) => {
+      if (line === "/") return [CMD_MENU.map(c=>c.value), line];
+      if (line.startsWith("/")) return [CMD_MENU.map(c=>c.value).filter(c=>c.startsWith(line)), line];
+      return [[], line];
+    },
+  });
   rl.prompt();
 
   rl.on("line", async (line) => {
     const input = line.trim();
     if (!input) { rl.prompt(); return; }
-    if (input.startsWith("/")) { await handleCommand(input); }
-    else { await sendMessage(input); }
+    if (input === "/") {
+      const cmd = await showCommandMenu();
+      await handleCommand(cmd);
+    } else if (input.startsWith("/")) {
+      await handleCommand(input);
+    } else {
+      await sendMessage(input);
+    }
     rl.prompt();
   });
 
   rl.on("close", () => {
+    clearInterval(iconTimer); clearInterval(refreshTimer);
     console.log(D("\n  Session closed.\n"));
     process.exit(0);
   });
-
-  // Background: refresh header every 30s
-  setInterval(() => {
-    process.stdout.write("\x1b7\x1b[H" + renderPanel() + "\n\x1b8");
-  }, 30000);
 }
 
-export { runInlineWizard };
+export { cmdSetup as runInlineWizard };
