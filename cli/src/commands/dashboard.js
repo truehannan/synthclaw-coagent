@@ -6,7 +6,7 @@ import { join } from "path";
 import os from "os";
 import inquirer from "inquirer";
 import { config, generateEnvContent, getProjectRoot } from "../utils.js";
-import { SYNTHCLAW_BLOCK, ICON_FRAME_1, ICON_FRAME_2 } from "../ascii.js";
+import { MASCOT_OPEN, MASCOT_BLINK, WORDMARK, SUBTITLE } from "../ascii.js";
 
 // ── THEME ────────────────────────────────────────────────────────────────────
 const R=chalk.hex("#cc0000"),RB=chalk.hex("#ff1a1a"),RD=chalk.hex("#4d0000");
@@ -29,33 +29,51 @@ const cols = () => process.stdout.columns || 80;
 
 
 // ── HEADER PANEL (fixed at top rows 1-HEADER_H) ─────────────────────────────
-const HEADER_H = 9; // number of rows the header occupies
-let iconFrame = 0;
+const HEADER_H = 11; // number of rows the header occupies
+let blinkState = 0; // 0=open, 1=blink (millisecond blink)
+let blinkTimer = null;
+
+function startBlink() {
+  // Blink every 3 seconds for 150ms
+  blinkTimer = setInterval(() => {
+    blinkState = 1;
+    setTimeout(() => { blinkState = 0; drawHeader(); }, 150);
+    drawHeader();
+  }, 3000);
+}
 
 function drawHeader() {
   const m = getMetrics();
   const w = Math.min(cols(), 76);
   const iw = w - 4;
-  const icon = iconFrame === 0 ? ICON_FRAME_1 : ICON_FRAME_2;
+  const mascot = blinkState === 0 ? MASCOT_OPEN : MASCOT_BLINK;
   const model = config.get("default_model") || "—";
   const prov = (() => { const b=config.get("openai_api_base")||""; if(b.includes("do-ai"))return"DO"; if(b.includes("openai.com"))return"OAI"; if(b.includes("openrouter"))return"OR"; if(b.includes("nvidia"))return"NV"; if(b.includes("huggingface"))return"HF"; if(b.includes("googleapis"))return"GG"; if(b.includes("cloudflare"))return"CF"; if(b.includes("localhost"))return"OLL"; return"?"; })();
   const ready = !!config.get("openai_api_key");
 
   const lines = [];
   lines.push(RD(BX.tl + BX.h.repeat(iw) + BX.tr));
-  // Icon + wordmark (icon is 5 rows, wordmark is 3 rows — offset wordmark down 1)
+
+  // Mascot (5 rows) + Wordmark (3 rows offset) + Subtitle
   for (let i = 0; i < 5; i++) {
-    const ic = icon[i] || "";
-    const sc = SYNTHCLAW_BLOCK[i - 1] || "";
-    // Gap of 3 spaces between icon and text
-    const left = RB(ic.padEnd(17)) + (sc ? "   " + RB(sc) : "");
-    lines.push(RD(BX.v) + " " + left + " ".repeat(Math.max(1, iw - 17 - (sc ? sc.length + 3 : 0) - 1)) + RD(BX.v));
+    const mc = mascot[i] || "";
+    const wm = WORDMARK[i - 1] || "";
+    const sub = i === 4 ? D(SUBTITLE) : "";
+    const left = RB(mc.padEnd(14)) + "  " + (wm ? RB(wm) : sub);
+    lines.push(RD(BX.v) + " " + left + " ".repeat(Math.max(1, iw - 14 - (wm?wm.length+2:sub?SUBTITLE.length+2:0) - 1)) + RD(BX.v));
   }
+
   lines.push(RD(BX.vr + BX.h.repeat(iw) + BX.vl));
-  // Status
+
+  // Status line
   const dot = ready ? G("●") : R("○");
-  const ml = model.length > 24 ? model.slice(0,22)+"…" : model;
-  lines.push(RD(BX.v) + ` ${dot} ${D("MODEL")} ${RA(ml)}  ${D("VIA")} ${RA(prov)}  ${D("CPU")} ${RA(m.cpu+"%")}  ${D("MEM")} ${RA(m.mem+"%")}  ${D("UP")} ${RA(m.uptime)}` + " ".repeat(Math.max(1,iw-65)) + RD(BX.v));
+  const ml = model.length > 20 ? model.slice(0,18)+"…" : model;
+  lines.push(RD(BX.v) + ` ${dot} ${D("MODEL")} ${RA(ml)}  ${D("VIA")} ${RA(prov)}  ${D("CPU")} ${RA(m.cpu+"%")}  ${D("MEM")} ${RA(m.mem+"%")}  ${D("UP")} ${RA(m.uptime)}` + " ".repeat(Math.max(1,iw-62)) + RD(BX.v));
+
+  // Agent Society status line
+  let agentLine = D("  AGENTS: idle");
+  lines.push(RD(BX.v) + ` ${D("SOCIETY")} ${RA("orchestrator")} ${D("\u2192")} ${RA("executor")} ${D("\u2192")} ${RA("reviewer")}` + " ".repeat(Math.max(1,iw-50)) + RD(BX.v));
+
   lines.push(RD(BX.bl + BX.h.repeat(iw) + BX.br));
 
   // Draw at top of screen
@@ -183,6 +201,7 @@ export async function runDashboard() {
 
   // Draw header at top
   drawHeader();
+  startBlink(); // mascot blinks every 3s for 150ms
 
   // Set scroll region: between header and input area
   const scrollTop = HEADER_H + 1;
@@ -192,16 +211,6 @@ export async function runDashboard() {
   // Move cursor into scroll region
   moveTo(scrollTop, 1);
   showCursor();
-
-  // Animate icon tail every second (redraws header in-place)
-  const iconTimer = setInterval(() => {
-    iconFrame = (iconFrame + 1) % 2;
-    // Save cursor, draw header, restore cursor
-    process.stdout.write("\x1b7"); // save
-    drawHeader();
-    process.stdout.write("\x1b8"); // restore
-  }, 1000);
-
   // Draw input border at bottom
   drawInputBorder();
 
@@ -244,7 +253,7 @@ export async function runDashboard() {
   });
 
   rl.on("close", () => {
-    clearInterval(iconTimer);
+    if (blinkTimer) clearInterval(blinkTimer);
     cleanup();
     process.exit(0);
   });

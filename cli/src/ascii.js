@@ -1,25 +1,27 @@
-// SYNTHCLAW block-character wordmark (no trailing I)
-export const SYNTHCLAW_BLOCK = [
+// SynthClaw Agent Society — Mascot (eyes open)
+export const MASCOT_OPEN = [
+  " \u2588\u2580\u258c    \u2590\u2580\u2588",
+  "\u2588\u2584 \u2584    \u2584 \u2584\u2588",
+  "  \u2588\u2584\u2588\u2588\u2588\u2588\u2584\u2588",
+  "\u2588\u2580 \u2580\u2580\u2580\u2580\u2580\u2580 \u2580\u2588",
+  " \u2588\u2584\u258c    \u2590\u2584\u2588",
+];
+
+// Mascot (eyes closed — blink frame)
+export const MASCOT_BLINK = [
+  " \u2588\u2580\u258c    \u2590\u2580\u2588",
+  "\u2588\u2584        \u2584\u2588",
+  "  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
+  "\u2588\u2580 \u2580\u2580\u2580\u2580\u2580\u2580 \u2580\u2588",
+  " \u2588\u2584\u258c    \u2590\u2584\u2588",
+];
+
+// Wordmark
+export const WORDMARK = [
   "\u2588\u2580\u2580 \u2588\u2584\u2588 \u2588\u2584 \u2588 \u2580\u2588\u2580 \u2588 \u2588 \u2588\u2580\u2580 \u2588   \u2588\u2580\u2588 \u2588 \u2588 \u2588 \u2588",
   "\u2580\u2580\u2588  \u2588  \u2588 \u2580\u2588  \u2588  \u2588\u2580\u2588 \u2588   \u2588   \u2588\u2580\u2588 \u2588\u2584\u2588\u2584\u2588  ",
   "\u2580\u2580\u2580  \u2580  \u2580  \u2580  \u2580  \u2580 \u2580 \u2580\u2580\u2580 \u2580\u2580\u2580 \u2580 \u2580 \u2580 \u2580 \u2580  ",
 ];
 
-// Scorpion icon — tail swaps left/right each second
-// Frame 1: tail left
-export const ICON_FRAME_1 = [
-  "       \u2588\u2580\u2588",
-  "         \u2588",
-  "    \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
-  "  \u2588\u2580\u2588\u2584\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2584\u2588\u2580\u2588",
-  "  \u2588\u2584  \u2588     \u2588  \u2584\u2588",
-];
-
-// Frame 2: tail right
-export const ICON_FRAME_2 = [
-  "              \u2588\u2580\u2588",
-  "              \u2588",
-  "    \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
-  "  \u2588\u2580\u2588\u2584\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2584\u2588\u2580\u2588",
-  "  \u2588\u2584  \u2588     \u2588  \u2584\u2588",
-];
+// Subtitle
+export const SUBTITLE = "A G E N T   S O C I E T Y";

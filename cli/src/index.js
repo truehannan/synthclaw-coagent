@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { SYNTHCLAW_BLOCK } from "./ascii.js";
+import { MASCOT_OPEN, WORDMARK, SUBTITLE } from "./ascii.js";
 
 const args = process.argv.slice(2);
 const command = args[0] || ""; // Default: launch dashboard (no command)
@@ -7,12 +7,14 @@ const command = args[0] || ""; // Default: launch dashboard (no command)
 const RED = chalk.hex("#cc0000");
 
 function showBanner() {
-  for (const row of SYNTHCLAW_BLOCK) {
+  for (const row of MASCOT_OPEN) {
     console.log("  " + RED(row));
   }
-  console.log(
-    chalk.dim("  Personal AI Agent — CLI / Telegram / WhatsApp\n")
-  );
+  for (const row of WORDMARK) {
+    console.log("  " + RED(row));
+  }
+  console.log("  " + chalk.dim(SUBTITLE));
+  console.log("");
 }
 
 async function main() {
@@ -135,7 +137,7 @@ async function main() {
 
     case "--version":
     case "-v":
-      console.log("synthclaw v2.0.0");
+      console.log("synthclaw agent-society v3.0.0");
       break;
 
     default:
