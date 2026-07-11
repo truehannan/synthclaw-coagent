@@ -9,7 +9,7 @@ import { config, generateEnvContent, getProjectRoot } from "../utils.js";
 import { MASCOT_OPEN, MASCOT_BLINK, WORDMARK, SUBTITLE } from "../ascii.js";
 
 // ── THEME ────────────────────────────────────────────────────────────────────
-const R=chalk.hex("#cc0000"),RB=chalk.hex("#ff1a1a"),RD=chalk.hex("#4d0000");
+const R=chalk.hex("#cc0000"),RB=chalk.hex("#ff1a1a"),RD=chalk.hex("#e85d04");
 const RA=chalk.hex("#ff3333"),D=chalk.dim,G=chalk.hex("#33ff33"),Y=chalk.hex("#ffaa00");
 const BX={tl:"╭",tr:"╮",bl:"╰",br:"╯",h:"─",v:"│",vr:"├",vl:"┤"};
 const isWin=process.platform==="win32";
@@ -121,6 +121,14 @@ const PFX="  "+RD(BX.v);
 // ── COMMANDS ─────────────────────────────────────────────────────────────────
 const CMD_LIST=[{name:R("⚙")+" Setup",value:"/setup"},{name:R("◎")+" Model",value:"/model"},{name:R("⊞")+" Providers",value:"/providers"},{name:R("◈")+" Skills",value:"/skills"},{name:R("🏛")+" Society",value:"/society"},{name:R("▷")+" Run",value:"/run"},{name:R("◻")+" Clear",value:"/clear"},{name:R("⊘")+" Quit",value:"/quit"}];
 
+// Helper: reset scroll region before interactive prompts, restore after
+async function withMenu(fn) {
+  resetScrollRegion();
+  try { await fn(); } finally {
+    setScrollRegion(HEADER_H + 1, rows() - INPUT_H);
+  }
+}
+
 async function cmdSetup(){console.log("");const{sm}=await inquirer.prompt([{type:"list",name:"sm",message:"Storage:",choices:["Local SQLite","Cloudflare D1"],prefix:PFX}]);config.set("storage_mode",sm.includes("D1")?"cloudflare":"local");if(sm.includes("D1")){const cf=await inquirer.prompt([{type:"input",name:"a",message:"CF Account ID:",prefix:PFX},{type:"password",name:"t",message:"CF Token:",mask:"•",prefix:PFX},{type:"input",name:"d",message:"D1 DB ID:",prefix:PFX}]);config.set("cf_account_id",cf.a);config.set("cf_api_token",cf.t);config.set("cf_d1_database_id",cf.d);}
 const{iface}=await inquirer.prompt([{type:"list",name:"iface",message:"Interface:",choices:["CLI only","Telegram","WhatsApp","Both"],prefix:PFX}]);config.set("interface_mode",{C:"cli",T:"telegram",W:"whatsapp",B:"both"}[iface[0]]||"cli");
 if(iface.includes("T")||iface==="Both"){const{t}=await inquirer.prompt([{type:"password",name:"t",message:"Telegram Token:",mask:"•",prefix:PFX}]);if(t)config.set("telegram_token",t);}
@@ -133,9 +141,9 @@ const{mdl}=await inquirer.prompt([{type:"list",name:"mdl",message:"Model:",choic
 if(mdl==="Custom"){const{c}=await inquirer.prompt([{type:"input",name:"c",message:"Model ID:",prefix:PFX}]);config.set("default_model",c);}else config.set("default_model",mdl);
 try{writeFileSync(join(getProjectRoot(),".env"),generateEnvContent());stepDone("Saved");}catch{stepFail("Write failed");}console.log("");}
 
-async function cmdModel(){if(!config.get("openai_api_key")){await cmdSetup();return;}const{p}=await inquirer.prompt([{type:"list",name:"p",message:"Provider:",choices:Object.keys(PROVIDERS),prefix:PFX}]);stepStart("Fetching models");let models=[];const key=config.get("openai_api_key"),pc=PROVIDERS[p];const base=pc.buildBase?pc.buildBase({account_id:config.get("cf_account_id")}):(pc.base||config.get("openai_api_base"));try{const r=await fetch(`${base}/models`,{headers:{Authorization:`Bearer ${key}`},signal:AbortSignal.timeout(10000)});if(r.ok){const d=await r.json();models=(d.data||d.models||[]).map(i=>typeof i==="string"?i:(i.id||i.name||"")).filter(Boolean).slice(0,30);}}catch{}if(!models.length)models=["llama3.3-70b-instruct"];stepDone(`${models.length} models`);models.push(new inquirer.Separator(),{name:D("Custom..."),value:"__c__"});const{m}=await inquirer.prompt([{type:"list",name:"m",message:"Model:",choices:models,pageSize:15,prefix:PFX}]);if(m==="__c__"){const{c}=await inquirer.prompt([{type:"input",name:"c",message:"ID:",prefix:PFX}]);config.set("default_model",c);}else config.set("default_model",m);stepDone(config.get("default_model"));}
-async function cmdProviders(){const{p}=await inquirer.prompt([{type:"list",name:"p",message:"Provider:",choices:Object.keys(PROVIDERS),prefix:PFX}]);const pc=PROVIDERS[p];if(!pc.fields.length){console.log("  "+D("No config needed."));return;}const pf={};for(const f of pc.fields){const tp=f==="api_key"?"password":"input";const{v}=await inquirer.prompt([{type:tp,name:"v",message:f==="api_key"?`${p} Key:`:"Value:",mask:tp==="password"?"•":undefined,prefix:PFX}]);pf[f]=v;if(f==="api_key"&&v)config.set("openai_api_key",v);if(f==="account_id"&&v)config.set("cf_account_id",v);}let base=pc.base;if(pc.buildBase)base=pc.buildBase(pf);else if(pf.base_url)base=pf.base_url;if(base)config.set("openai_api_base",base);stepDone(`${p} configured`);try{writeFileSync(join(getProjectRoot(),".env"),generateEnvContent());}catch{}}
-async function cmdSkills(){const{a}=await inquirer.prompt([{type:"list",name:"a",message:"Skills:",choices:["Install @user/skill","List","Remove"],prefix:PFX}]);if(a.startsWith("I")){const{p}=await inquirer.prompt([{type:"input",name:"p",message:"@user/skill:",prefix:PFX}]);if(p)stepDone(`${p} installed`);}else console.log("  "+D("Managed via Telegram /skills"));}
+async function cmdModel(){await withMenu(async()=>{if(!config.get("openai_api_key")){await cmdSetup();return;}const{p}=await inquirer.prompt([{type:"list",name:"p",message:"Provider:",choices:Object.keys(PROVIDERS),prefix:PFX}]);stepStart("Fetching models");let models=[];const key=config.get("openai_api_key"),pc=PROVIDERS[p];const base=pc.buildBase?pc.buildBase({account_id:config.get("cf_account_id")}):(pc.base||config.get("openai_api_base"));try{const r=await fetch(`${base}/models`,{headers:{Authorization:`Bearer ${key}`},signal:AbortSignal.timeout(10000)});if(r.ok){const d=await r.json();models=(d.data||d.models||[]).map(i=>typeof i==="string"?i:(i.id||i.name||"")).filter(Boolean).slice(0,30);}}catch{}if(!models.length)models=["llama3.3-70b-instruct"];stepDone(`${models.length} models`);models.push(new inquirer.Separator(),{name:D("Custom..."),value:"__c__"});const{m}=await inquirer.prompt([{type:"list",name:"m",message:"Model:",choices:models,pageSize:15,prefix:PFX}]);if(m==="__c__"){const{c}=await inquirer.prompt([{type:"input",name:"c",message:"ID:",prefix:PFX}]);config.set("default_model",c);}else config.set("default_model",m);stepDone(config.get("default_model"));});}
+async function cmdProviders(){await withMenu(async()=>{const{p}=await inquirer.prompt([{type:"list",name:"p",message:"Provider:",choices:Object.keys(PROVIDERS),prefix:PFX}]);const pc=PROVIDERS[p];if(!pc.fields.length){console.log("  "+D("No config needed."));return;}const pf={};for(const f of pc.fields){const tp=f==="api_key"?"password":"input";const{v}=await inquirer.prompt([{type:tp,name:"v",message:f==="api_key"?`${p} Key:`:"Value:",mask:tp==="password"?"•":undefined,prefix:PFX}]);pf[f]=v;if(f==="api_key"&&v)config.set("openai_api_key",v);if(f==="account_id"&&v)config.set("cf_account_id",v);}let base=pc.base;if(pc.buildBase)base=pc.buildBase(pf);else if(pf.base_url)base=pf.base_url;if(base)config.set("openai_api_base",base);stepDone(`${p} configured`);try{writeFileSync(join(getProjectRoot(),".env"),generateEnvContent());}catch{}});}
+async function cmdSkills(){await withMenu(async()=>{const{a}=await inquirer.prompt([{type:"list",name:"a",message:"Skills:",choices:["Install @user/skill","List","Remove"],prefix:PFX}]);if(a.startsWith("I")){const{p}=await inquirer.prompt([{type:"input",name:"p",message:"@user/skill:",prefix:PFX}]);if(p)stepDone(`${p} installed`);}else console.log("  "+D("Managed via Telegram /skills"));});}
 async function cmdMemory(){console.log("  "+D("Use Telegram /memory for full access."));}
 async function cmdCreds(){console.log("  "+D("Use Telegram /creds for full access."));}
 
@@ -237,11 +245,12 @@ export async function runDashboard() {
   console.log("  " + D("Ready. Type / for commands, or chat."));
   console.log("");
 
-  // Readline for input
+  // Readline for input — prompt with visible orange border
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
     prompt: "  " + RD(BX.v) + " " + R("\u25b8") + " ",
+    terminal: true,
   });
   rl.prompt();
 
@@ -249,10 +258,14 @@ export async function runDashboard() {
     const input = line.trim();
     if (!input) { rl.prompt(); return; }
     if (input === "/") {
+      // Reset scroll region so inquirer renders correctly
+      resetScrollRegion();
       const { c } = await inquirer.prompt([{
-        type: "list", name: "c", message: R("\u25b8"),
+        type: "list", name: "c", message: R("\u25b8") + " " + D("Command:"),
         choices: CMD_LIST, pageSize: 11,
       }]);
+      // Restore scroll region after menu closes
+      setScrollRegion(HEADER_H + 1, rows() - INPUT_H);
       await handleCmd(c);
     } else if (input.startsWith("/")) {
       await handleCmd(input);
