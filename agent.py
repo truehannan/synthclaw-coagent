@@ -21,6 +21,7 @@ from agents import (
     SharedContext, registry, should_delegate, parse_plan,
     get_role_prompt, get_society_status, reset_society,
     ORCHESTRATOR_PROMPT, EXECUTOR_PROMPT, RESEARCHER_PROMPT, REVIEWER_PROMPT,
+    OBSERVER_PROMPT,
 )
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -61,9 +62,12 @@ _auto_reinstall_skills()
 client = OpenAI(api_key=cfg.OPENAI_API_KEY, base_url=cfg.OPENAI_API_BASE)
 CLIENT_CACHE: dict[tuple[str, str], OpenAI] = {}
 
-# Active task tracking — allows /stop to interrupt a running agent loop
+# Active task tracking -- allows /stop to interrupt a running agent loop
 ACTIVE_TASKS: dict[int, bool] = {}  # chat_id -> is_running
 RUNNING_TASKS: dict[int, asyncio.Task] = {}  # chat_id -> current handler task
+
+# Pending approvals for dangerous operations
+PENDING_APPROVALS: dict[int, dict] = {}  # chat_id -> {"task": str, "agent_id": str, "context": ...}
 
 # Sentinel returned by run_agent when it saves state and pauses for user input
 CHECKPOINT_SIGNAL = "__CHECKPOINT__"
@@ -1007,6 +1011,25 @@ def get_current_model() -> str:
 
 # ── Agent Society delegation ──────────────────────────────────────────────────
 
+async def _wait_for_approval(chat_id: int, timeout: int = 300) -> bool:
+    """Poll PENDING_APPROVALS until user sends /approve or /deny, or timeout."""
+    start = time.time()
+    while time.time() - start < timeout:
+        if chat_id not in PENDING_APPROVALS:
+            # Approval was resolved (approved or denied)
+            return True  # approved
+        if PENDING_APPROVALS.get(chat_id, {}).get("denied"):
+            PENDING_APPROVALS.pop(chat_id, None)
+            return False
+        if PENDING_APPROVALS.get(chat_id, {}).get("approved"):
+            PENDING_APPROVALS.pop(chat_id, None)
+            return True
+        await asyncio.sleep(1)
+    # Timeout = deny
+    PENDING_APPROVALS.pop(chat_id, None)
+    return False
+
+
 async def _run_society_task(
     chat_id: int,
     user_message: str,
@@ -1163,8 +1186,40 @@ async def _run_society_task(
                     result_text = result_text[:2800] + "\n...[truncated]"
                 agent_messages.append({"role": "user", "content": f"<tool_result>\n{result_text}\n</tool_result>\nContinue. If done, give final summary."})
             else:
-                # No tool calls — agent finished
+                # No tool calls -- agent finished
                 agent_result = _strip_internal_markup(reply)
+                # Check for approval request from executor
+                if "AWAITING_APPROVAL" in reply.upper():
+                    PENDING_APPROVALS[chat_id] = {
+                        "task": step_task,
+                        "agent_id": agent.id,
+                        "description": agent_result,
+                        "context": context,
+                        "model": model,
+                    }
+                    registry.update(agent.id, AgentStatus.WAITING, "awaiting user approval")
+                    if send_fn:
+                        try:
+                            await send_fn(
+                                f"\u26a0\ufe0f **Approval Required**\n\n"
+                                f"{agent_result}\n\n"
+                                f"Reply /approve to proceed or /deny to cancel."
+                            )
+                        except Exception:
+                            pass
+                    # Wait for approval (poll for up to 5 minutes)
+                    approved = await _wait_for_approval(chat_id, timeout=300)
+                    if not approved:
+                        agent_result = "DENIED: Operation cancelled by user."
+                        registry.update(agent.id, AgentStatus.FAILED, "denied by user")
+                    else:
+                        # Re-run without the dangerous check preamble
+                        agent_result = "APPROVED: Proceeding with operation."
+                        registry.update(agent.id, AgentStatus.EXECUTING)
+                        # Continue loop for execution
+                        agent_messages.append({"role": "assistant", "content": reply})
+                        agent_messages.append({"role": "user", "content": "User APPROVED. Proceed with the operation NOW. Execute it."})
+                        continue
                 break
 
         # Record result
@@ -1177,7 +1232,41 @@ async def _run_society_task(
 
         registry.update(agent.id, AgentStatus.COMPLETED, agent_result[:200])
 
-    # Step 3: Compile final response
+    # Step 3: Observer validation
+    if ACTIVE_TASKS.get(chat_id, True):
+        observer = registry.spawn(AgentRole.OBSERVER, "Observer", task="Validate execution", parent_id=orch.id)
+        registry.update(observer.id, AgentStatus.OBSERVING)
+
+        if send_fn:
+            try:
+                await send_fn("  \u2500\u2500\u2022 [observer] Validating execution results...")
+            except Exception:
+                pass
+
+        observer_prompt = get_role_prompt(AgentRole.OBSERVER, context)
+        observer_messages = [
+            {"role": "system", "content": observer_prompt},
+            {"role": "user", "content": f"Validate the execution of this task:\n\nOriginal objective: {user_message}\n\nContext summary: {context.to_summary()}"},
+        ]
+
+        try:
+            obs_response = await _llm_call(
+                model=model, messages=observer_messages, temperature=0.3, max_tokens=1024,
+            )
+            obs_reply = (obs_response.choices[0].message.content or "").strip()
+            context.add_observation(obs_reply)
+            registry.update(observer.id, AgentStatus.COMPLETED, obs_reply[:200])
+
+            if send_fn and "CRITICAL" in obs_reply.upper():
+                try:
+                    await send_fn(f"\u26a0\ufe0f Observer: {obs_reply[:200]}")
+                except Exception:
+                    pass
+        except Exception as e:
+            registry.update(observer.id, AgentStatus.FAILED, str(e))
+            context.add_observation(f"Observer failed: {e}")
+
+    # Step 4: Compile final response
     final_parts = []
     if context.findings:
         for f in context.findings:
@@ -1188,8 +1277,12 @@ async def _run_society_task(
     if context.reviews:
         for rv in context.reviews:
             final_parts.append(f"Review: {rv}")
+    if context.observations:
+        # Only include observer note if there are issues
+        for obs in context.observations:
+            if "ISSUES" in obs.upper() or "CRITICAL" in obs.upper():
+                final_parts.append(f"\u26a0\ufe0f Observer: {obs}")
 
-    # If we have a reviewer result, use that as primary
     final_text = "\n\n".join(final_parts) if final_parts else "Task completed."
 
     # Truncate if too long
@@ -2259,9 +2352,33 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _task_set(chat_id, status="stopping", phase="stop_requested")
         if task and not task.done():
             task.cancel()
-        await update.message.reply_text("🛑 Stopping current task...")
+        await update.message.reply_text("\U0001f6d1 Stopping current task...")
         return
     await update.message.reply_text("No task is currently running.")
+
+
+async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Approve a pending dangerous operation."""
+    if not is_owner(update.effective_user.id):
+        return
+    chat_id = update.effective_chat.id
+    if chat_id in PENDING_APPROVALS:
+        PENDING_APPROVALS[chat_id]["approved"] = True
+        await update.message.reply_text("\u2705 Approved. Proceeding with operation...")
+    else:
+        await update.message.reply_text("No pending approval to approve.")
+
+
+async def cmd_deny(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Deny a pending dangerous operation."""
+    if not is_owner(update.effective_user.id):
+        return
+    chat_id = update.effective_chat.id
+    if chat_id in PENDING_APPROVALS:
+        PENDING_APPROVALS[chat_id]["denied"] = True
+        await update.message.reply_text("\u274c Denied. Operation cancelled.")
+    else:
+        await update.message.reply_text("No pending approval to deny.")
 
 
 async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3250,6 +3367,8 @@ def main():
     app.add_handler(CommandHandler("update",  cmd_update))
     app.add_handler(CommandHandler("task",    cmd_task))
     app.add_handler(CommandHandler("stop",    cmd_stop))
+    app.add_handler(CommandHandler("approve", cmd_approve))
+    app.add_handler(CommandHandler("deny",    cmd_deny))
     app.add_handler(CommandHandler("plan",    cmd_plan))
     app.add_handler(CommandHandler("agent",   cmd_agent))
     app.add_handler(CommandHandler("skills",  cmd_skills))

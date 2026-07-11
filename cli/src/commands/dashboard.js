@@ -16,14 +16,32 @@ const isWin=process.platform==="win32";
 
 // ── ANSI TERMINAL CONTROL ────────────────────────────────────────────────────
 const ESC = "\x1b[";
-const enterAltScreen = () => process.stdout.write("\x1b[?1049h");
-const leaveAltScreen = () => process.stdout.write("\x1b[?1049l");
+
+// Detect if the terminal supports alternate screen (modern terminal emulators)
+// Old cmd.exe on Windows doesn't support it; ConPTY-based terminals (Windows Terminal, VS Code) do.
+const supportsAltScreen = (() => {
+  if (!process.stdout.isTTY) return false;
+  // Windows: check if running inside Windows Terminal or modern ConPTY
+  if (isWin) {
+    // WT_SESSION is set by Windows Terminal, TERM_PROGRAM by VS Code terminal
+    if (process.env.WT_SESSION || process.env.TERM_PROGRAM || process.env.TERMINAL_EMULATOR) return true;
+    // ConEmu, cmder, etc.
+    if (process.env.ConEmuPID || process.env.CMDER_ROOT) return true;
+    // Legacy cmd.exe or PowerShell without ConPTY — no alt screen
+    return false;
+  }
+  // Unix/macOS: virtually all terminals support alt screen
+  return true;
+})();
+
+const enterAltScreen = () => { if (supportsAltScreen) process.stdout.write("\x1b[?1049h"); };
+const leaveAltScreen = () => { if (supportsAltScreen) process.stdout.write("\x1b[?1049l"); };
 const hideCursor = () => process.stdout.write(ESC + "?25l");
 const showCursor = () => process.stdout.write(ESC + "?25h");
-const moveTo = (row, col) => process.stdout.write(`${ESC}${row};${col}H`);
+const moveTo = (row, col) => { if (supportsAltScreen) process.stdout.write(`${ESC}${row};${col}H`); };
 const clearLine = () => process.stdout.write(ESC + "2K");
-const setScrollRegion = (top, bottom) => process.stdout.write(`${ESC}${top};${bottom}r`);
-const resetScrollRegion = () => process.stdout.write(ESC + "r");
+const setScrollRegion = (top, bottom) => { if (supportsAltScreen) process.stdout.write(`${ESC}${top};${bottom}r`); };
+const resetScrollRegion = () => { if (supportsAltScreen) process.stdout.write(ESC + "r"); };
 const rows = () => process.stdout.rows || 24;
 const cols = () => process.stdout.columns || 80;
 
@@ -47,7 +65,7 @@ function drawHeader() {
   const w = Math.min(cols(), 76);
   const iw = w - 4;
   const mascot = blinkState === 0 ? MASCOT_OPEN : MASCOT_BLINK;
-  const model = config.get("default_model") || "—";
+  const model = config.get("default_model") || "\u2014";
   const prov = (() => { const b=config.get("openai_api_base")||""; if(b.includes("do-ai"))return"DO"; if(b.includes("openai.com"))return"OAI"; if(b.includes("openrouter"))return"OR"; if(b.includes("nvidia"))return"NV"; if(b.includes("huggingface"))return"HF"; if(b.includes("googleapis"))return"GG"; if(b.includes("cloudflare"))return"CF"; if(b.includes("localhost"))return"OLL"; return"?"; })();
   const ready = !!config.get("openai_api_key");
 
@@ -66,22 +84,29 @@ function drawHeader() {
   lines.push(RD(BX.vr + BX.h.repeat(iw) + BX.vl));
 
   // Status line
-  const dot = ready ? G("●") : R("○");
-  const ml = model.length > 20 ? model.slice(0,18)+"…" : model;
+  const dot = ready ? G("\u25cf") : R("\u25cb");
+  const ml = model.length > 20 ? model.slice(0,18)+"\u2026" : model;
   lines.push(RD(BX.v) + ` ${dot} ${D("MODEL")} ${RA(ml)}  ${D("VIA")} ${RA(prov)}  ${D("CPU")} ${RA(m.cpu+"%")}  ${D("MEM")} ${RA(m.mem+"%")}  ${D("UP")} ${RA(m.uptime)}` + " ".repeat(Math.max(1,iw-62)) + RD(BX.v));
 
   // Agent Society status line
-  let agentLine = D("  AGENTS: idle");
-  lines.push(RD(BX.v) + ` ${D("SOCIETY")} ${RA("orchestrator")} ${D("\u2192")} ${RA("executor")} ${D("\u2192")} ${RA("reviewer")}` + " ".repeat(Math.max(1,iw-50)) + RD(BX.v));
+  lines.push(RD(BX.v) + ` ${D("SOCIETY")} ${RA("orchestrator")} ${D("\u2192")} ${RA("executor")} ${D("\u2192")} ${RA("reviewer")} ${D("\u2192")} ${RA("observer")}` + " ".repeat(Math.max(1,iw-58)) + RD(BX.v));
 
   lines.push(RD(BX.bl + BX.h.repeat(iw) + BX.br));
 
-  // Draw at top of screen
-  moveTo(1, 1);
-  for (let i = 0; i < lines.length; i++) {
-    moveTo(i + 1, 1);
-    clearLine();
-    process.stdout.write("  " + lines[i]);
+  if (supportsAltScreen) {
+    // Draw at top of screen (alternate screen mode)
+    moveTo(1, 1);
+    for (let i = 0; i < lines.length; i++) {
+      moveTo(i + 1, 1);
+      clearLine();
+      process.stdout.write("  " + lines[i]);
+    }
+  } else {
+    // Fallback: just print the header (no cursor positioning)
+    console.clear();
+    for (const line of lines) {
+      console.log("  " + line);
+    }
   }
 }
 
@@ -184,7 +209,8 @@ async function handleCmd(input){
       console.log("  "+RD("──•")+" "+RA("Orchestrator")+" "+D("[idle]")+"  plans + delegates");
       console.log("  "+RD("  ├─")+" "+RA("Researcher")+"  "+D("[idle]")+"  gathers info");
       console.log("  "+RD("  ├─")+" "+RA("Executor")+"    "+D("[idle]")+"  runs commands");
-      console.log("  "+RD("  └─")+" "+RA("Reviewer")+"    "+D("[idle]")+"  validates results");
+      console.log("  "+RD("  ├─")+" "+RA("Reviewer")+"    "+D("[idle]")+"  validates results");
+      console.log("  "+RD("  └─")+" "+RA("Observer")+"    "+D("[idle]")+"  monitors execution");
       console.log("  "+D("Complex tasks auto-delegate. Use /delegate <task> to force."));
       console.log(""); return;
     case"/delegate":if(!arg)return sendMessage(input);return sendMessage("[DELEGATE] "+arg);
@@ -211,7 +237,9 @@ function cleanup() {
 export async function runDashboard() {
   // Enter alternate screen buffer (like nano/vim — previous CLI hidden)
   enterAltScreen();
-  process.stdout.write(ESC + "2J"); // clear alternate screen
+  if (supportsAltScreen) {
+    process.stdout.write(ESC + "2J"); // clear alternate screen
+  }
 
   // Handle exit gracefully
   process.on("exit", cleanup);
@@ -221,21 +249,27 @@ export async function runDashboard() {
   drawHeader();
   startBlink(); // mascot blinks every 3s for 150ms
 
-  // Set scroll region: between header and input area
-  const scrollTop = HEADER_H + 1;
-  const scrollBottom = rows() - INPUT_H;
-  setScrollRegion(scrollTop, scrollBottom);
+  if (supportsAltScreen) {
+    // Set scroll region: between header and input area
+    const scrollTop = HEADER_H + 1;
+    const scrollBottom = rows() - INPUT_H;
+    setScrollRegion(scrollTop, scrollBottom);
 
-  // Move cursor into scroll region
-  moveTo(scrollTop, 1);
-  showCursor();
-  // Draw input border at bottom
-  drawInputBorder();
+    // Move cursor into scroll region
+    moveTo(scrollTop, 1);
+    showCursor();
+    // Draw input border at bottom
+    drawInputBorder();
+  } else {
+    // Fallback: just show cursor, no scroll regions
+    showCursor();
+    console.log("");
+  }
 
   // Auto-setup if unconfigured
-  moveTo(scrollTop, 1);
+  if (supportsAltScreen) moveTo(HEADER_H + 1, 1);
   if (!config.get("openai_api_key")) {
-    console.log("  " + R("●") + " First run. Configuring...");
+    console.log("  " + R("\u25cf") + " First run. Configuring...");
     console.log("");
     await cmdSetup();
     // Redraw header with new config
