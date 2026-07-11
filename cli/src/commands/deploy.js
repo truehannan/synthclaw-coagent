@@ -2,11 +2,14 @@ import chalk from "chalk";
 import ora from "ora";
 import inquirer from "inquirer";
 import { execSync } from "child_process";
+import { existsSync, writeFileSync } from "fs";
+import { join } from "path";
 import { config, getProjectRoot, generateEnvContent, printSuccess, printError, printInfo } from "../utils.js";
 
 const RD = chalk.hex("#e85d04");
 const R = chalk.hex("#cc0000");
 const D = chalk.dim;
+const isWin = process.platform === "win32";
 
 export async function runDeploy(args) {
   let host = config.get("remote_host");
@@ -40,6 +43,7 @@ export async function runDeploy(args) {
       { name: `IP only — http://${host}:3000`, value: "ip" },
       { name: `Domain — https://your-domain.com`, value: "domain" },
       { name: `Path — http://${host}/path`, value: "path" },
+      { name: `Localhost — http://localhost:3000 (local dev/personal)`, value: "localhost" },
     ],
   }]);
 
@@ -56,6 +60,9 @@ export async function runDeploy(args) {
   } else if (deployMode === "path") {
     const { p } = await inquirer.prompt([{ type: "input", name: "p", message: "Path (e.g. /agent):", default: "/agent" }]);
     basePath = p.startsWith("/") ? p : "/" + p;
+  } else if (deployMode === "localhost") {
+    // Localhost mode — run everything locally, no SSH
+    return await deployLocalhost(root);
   }
 
   config.set("deploy_mode", deployMode);
@@ -209,6 +216,182 @@ export async function runDeploy(args) {
   console.log("");
   printInfo("API token is stored at: " + baseDir + "/.api_token");
   printInfo("Use that token to login to the web interface.");
+  console.log("");
+  console.log(D("  synthclaw status   — check status"));
+  console.log(D("  synthclaw logs     — view logs"));
+  console.log(D("  synthclaw stop     — stop the agent"));
+  console.log("");
+}
+
+// ── Localhost deployment ──────────────────────────────────────────────────────
+
+async function deployLocalhost(root) {
+  console.log("");
+  console.log(chalk.bold("  Deploying SynthClaw locally..."));
+  console.log("");
+
+  // Step 1: Install Python dependencies
+  const spinner1 = ora("Installing Python dependencies...").start();
+  try {
+    execSync(`cd "${root}" && python3 -m pip install -r requirements.txt -q`, {
+      encoding: "utf-8", timeout: 300000, stdio: ["pipe", "pipe", "pipe"],
+    });
+    spinner1.succeed("Python dependencies installed");
+  } catch (err) {
+    spinner1.warn("Some deps may have failed — continuing");
+    printInfo((err.stderr || "").slice(0, 100));
+  }
+
+  // Step 2: Build frontend
+  const spinner2 = ora("Building frontend...").start();
+  try {
+    const frontendDir = join(root, "frontend");
+    if (existsSync(join(frontendDir, "package.json"))) {
+      execSync(`cd "${frontendDir}" && npm install --silent 2>/dev/null`, { encoding: "utf-8", timeout: 120000, stdio: ["pipe", "pipe", "pipe"] });
+      execSync(`cd "${frontendDir}" && npx vite build`, { encoding: "utf-8", timeout: 120000, stdio: ["pipe", "pipe", "pipe"] });
+      spinner2.succeed("Frontend built → frontend/dist/");
+    } else {
+      spinner2.warn("No frontend/package.json found — skipping");
+    }
+  } catch (err) {
+    spinner2.fail("Frontend build failed");
+    printError((err.stderr || err.message || "").slice(0, 120));
+    printInfo("Try manually: cd frontend && npm install && npx vite build");
+  }
+
+  // Step 3: Generate .env if missing
+  const envPath = join(root, ".env");
+  if (!existsSync(envPath)) {
+    const spinner3 = ora("Generating .env...").start();
+    try {
+      let envContent = generateEnvContent();
+      envContent += `\nSYNTHCLAW_API_PORT=8000\nSYNTHCLAW_API_HOST=127.0.0.1\nSYNTHCLAW_BASE_DIR=${root}\n`;
+      writeFileSync(envPath, envContent);
+      spinner3.succeed(".env created");
+    } catch (err) {
+      spinner3.fail(".env generation failed");
+    }
+  } else {
+    printSuccess(".env already exists — keeping current config");
+  }
+
+  // Step 4: Setup nginx for localhost (optional — can just use Vite proxy)
+  const { useNginx } = await inquirer.prompt([{
+    type: "confirm",
+    name: "useNginx",
+    message: "Set up nginx on localhost? (No = use API directly on :8000, frontend on :3000)",
+    default: false,
+  }]);
+
+  if (useNginx) {
+    const spinner4 = ora("Configuring nginx for localhost...").start();
+    try {
+      const nginxConf = `server {
+    listen 3000;
+    server_name localhost;
+    root ${root}/frontend/dist;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_buffering off;
+    }
+}
+`;
+      const confPath = isWin ? join(root, "nginx-localhost.conf") : "/etc/nginx/sites-available/synthclaw-local";
+      if (isWin) {
+        writeFileSync(confPath, nginxConf);
+        spinner4.succeed(`Nginx config written to ${confPath}`);
+        printInfo("Add this to your nginx.conf manually (Windows)");
+      } else {
+        writeFileSync(confPath, nginxConf);
+        try {
+          execSync(`ln -sf ${confPath} /etc/nginx/sites-enabled/synthclaw-local && nginx -t 2>/dev/null && systemctl reload nginx`, {
+            encoding: "utf-8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"],
+          });
+          spinner4.succeed("Nginx configured on localhost:3000");
+        } catch {
+          spinner4.warn("Nginx config written but couldn't reload (need sudo?)");
+          printInfo(`Config at: ${confPath}`);
+        }
+      }
+    } catch (err) {
+      spinner4.fail("Nginx setup failed");
+    }
+  }
+
+  // Step 5: Start the agent
+  const { startNow } = await inquirer.prompt([{
+    type: "confirm",
+    name: "startNow",
+    message: "Start the agent now?",
+    default: true,
+  }]);
+
+  if (startNow) {
+    const spinner5 = ora("Starting agent...").start();
+    try {
+      // Check if already running
+      try {
+        const pid = execSync(`cat "${join(root, "agent.pid")}" 2>/dev/null`, { encoding: "utf-8" }).trim();
+        if (pid) {
+          try { process.kill(parseInt(pid), 0); execSync(`kill ${pid} 2>/dev/null`); } catch {}
+        }
+      } catch {}
+
+      // Start in background
+      const cmd = isWin
+        ? `start /b python "${join(root, "main.py")}" > "${join(root, "agent.log")}" 2>&1`
+        : `cd "${root}" && nohup python3 main.py >> agent.log 2>&1 & echo $! > agent.pid`;
+
+      execSync(cmd, { encoding: "utf-8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"], shell: true });
+      await new Promise(r => setTimeout(r, 2000));
+
+      // Verify it started
+      try {
+        const resp = await fetch("http://127.0.0.1:8000/api/system/health", { signal: AbortSignal.timeout(3000) });
+        if (resp.ok) {
+          spinner5.succeed("Agent is running!");
+        } else {
+          spinner5.warn("Agent started but health check failed");
+        }
+      } catch {
+        spinner5.warn("Agent started (health check timed out — may still be initializing)");
+      }
+    } catch (err) {
+      spinner5.fail("Could not start agent");
+      printError(err.message?.slice(0, 120));
+      printInfo(`Start manually: cd ${root} && python3 main.py`);
+    }
+  }
+
+  // ── Summary ──────────────────────────────────────────────────────────────
+  console.log("");
+  console.log(RD("━".repeat(54)));
+  console.log(chalk.bold("  ✓ LOCAL DEPLOYMENT COMPLETE"));
+  console.log(RD("━".repeat(54)));
+  console.log("");
+
+  if (useNginx) {
+    printSuccess("Frontend: http://localhost:3000");
+    printSuccess("API:      http://localhost:3000/api");
+  } else {
+    printSuccess("API:      http://localhost:8000");
+    printSuccess("Frontend: http://localhost:3000 (run: cd frontend && npx vite)");
+    printInfo("Or serve the built frontend: npx serve frontend/dist -l 3000");
+  }
+
+  console.log("");
+  printInfo("API token is in: " + join(root, ".api_token"));
+  printInfo("Logs: " + join(root, "agent.log"));
   console.log("");
   console.log(D("  synthclaw status   — check status"));
   console.log(D("  synthclaw logs     — view logs"));
