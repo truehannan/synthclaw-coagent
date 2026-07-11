@@ -16,6 +16,12 @@ from telegram.ext import (
 import memory as mem
 from tools import execute_tool, get_tools_description, get_tools_for_groups, detect_intent_groups, TOOL_REGISTRY
 import config as cfg
+from agents import (
+    AgentRole, AgentStatus, AgentInstance, AgentRegistry,
+    SharedContext, registry, should_delegate, parse_plan,
+    get_role_prompt, get_society_status, reset_society,
+    ORCHESTRATOR_PROMPT, EXECUTOR_PROMPT, RESEARCHER_PROMPT, REVIEWER_PROMPT,
+)
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 
@@ -999,6 +1005,206 @@ def get_current_model() -> str:
     return mem.get_config("current_model", cfg.DEFAULT_MODEL)
 
 
+# ── Agent Society delegation ──────────────────────────────────────────────────
+
+async def _run_society_task(
+    chat_id: int,
+    user_message: str,
+    model: str,
+    send_fn=None,
+) -> tuple[str, list[dict]]:
+    """Multi-agent delegated execution.
+
+    Flow:
+    1. Orchestrator analyzes task → outputs <plan> with steps
+    2. Each step is executed by the appropriate agent (researcher/executor/reviewer)
+    3. Results collected in SharedContext
+    4. Final summary returned to user
+
+    Returns (reply_text, media_list) — same interface as run_agent.
+    """
+    media_to_send = []
+    context = SharedContext(objective=user_message)
+    reset_society()
+
+    # Spawn orchestrator
+    orch = registry.spawn(AgentRole.ORCHESTRATOR, "Orchestrator", task=user_message)
+    registry.update(orch.id, AgentStatus.PLANNING)
+
+    if send_fn:
+        try:
+            await send_fn("🔄 Agent Society activated — planning task decomposition...")
+        except Exception:
+            pass
+
+    # Step 1: Ask orchestrator to plan
+    tools_text = get_tools_for_groups(["core", "system", "files", "web", "integrations"])
+    orch_messages = [
+        {"role": "system", "content": ORCHESTRATOR_PROMPT + f"\n\nAVAILABLE TOOLS:\n{tools_text}"},
+        {"role": "user", "content": user_message},
+    ]
+
+    try:
+        orch_response = await _llm_call(
+            model=model, messages=orch_messages, temperature=0.4, max_tokens=2048,
+        )
+        orch_reply = (orch_response.choices[0].message.content or "").strip()
+    except Exception as e:
+        registry.update(orch.id, AgentStatus.FAILED, str(e))
+        return f"❌ Orchestrator failed: {e}", media_to_send
+
+    # Check if orchestrator produced a plan
+    plan_steps = parse_plan(orch_reply)
+
+    if not plan_steps:
+        # Orchestrator decided to handle directly (simple task after all)
+        registry.update(orch.id, AgentStatus.COMPLETED, "handled directly")
+        # Strip plan markup if any, return the direct response
+        clean = _strip_internal_markup(orch_reply)
+        if _contains_tool_markup(orch_reply):
+            # Has tool calls — run through normal single-agent loop
+            registry.destroy(orch.id)
+            return None, None  # Signal to caller: fall through to normal loop
+        return clean or "Done.", media_to_send
+
+    registry.update(orch.id, AgentStatus.COMPLETED, f"{len(plan_steps)} steps planned")
+
+    if send_fn:
+        try:
+            steps_preview = "\n".join(f"  {i+1}. [{s.get('agent','?')}] {s.get('task','?')[:60]}" for i, s in enumerate(plan_steps))
+            await send_fn(f"📋 Plan ({len(plan_steps)} steps):\n{steps_preview}")
+        except Exception:
+            pass
+
+    # Step 2: Execute each plan step with appropriate agent
+    for i, step in enumerate(plan_steps):
+        if not ACTIVE_TASKS.get(chat_id, True):
+            return "🛑 Task stopped.", media_to_send
+
+        agent_role_str = step.get("agent", "executor").lower()
+        step_task = step.get("task", "")
+
+        # Map role string to enum
+        role_map = {
+            "researcher": AgentRole.RESEARCHER,
+            "executor": AgentRole.EXECUTOR,
+            "reviewer": AgentRole.REVIEWER,
+            "specialist": AgentRole.SPECIALIST,
+            "planner": AgentRole.PLANNER,
+        }
+        role = role_map.get(agent_role_str, AgentRole.EXECUTOR)
+
+        # Spawn agent
+        agent = registry.spawn(role, agent_role_str.title(), task=step_task, parent_id=orch.id)
+        registry.update(agent.id, AgentStatus.EXECUTING if role != AgentRole.RESEARCHER else AgentStatus.RESEARCHING)
+
+        if send_fn:
+            try:
+                await send_fn(f"  ──• [{agent_role_str}] {step_task[:80]}")
+            except Exception:
+                pass
+
+        # Build agent-specific prompt + tools
+        agent_groups = ["core"]
+        if role == AgentRole.RESEARCHER:
+            agent_groups.extend(["web"])
+        elif role == AgentRole.EXECUTOR:
+            agent_groups.extend(["system", "files", "data", "integrations"])
+        elif role == AgentRole.REVIEWER:
+            agent_groups.extend(["web", "files"])
+
+        agent_tools = get_tools_for_groups(agent_groups)
+        agent_prompt = get_role_prompt(role, context)
+        agent_prompt += f"\n\nTOOLS:\n{agent_tools}"
+
+        agent_messages = [
+            {"role": "system", "content": agent_prompt},
+            {"role": "user", "content": f"Task: {step_task}\n\nObjective: {user_message}"},
+        ]
+
+        # Run agent loop (limited iterations per agent)
+        agent_result = ""
+        for agent_iter in range(20):  # max 20 iterations per agent
+            if not ACTIVE_TASKS.get(chat_id, True):
+                break
+
+            try:
+                response = await _llm_call(
+                    model=model, messages=agent_messages, temperature=0.5, max_tokens=4096,
+                )
+                reply = (response.choices[0].message.content or "").strip()
+            except Exception as e:
+                registry.update(agent.id, AgentStatus.FAILED, str(e))
+                agent_result = f"FAILED: {e}"
+                break
+
+            # Check for tool calls
+            tool_calls = _parse_tool_calls(reply)
+            if tool_calls:
+                # Execute tools
+                _loop = asyncio.get_running_loop()
+                combined = []
+                for tname, targs in tool_calls:
+                    if tname and tname in TOOL_REGISTRY:
+                        result = await _loop.run_in_executor(None, execute_tool, tname, targs)
+                        combined.append(f"[{tname}]: {result}")
+                        # Capture media
+                        if tname in ("send_media", "generate_image"):
+                            try:
+                                rd = json.loads(result)
+                                if rd.get("queued"):
+                                    media_to_send.append(rd)
+                            except Exception:
+                                pass
+
+                agent_messages.append({"role": "assistant", "content": reply})
+                result_text = "\n".join(combined)
+                if len(result_text) > 3000:
+                    result_text = result_text[:2800] + "\n...[truncated]"
+                agent_messages.append({"role": "user", "content": f"<tool_result>\n{result_text}\n</tool_result>\nContinue. If done, give final summary."})
+            else:
+                # No tool calls — agent finished
+                agent_result = _strip_internal_markup(reply)
+                break
+
+        # Record result
+        if role == AgentRole.RESEARCHER:
+            context.add_finding(agent.id, agent_result)
+        elif role == AgentRole.REVIEWER:
+            context.add_review(agent_result)
+        else:
+            context.add_result(agent.id, agent_result, ok="FAIL" not in agent_result.upper())
+
+        registry.update(agent.id, AgentStatus.COMPLETED, agent_result[:200])
+
+    # Step 3: Compile final response
+    final_parts = []
+    if context.findings:
+        for f in context.findings:
+            final_parts.append(f["content"])
+    if context.results:
+        for r in context.results:
+            final_parts.append(r["content"])
+    if context.reviews:
+        for rv in context.reviews:
+            final_parts.append(f"Review: {rv}")
+
+    # If we have a reviewer result, use that as primary
+    final_text = "\n\n".join(final_parts) if final_parts else "Task completed."
+
+    # Truncate if too long
+    if len(final_text) > 3000:
+        final_text = final_text[:2800] + "\n\n... [additional details truncated]"
+
+    # Save to memory
+    try:
+        mem.save_message(chat_id, "assistant", final_text)
+    except Exception:
+        pass
+
+    return final_text, media_to_send
+
+
 # ── Core agent loop ───────────────────────────────────────────────────────────
 
 async def run_agent(
@@ -1084,6 +1290,20 @@ async def run_agent(
         stall=stall_count,
         started_at=time.time(),
     )
+
+    # ── Agent Society: check if task should be delegated to multi-agent ──
+    if resume_messages is None and not resume_step and should_delegate(user_message):
+        _task_set(chat_id, status="running", phase="society_delegation")
+        society_reply, society_media = await _run_society_task(chat_id, user_message, model, send_fn)
+        if society_reply is not None:
+            # Society handled it
+            ACTIVE_TASKS.pop(chat_id, None)
+            _task_set(chat_id, status="done", phase="society_complete")
+            if society_media:
+                media_to_send.extend(society_media)
+            return society_reply, media_to_send
+        # society returned None → fall through to normal single-agent loop
+        _task_set(chat_id, status="running", phase="single_agent_fallback")
 
     for iteration in range(cfg.MAX_TOOL_ITERATIONS):
         # Check if user sent /stop
@@ -2093,6 +2313,44 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🟢 Alive!")
 
 
+async def cmd_society(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show current Agent Society state — active agents, tree, stats."""
+    if not is_owner(update.effective_user.id):
+        return
+
+    status = get_society_status()
+    active = status.get("active", [])
+    tree = status.get("tree", [])
+    summary = status.get("agents", {})
+
+    if not active:
+        await update.message.reply_text(
+            "🏛️ *Agent Society*\n\n"
+            "No agents active. Society is idle.\n"
+            "Send a complex task to activate multi-agent delegation.\n\n"
+            f"Completed tasks: {summary.get('total_completed', 0)}",
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = ["🏛️ *Agent Society*\n"]
+    lines.append(f"Active agents: {summary.get('active', 0)}")
+    lines.append("")
+
+    def render_tree(nodes, indent=""):
+        for node in nodes:
+            status_emoji = {"idle": "⚪", "planning": "🔵", "researching": "🔍",
+                          "executing": "🟢", "reviewing": "🟡", "waiting": "⏳",
+                          "completed": "✅", "failed": "❌"}.get(node.get("status", ""), "⚪")
+            lines.append(f"{indent}{status_emoji} `{node.get('name', '?')}` — {node.get('task', '')[:50]}")
+            children = node.get("children", [])
+            if children:
+                render_tree(children, indent + "    ")
+
+    render_tree(tree)
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Hard-reset to latest upstream, rebuild CLI, install Python deps, restart service."""
     if not is_owner(update.effective_user.id):
@@ -2987,6 +3245,8 @@ def main():
     app.add_handler(CommandHandler("memory",  cmd_memory_cmd))
     app.add_handler(CommandHandler("run",     cmd_run))
     app.add_handler(CommandHandler("ping",    cmd_ping))
+    app.add_handler(CommandHandler("society", cmd_society))
+    app.add_handler(CommandHandler("agents",  cmd_society))
     app.add_handler(CommandHandler("update",  cmd_update))
     app.add_handler(CommandHandler("task",    cmd_task))
     app.add_handler(CommandHandler("stop",    cmd_stop))

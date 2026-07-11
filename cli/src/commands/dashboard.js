@@ -119,7 +119,7 @@ const PROVIDERS={"DigitalOcean":{base:"https://inference.do-ai.run/v1",fields:["
 const PFX="  "+RD(BX.v);
 
 // ── COMMANDS ─────────────────────────────────────────────────────────────────
-const CMD_LIST=[{name:R("⚙")+" Setup",value:"/setup"},{name:R("◎")+" Model",value:"/model"},{name:R("⊞")+" Providers",value:"/providers"},{name:R("◈")+" Skills",value:"/skills"},{name:R("◉")+" Memory",value:"/memory"},{name:R("⊡")+" Creds",value:"/creds"},{name:R("▣")+" Status",value:"/status"},{name:R("▷")+" Run",value:"/run"},{name:R("◻")+" Clear",value:"/clear"},{name:R("⊘")+" Quit",value:"/quit"}];
+const CMD_LIST=[{name:R("⚙")+" Setup",value:"/setup"},{name:R("◎")+" Model",value:"/model"},{name:R("⊞")+" Providers",value:"/providers"},{name:R("◈")+" Skills",value:"/skills"},{name:R("🏛")+" Society",value:"/society"},{name:R("▷")+" Run",value:"/run"},{name:R("◻")+" Clear",value:"/clear"},{name:R("⊘")+" Quit",value:"/quit"}];
 
 async function cmdSetup(){console.log("");const{sm}=await inquirer.prompt([{type:"list",name:"sm",message:"Storage:",choices:["Local SQLite","Cloudflare D1"],prefix:PFX}]);config.set("storage_mode",sm.includes("D1")?"cloudflare":"local");if(sm.includes("D1")){const cf=await inquirer.prompt([{type:"input",name:"a",message:"CF Account ID:",prefix:PFX},{type:"password",name:"t",message:"CF Token:",mask:"•",prefix:PFX},{type:"input",name:"d",message:"D1 DB ID:",prefix:PFX}]);config.set("cf_account_id",cf.a);config.set("cf_api_token",cf.t);config.set("cf_d1_database_id",cf.d);}
 const{iface}=await inquirer.prompt([{type:"list",name:"iface",message:"Interface:",choices:["CLI only","Telegram","WhatsApp","Both"],prefix:PFX}]);config.set("interface_mode",{C:"cli",T:"telegram",W:"whatsapp",B:"both"}[iface[0]]||"cli");
@@ -171,6 +171,16 @@ async function handleCmd(input){
     case"/model":return cmdModel();
     case"/providers":return cmdProviders();
     case"/skills":return cmdSkills();
+    case"/society":case"/agents":
+      console.log("  "+R("AGENT SOCIETY"));
+      console.log("  "+RD("──•")+" "+RA("Orchestrator")+" "+D("[idle]")+"  plans + delegates");
+      console.log("  "+RD("  ├─")+" "+RA("Researcher")+"  "+D("[idle]")+"  gathers info");
+      console.log("  "+RD("  ├─")+" "+RA("Executor")+"    "+D("[idle]")+"  runs commands");
+      console.log("  "+RD("  └─")+" "+RA("Reviewer")+"    "+D("[idle]")+"  validates results");
+      console.log("  "+D("Complex tasks auto-delegate. Use /delegate <task> to force."));
+      console.log(""); return;
+    case"/delegate":if(!arg)return sendMessage(input);return sendMessage("[DELEGATE] "+arg);
+    case"/direct":if(!arg)return sendMessage(input);return sendMessage(arg);
     case"/memory":return cmdMemory();
     case"/creds":return cmdCreds();
     case"/status":drawHeader();return;
