@@ -2,10 +2,12 @@
 """
 SynthClaw-CoAgent — Main Entry Point
 Launches Telegram, WhatsApp, or both interfaces based on INTERFACE_MODE.
+Also starts the REST API server for the web frontend.
 """
 import sys
 import threading
 import logging
+import os
 import config as cfg
 
 logging.basicConfig(
@@ -18,9 +20,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger("synthclaw")
 
+API_PORT = int(os.getenv("SYNTHCLAW_API_PORT", "8000"))
+API_HOST = os.getenv("SYNTHCLAW_API_HOST", "0.0.0.0")
+
+
+def start_api():
+    """Start the REST API server in a background thread."""
+    try:
+        from api_server import start_api_server_background
+        start_api_server_background(host=API_HOST, port=API_PORT)
+        logger.info(f"API server running at http://{API_HOST}:{API_PORT}")
+    except ImportError as e:
+        logger.warning(f"Could not start API server (missing deps?): {e}")
+    except Exception as e:
+        logger.warning(f"API server failed to start: {e}")
+
 
 def main():
     mode = cfg.INTERFACE_MODE
+
+    # Always start the API server (for frontend access)
+    start_api()
 
     if mode == "telegram":
         from agent import main as telegram_main
@@ -44,8 +64,14 @@ def main():
         from agent import main as telegram_main
         telegram_main()
 
+    elif mode == "cli":
+        # CLI-only mode: just run the API server in foreground
+        logger.info("Starting in CLI-only mode (API server only)")
+        from api_server import start_api_server
+        start_api_server(host=API_HOST, port=API_PORT)
+
     else:
-        print(f"ERROR: Unknown INTERFACE_MODE '{mode}'. Use: telegram, whatsapp, or both")
+        print(f"ERROR: Unknown INTERFACE_MODE '{mode}'. Use: telegram, whatsapp, both, or cli")
         sys.exit(1)
 
 

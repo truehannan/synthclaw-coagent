@@ -47,6 +47,7 @@ GITHUB_MODELS_API_BASE = _clean_env("GITHUB_MODELS_API_BASE", "https://models.in
 NVIDIA_API_BASE = _clean_env("NVIDIA_API_BASE", "https://integrate.api.nvidia.com/v1")
 HUGGINGFACE_API_BASE = _clean_env("HUGGINGFACE_API_BASE", "https://router.huggingface.co/v1")
 GOOGLE_AI_API_BASE = _clean_env("GOOGLE_AI_API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai")
+QWEN_API_BASE = _clean_env("QWEN_API_BASE", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
 GOOGLE_SEARCH_API_KEY = _clean_env("GOOGLE_SEARCH_API_KEY")
 GOOGLE_SEARCH_CX = _clean_env("GOOGLE_SEARCH_CX")
 
@@ -155,6 +156,16 @@ MODEL_CATALOG = {
         "cloudflare:@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
         "cloudflare:@cf/qwen/qwen1.5-14b-chat-awq",
         "cloudflare:@hf/google/gemma-7b-it",
+    ],
+    "Qwen": [
+        "qwen:qwen-max",
+        "qwen:qwen-plus",
+        "qwen:qwen-turbo",
+        "qwen:qwen3-235b-a22b",
+        "qwen:qwen3-32b",
+        "qwen:qwen-coder-plus",
+        "qwen:qwen-long",
+        "qwen:qwen-vl-max",
     ],
 }
 

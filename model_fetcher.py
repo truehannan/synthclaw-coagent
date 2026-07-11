@@ -85,6 +85,11 @@ PROVIDER_ENDPOINTS = {
         "key_env": "OPENROUTER_API_KEY",
         "prefix": "openrouter:",
     },
+    "Qwen": {
+        "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
+        "key_env": "QWEN_API_KEY",
+        "prefix": "qwen:",
+    },
 }
 
 
