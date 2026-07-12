@@ -4,6 +4,8 @@ import {
   BookOpen, Puzzle, Settings, LogOut,
 } from "lucide-react";
 import { clearToken } from "@/lib/api";
+import SessionSidebar from "@/components/SessionSidebar";
+import Mascot from "@/components/Mascot";
 
 const NAV = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
@@ -24,9 +26,9 @@ export default function Layout() {
       {/* Sidebar */}
       <aside className="flex w-56 flex-col border-r border-border bg-card">
         {/* Brand */}
-        <div className="flex items-center gap-2 border-b border-border px-4 py-4">
-          <span className="text-lg font-bold text-primary">[+]</span>
-          <span className="text-sm font-semibold">SynthClaw</span>
+        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+          <Mascot className="text-[5px] leading-[1]" />
+          <span className="text-xs font-semibold">SynthClaw</span>
         </div>
 
         {/* Navigation */}
@@ -51,6 +53,7 @@ export default function Layout() {
         </nav>
 
         {/* Footer */}
+        <SessionSidebar />
         <div className="border-t border-border p-3">
           <button
             onClick={() => { clearToken(); window.location.href = "/login"; }}

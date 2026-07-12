@@ -119,23 +119,45 @@ async def auth_status(request: Request):
     token = request.headers.get("X-API-Token", "")
     if auth.startswith("Bearer "):
         token = auth[7:]
-    valid = bool(token and token == API_TOKEN)
+    valid = bool(token and (token == API_TOKEN or (token == cfg.OPENAI_API_KEY and cfg.OPENAI_API_KEY)))
     return {"authenticated": valid}
+
+
+@app.get("/api/auth/exists")
+async def auth_exists():
+    """Check if a user has been set up (controls signup vs login on frontend)."""
+    has_key = bool(cfg.OPENAI_API_KEY)
+    has_password = bool(mem.get_memory("user_password_hash"))
+    return {"exists": has_key or has_password}
+
+
+@app.post("/api/auth/signup")
+async def auth_signup(request: Request):
+    """First-time user registration. Only works if no user exists yet."""
+    if cfg.OPENAI_API_KEY or mem.get_memory("user_password_hash"):
+        raise HTTPException(status_code=409, detail="User already exists. Use login.")
+    body = await request.json()
+    password = body.get("password", "")
+    if not password or len(password) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+    pw_hash = hashlib.sha256(password.encode()).hexdigest()
+    mem.set_memory("user_password_hash", pw_hash)
+    return {"token": API_TOKEN, "success": True}
 
 
 @app.post("/api/auth/login")
 async def auth_login(request: Request):
-    """Login with password — returns token if password matches hash."""
+    """Login with token, API key, or password."""
     body = await request.json()
     password = body.get("password", "")
-    # Simple: if password matches stored hash or equals the raw token
     if password == API_TOKEN:
         return {"token": API_TOKEN, "success": True}
-    # Check against stored password hash
-    stored_hash = mem.get_memory("api_password_hash")
+    if password == cfg.OPENAI_API_KEY and cfg.OPENAI_API_KEY:
+        return {"token": password, "success": True}
+    stored_hash = mem.get_memory("user_password_hash")
     if stored_hash and hashlib.sha256(password.encode()).hexdigest() == stored_hash:
         return {"token": API_TOKEN, "success": True}
-    raise HTTPException(status_code=401, detail="Invalid password")
+    raise HTTPException(status_code=401, detail="Invalid credentials")
 
 
 
@@ -276,6 +298,20 @@ async def society_status():
     """Get current agent society state."""
     from agents import get_society_status
     return get_society_status()
+
+
+@app.get("/api/society/stream", dependencies=[Depends(verify_token)])
+async def society_stream():
+    """SSE stream — pushes agent society state every 1s while active."""
+    from agents import get_society_status
+
+    async def generate():
+        while True:
+            status = get_society_status()
+            yield f"data: {json.dumps(status)}\n\n"
+            await asyncio.sleep(1)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.post("/api/society/reset", dependencies=[Depends(verify_token)])

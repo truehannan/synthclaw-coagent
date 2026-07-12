@@ -34,6 +34,8 @@ async function request<T = any>(path: string, opts: RequestInit = {}): Promise<T
 // ── Auth ─────────────────────────────────────────────────────────────────────
 export const auth = {
   status: () => request("/auth/status"),
+  exists: () => fetch(`${BASE}/auth/exists`).then(r => r.json()),
+  signup: (password: string) => fetch(`${BASE}/auth/signup`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) }).then(r => r.json()),
   login: (password: string) => request("/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
 };
 

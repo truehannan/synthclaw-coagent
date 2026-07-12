@@ -113,6 +113,26 @@ async function main() {
       await runDeploy(args.slice(1));
       break;
 
+    case "session":
+    case "sessions":
+      // Session management
+      const sessionArg = args[1] || "";
+      if (sessionArg) {
+        // Switch to session by ID
+        const { config: sessConfig } = await import("./utils.js");
+        sessConfig.set("active_session", sessionArg);
+        console.log(chalk.green("✓") + " Switched to session: " + sessionArg);
+      } else {
+        // List sessions
+        console.log(chalk.bold("\n  Sessions:"));
+        const { config: sc } = await import("./utils.js");
+        const active = sc.get("active_session") || "default";
+        console.log("  " + chalk.green("●") + " " + active + chalk.dim(" (active)"));
+        console.log(chalk.dim("\n  Usage: synthclaw session <id> — switch session"));
+        console.log(chalk.dim("  Sessions are managed in the web frontend.\n"));
+      }
+      break;
+
     case "update":
       const { runUpdate } = await import("./commands/update.js");
       await runUpdate();
