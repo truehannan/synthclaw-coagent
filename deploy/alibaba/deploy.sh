@@ -42,7 +42,8 @@ eval $SCP -r \
     "$USER@$HOST:$REMOTE_DIR/"
 
 echo "[3/6] Installing Python dependencies..."
-eval $SSH "cd $REMOTE_DIR && python3 -m venv venv 2>/dev/null; ./venv/bin/pip install -r requirements.txt -q"
+eval $SSH "apt-get update -qq && apt-get install -y -qq python3-venv python3-pip nginx curl > /dev/null 2>&1"
+eval $SSH "cd $REMOTE_DIR && python3 -m venv venv && ./venv/bin/pip install --upgrade pip -q && ./venv/bin/pip install -r requirements.txt -q"
 
 echo "[4/6] Writing .env..."
 eval $SSH "cat > $REMOTE_DIR/.env << 'ENVEOF'

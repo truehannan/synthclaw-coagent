@@ -88,11 +88,15 @@ jobs:
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
             ${{ env.SSH_USER }}@${{ secrets.HOST }} << 'SCRIPT'
           cd /opt/synthclaw
+          # Install system packages needed (server is fresh Ubuntu 24)
+          apt-get update -qq
+          apt-get install -y -qq python3-venv python3-pip nginx curl > /dev/null 2>&1
           # Create venv if not exists
           if [ ! -d "venv" ]; then
             python3 -m venv venv
           fi
           # Install deps in venv
+          ./venv/bin/pip install --upgrade pip -q
           ./venv/bin/pip install -r requirements.txt -q
           SCRIPT
 
@@ -100,7 +104,6 @@ jobs:
         run: |
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
             ${{ env.SSH_USER }}@${{ secrets.HOST }} << 'SCRIPT'
-          apt-get install -y nginx > /dev/null 2>&1
           cat > /etc/nginx/sites-available/synthclaw << 'NGINX'
           server {
               listen 80 default_server;
@@ -123,8 +126,7 @@ jobs:
               }
           }
           NGINX
-          ln -sf /etc/nginx/sites-available/synthclaw /etc/nginx/sites-enabled/default
-          rm -f /etc/nginx/sites-enabled/synthclaw 2>/dev/null
+          rm -f /etc/nginx/sites-enabled/default 2>/dev/null
           ln -sf /etc/nginx/sites-available/synthclaw /etc/nginx/sites-enabled/synthclaw
           nginx -t && systemctl restart nginx
           SCRIPT
