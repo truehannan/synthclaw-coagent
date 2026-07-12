@@ -174,8 +174,23 @@ async function sendMessage(msg) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  MAIN LOOP — uses inquirer input prompt for EVERYTHING (no readline)
+//  MAIN LOOP — inquirer input for chat, inquirer list for commands
+//  Type / or press Enter empty → shows command LIST (arrow key select)
+//  Type anything else → sends as chat message
 // ══════════════════════════════════════════════════════════════════════════════
+
+const CMD_CHOICES = [
+  { name: R("⚙") + "  Setup        " + D("— configure provider & model"), value: "/setup" },
+  { name: R("◎") + "  Model        " + D("— switch LLM model"), value: "/model" },
+  { name: R("⊞") + "  Providers    " + D("— manage API keys"), value: "/providers" },
+  { name: R("◈") + "  Skills       " + D("— install/manage skills"), value: "/skills" },
+  { name: R("🏛") + " Society      " + D("— agent tree view"), value: "/society" },
+  { name: R("▷") + "  Run          " + D("— execute shell command"), value: "/run" },
+  { name: R("◻") + "  Clear        " + D("— clear chat"), value: "/clear" },
+  { name: R("⊘") + "  Quit         " + D("— exit"), value: "/quit" },
+  new inquirer.Separator(),
+  { name: D("  Cancel (go back to chat)"), value: "__cancel__" },
+];
 
 export async function runDashboard() {
   printHeader();
@@ -185,25 +200,28 @@ export async function runDashboard() {
     console.log("");
     await cmdSetup();
   } else {
-    console.log("  " + D("Type a message to chat. Type") + " " + R("/") + " " + D("to see commands."));
+    console.log("  " + D("Chat or type") + " " + R("/") + " " + D("+ Enter for commands."));
     console.log("");
   }
 
-  // Main loop — inquirer input prompt is the input field
   while (true) {
+    // Input prompt
     let input = "";
     try {
       const { msg } = await inquirer.prompt([{ type: "input", name: "msg", message: R("▸"), prefix: "  " + RD(BX.v) }]);
       input = (msg || "").trim();
     } catch { break; }
 
-    if (!input) continue;
+    // Empty or "/" → show command selector (inquirer list — this ALWAYS works)
+    if (!input || input === "/" || input === "/help") {
+      try {
+        const { cmd } = await inquirer.prompt([{ type: "list", name: "cmd", message: "Command:", choices: CMD_CHOICES, pageSize: 12, prefix: PFX }]);
+        if (cmd === "__cancel__") continue;
+        input = cmd;
+      } catch { break; }
+    }
 
-    // Number = command from menu
-    const cmdByNum = COMMANDS.find(c => c.key === input);
-    if (cmdByNum) input = cmdByNum.cmd;
-
-    if (input === "/" || input === "/help") { printMenu(); continue; }
+    // Process command or message
     if (input === "/quit" || input === "/exit") break;
     if (input === "/setup") { await cmdSetup(); continue; }
     if (input === "/model") { await cmdModel(); continue; }
@@ -223,14 +241,15 @@ export async function runDashboard() {
       console.log(""); continue;
     }
     if (input.startsWith("/run")) {
-      let cmd = input.startsWith("/run ") ? input.slice(5) : "";
-      if (!cmd) { const { c } = await inquirer.prompt([{ type: "input", name: "c", message: "$", prefix: PFX }]); cmd = c; }
-      if (cmd) { try { const o = execSync(cmd, { encoding: "utf-8", timeout: 30000, cwd: getProjectRoot(), stdio: ["pipe", "pipe", "pipe"] }); console.log(D(o.trim().split("\n").slice(0, 20).map(l => "  " + l).join("\n"))); } catch (e) { console.log("  " + Y("✗") + " " + (e.stderr || e.message || "").slice(0, 100)); } }
+      let c = input.startsWith("/run ") ? input.slice(5) : "";
+      if (!c) { const { v } = await inquirer.prompt([{ type: "input", name: "v", message: "$", prefix: PFX }]); c = v; }
+      if (c) { try { const o = execSync(c, { encoding: "utf-8", timeout: 30000, cwd: getProjectRoot(), stdio: ["pipe", "pipe", "pipe"] }); console.log(D(o.trim().split("\n").slice(0, 20).map(l => "  " + l).join("\n"))); } catch (e) { console.log("  " + Y("✗") + " " + (e.stderr || e.message || "").slice(0, 100)); } }
       console.log(""); continue;
     }
     if (input === "/clear") { chatHistory.length = 0; console.log("  " + D("Cleared.")); console.log(""); continue; }
-    if (input.startsWith("/")) { console.log("  " + D("Unknown command. Type / for menu.")); console.log(""); continue; }
+    if (input.startsWith("/")) { console.log("  " + D("Unknown command.")); console.log(""); continue; }
 
+    // Chat message
     await sendMessage(input);
   }
 

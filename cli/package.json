@@ -11,14 +11,22 @@
     "prepublishOnly": "npm run build",
     "link": "npm run build && npm link"
   },
-  "keywords": ["ai", "agent", "telegram", "whatsapp", "cli", "vps", "devops"],
+  "keywords": [
+    "ai",
+    "agent",
+    "telegram",
+    "whatsapp",
+    "cli",
+    "vps",
+    "devops"
+  ],
   "author": "truehannan",
   "license": "SEE LICENSE IN ../LICENSE",
   "dependencies": {
-    "chalk": "^5.4.1",
-    "inquirer": "^12.6.0",
-    "ora": "^8.2.0",
+    "chalk": "^5.6.2",
     "conf": "^13.1.0",
+    "inquirer": "^12.11.1",
+    "ora": "^9.4.1",
     "shelljs": "^0.8.5"
   },
   "devDependencies": {
