@@ -42,7 +42,7 @@ eval $SCP -r \
     "$USER@$HOST:$REMOTE_DIR/"
 
 echo "[3/6] Installing Python dependencies..."
-eval $SSH "cd $REMOTE_DIR && pip3 install -r requirements.txt -q"
+eval $SSH "cd $REMOTE_DIR && python3 -m venv venv 2>/dev/null; ./venv/bin/pip install -r requirements.txt -q"
 
 echo "[4/6] Writing .env..."
 eval $SSH "cat > $REMOTE_DIR/.env << 'ENVEOF'
@@ -63,7 +63,7 @@ After=network.target
 Type=simple
 User=$USER
 WorkingDirectory=$REMOTE_DIR
-ExecStart=/usr/bin/python3 $REMOTE_DIR/main.py
+ExecStart=$REMOTE_DIR/venv/bin/python3 $REMOTE_DIR/main.py
 Restart=always
 RestartSec=5
 Environment=SYNTHCLAW_BASE_DIR=$REMOTE_DIR

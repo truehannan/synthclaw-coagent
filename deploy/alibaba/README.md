@@ -1,80 +1,81 @@
-# Alibaba Cloud Deployment
+# Alibaba Cloud ECS — Production Deployment
 
-Deploy SynthClaw to an Alibaba Cloud ECS instance.
+## Deployed Instance
 
-## Prerequisites
+| | |
+|---|---|
+| **Provider** | Alibaba Cloud (Elastic Compute Service) |
+| **Region** | China East (Shanghai) / International |
+| **Instance** | ecs.t6-c1m1.large (2 vCPU, 2GB RAM) |
+| **OS** | Ubuntu 22.04 LTS |
+| **Access** | `http://<ECS_IP>` (frontend + API) |
 
-1. **ECS Instance** — Ubuntu 22.04, 2GB+ RAM, Python 3.9+
-2. **Security Group** — Open ports: 8000 (API), 3000 (Frontend, optional)
-3. **SSH Access** — Root password or key-based auth
+## Architecture on Alibaba Cloud
 
-## Quick Deploy (Script)
+```
+┌─────────────────────────────────────────────────────┐
+│  Alibaba Cloud ECS Instance                         │
+│                                                     │
+│  ┌─────────────┐     ┌──────────────────────┐      │
+│  │   nginx     │────▶│  Frontend (React)    │      │
+│  │  :80        │     │  /opt/synthclaw/     │      │
+│  │             │     │  frontend/dist/      │      │
+│  │  /api/* ────│────▶│  API Server (FastAPI)│      │
+│  │             │     │  :8000               │      │
+│  └─────────────┘     └──────────────────────┘      │
+│                              │                      │
+│                       ┌──────▼──────┐               │
+│                       │ Agent Core  │               │
+│                       │ (Python)    │               │
+│                       │ + Society   │               │
+│                       └─────────────┘               │
+│                                                     │
+│  Security Group: 80 (HTTP), 443 (HTTPS)             │
+└─────────────────────────────────────────────────────┘
+```
+
+## CI/CD Flow
+
+```
+GitHub Push (main) → GitHub Actions → SSH to ECS → Deploy + Restart
+```
+
+Pipeline steps:
+1. Build & test locally (Python validation + frontend build)
+2. SSH via `sshpass` using `secrets.HOST` + `secrets.PASSWORD`
+3. Upload Python agent files + built frontend
+4. Install deps in venv (`/opt/synthclaw/venv/`)
+5. Configure nginx (reverse proxy :80 → frontend + API)
+6. Create/restart systemd service
+7. Health check with 5x retry
+
+## Secrets Required
+
+| Secret | Description |
+|--------|-------------|
+| `HOST` | ECS instance public IP |
+| `PASSWORD` | SSH root password |
+
+## Service Management
 
 ```bash
-cd deploy/alibaba
-chmod +x deploy.sh
-./deploy.sh <ECS_IP> <ROOT_PASSWORD>
-```
+# Status
+systemctl status synthclaw
 
-This will:
-- Upload all agent files to `/opt/synthclaw`
-- Install Python dependencies
-- Create systemd service
-- Start the agent
-
-## Docker Deploy
-
-```bash
-# Build image
-docker build -t synthclaw -f deploy/alibaba/Dockerfile .
-
-# Run container
-docker run -d \
-  --name synthclaw \
-  -p 3000:3000 \
-  -p 8000:8000 \
-  -e OPENAI_API_KEY=your-key-here \
-  -e OPENAI_API_BASE=https://inference.do-ai.run/v1 \
-  -e DEFAULT_MODEL=llama3.3-70b-instruct \
-  synthclaw
-```
-
-## CI/CD (GitHub Actions)
-
-The repository includes `.github/workflows/deploy.yml` which automatically deploys on push to main.
-
-**Required Secrets:**
-- `HOST` — ECS instance IP address
-- `PASSWORD` — SSH root password
-- `SSH_USER` — (optional, defaults to `root`)
-
-## Post-Deployment
-
-1. Set up your API key:
-```bash
-ssh root@<ECS_IP> "echo 'OPENAI_API_KEY=your-key' >> /opt/synthclaw/.env && systemctl restart synthclaw"
-```
-
-2. Access the API:
-```
-http://<ECS_IP>:8000/api/system/health
-```
-
-3. Connect Telegram:
-```bash
-ssh root@<ECS_IP> "echo 'TELEGRAM_TOKEN=your-token
-INTERFACE_MODE=telegram' >> /opt/synthclaw/.env && systemctl restart synthclaw"
-```
-
-## Troubleshooting
-
-```bash
-# Check service status
-ssh root@<IP> "systemctl status synthclaw"
-
-# View logs
-ssh root@<IP> "journalctl -u synthclaw -f"
+# Logs  
+journalctl -u synthclaw -f
 
 # Restart
-ssh root@<IP> "systemctl restart synthclaw"
+systemctl restart synthclaw
+
+# Nginx
+systemctl status nginx
 ```
+
+## Proof of Deployment
+
+After successful CI/CD run:
+- **Frontend**: `http://<ECS_IP>/` — React web interface
+- **API Health**: `http://<ECS_IP>/api/system/health` → `{"status": "ok"}`
+- **Chat API**: `http://<ECS_IP>/api/chat/send` (POST with auth)
+- **Agent Society**: `http://<ECS_IP>/api/society/status`
