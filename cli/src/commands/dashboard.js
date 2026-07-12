@@ -2,11 +2,9 @@ import chalk from "chalk";
 import { execSync } from "child_process";
 import { existsSync, writeFileSync } from "fs";
 import { join } from "path";
-import os from "os";
 import inquirer from "inquirer";
-import { createInterface } from "readline";
 import { config, generateEnvContent, getProjectRoot } from "../utils.js";
-import { MASCOT_OPEN, MASCOT_BLINK, WORDMARK, SUBTITLE } from "../ascii.js";
+import { MASCOT_OPEN, WORDMARK, SUBTITLE } from "../ascii.js";
 
 // ── THEME ────────────────────────────────────────────────────────────────────
 const R = chalk.hex("#cc0000"), RB = chalk.hex("#ff1a1a"), RD = chalk.hex("#e85d04");
@@ -30,48 +28,55 @@ const PROVIDERS = {
 };
 const PFX = "  " + RD(BX.v);
 
-// ── COMMANDS ─────────────────────────────────────────────────────────────────
-const CMD_CHOICES = [
-  { name: R("⚙") + "  Setup        " + D("— configure provider & model"), value: "/setup" },
-  { name: R("◎") + "  Model        " + D("— switch LLM model"), value: "/model" },
-  { name: R("⊞") + "  Providers    " + D("— manage API keys"), value: "/providers" },
-  { name: R("◈") + "  Skills       " + D("— install/manage skills"), value: "/skills" },
-  { name: R("🏛") + " Society      " + D("— agent tree view"), value: "/society" },
-  { name: R("▷") + "  Run          " + D("— execute shell command"), value: "/run" },
-  { name: R("◻") + "  Clear        " + D("— clear chat"), value: "/clear" },
-  { name: R("?") + "  Help         " + D("— show commands"), value: "/help" },
-  { name: R("⊘") + "  Quit         " + D("— exit"), value: "/quit" },
-];
-
 // ══════════════════════════════════════════════════════════════════════════════
-//  HEADER — printed once, shows full mascot
+//  HEADER — all 5 mascot rows + wordmark + model
 // ══════════════════════════════════════════════════════════════════════════════
 
 function printHeader() {
   const w = Math.min(process.stdout.columns || 80, 72);
   const iw = w - 4;
   const model = config.get("default_model") || "not configured";
-  const ml = model.length > 24 ? model.slice(0, 22) + "…" : model;
+  const ml = model.length > 30 ? model.slice(0, 28) + "…" : model;
   const ready = config.get("openai_api_key") ? G("●") : R("○");
 
   console.log("");
   console.log("  " + RD(BX.tl + BX.h.repeat(iw) + BX.tr));
-
-  // Full mascot (5 rows) + wordmark alongside
-  for (let i = 0; i < 5; i++) {
-    const mc = MASCOT_OPEN[i] || "";
-    const wm = WORDMARK[i - 1] || "";
-    const sub = i === 4 ? D(SUBTITLE) : "";
-    const right = wm ? RB(wm) : sub;
-    const pad = Math.max(1, iw - 16 - (wm ? wm.length : sub ? SUBTITLE.length : 0) - 1);
-    console.log("  " + RD(BX.v) + " " + RB(mc.padEnd(15)) + " " + right + " ".repeat(pad) + RD(BX.v));
-  }
-
+  console.log("  " + RD(BX.v) + " " + RB(MASCOT_OPEN[0].padEnd(15)) + " ".repeat(Math.max(1, iw - 17)) + RD(BX.v));
+  console.log("  " + RD(BX.v) + " " + RB(MASCOT_OPEN[1].padEnd(15)) + " " + RB(WORDMARK[0]) + " ".repeat(Math.max(1, iw - 16 - WORDMARK[0].length - 1)) + RD(BX.v));
+  console.log("  " + RD(BX.v) + " " + RB(MASCOT_OPEN[2].padEnd(15)) + " " + RB(WORDMARK[1]) + " ".repeat(Math.max(1, iw - 16 - WORDMARK[1].length - 1)) + RD(BX.v));
+  console.log("  " + RD(BX.v) + " " + RB(MASCOT_OPEN[3].padEnd(15)) + " " + RB(WORDMARK[2]) + " ".repeat(Math.max(1, iw - 16 - WORDMARK[2].length - 1)) + RD(BX.v));
+  console.log("  " + RD(BX.v) + " " + RB(MASCOT_OPEN[4].padEnd(15)) + " " + D(SUBTITLE) + " ".repeat(Math.max(1, iw - 16 - SUBTITLE.length - 1)) + RD(BX.v));
   console.log("  " + RD(BX.vr + BX.h.repeat(iw) + BX.vl));
   console.log("  " + RD(BX.v) + ` ${ready} ${D("MODEL")} ${RA(ml)}` + " ".repeat(Math.max(1, iw - ml.length - 10)) + RD(BX.v));
   console.log("  " + RD(BX.bl + BX.h.repeat(iw) + BX.br));
   console.log("");
-  console.log("  " + D("Type a message to chat. Type") + " " + R("/") + " " + D("for commands. Ctrl+C to exit."));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  MENU — printed as numbered list, user types number to select
+// ══════════════════════════════════════════════════════════════════════════════
+
+const COMMANDS = [
+  { key: "1", cmd: "/setup", label: "Setup", desc: "configure provider & model" },
+  { key: "2", cmd: "/model", label: "Model", desc: "switch LLM model" },
+  { key: "3", cmd: "/providers", label: "Providers", desc: "manage API keys" },
+  { key: "4", cmd: "/skills", label: "Skills", desc: "install/manage skills" },
+  { key: "5", cmd: "/society", label: "Society", desc: "agent tree view" },
+  { key: "6", cmd: "/run", label: "Run", desc: "execute shell command" },
+  { key: "7", cmd: "/clear", label: "Clear", desc: "clear chat history" },
+  { key: "8", cmd: "/help", label: "Help", desc: "show this menu" },
+  { key: "9", cmd: "/quit", label: "Quit", desc: "exit" },
+];
+
+function printMenu() {
+  console.log("");
+  console.log("  " + R("COMMANDS") + "  " + D("(type the number)"));
+  console.log("");
+  for (const c of COMMANDS) {
+    console.log("  " + RD(c.key) + "  " + R(c.label.padEnd(12)) + D(c.desc));
+  }
+  console.log("");
+  console.log("  " + D("Or type a slash command directly: /setup, /model, etc."));
   console.log("");
 }
 
@@ -86,7 +91,7 @@ async function cmdSetup() {
   const pc = PROVIDERS[prov], pf = {};
   for (const f of pc.fields) {
     const tp = f === "api_key" ? "password" : "input";
-    const msg = f === "api_key" ? `${prov} Key:` : f === "account_id" ? "Account ID:" : f === "endpoint_url" ? "Endpoint URL:" : "Base URL:";
+    const msg = f === "api_key" ? `${prov} Key:` : f === "account_id" ? "Account ID:" : "Value:";
     const { v } = await inquirer.prompt([{ type: tp, name: "v", message: msg, mask: tp === "password" ? "•" : undefined, prefix: PFX }]);
     pf[f] = v;
     if (f === "api_key" && v) config.set("openai_api_key", v);
@@ -106,7 +111,7 @@ async function cmdSetup() {
   if (mdl === "Custom") { const { c } = await inquirer.prompt([{ type: "input", name: "c", message: "Model ID:", prefix: PFX }]); config.set("default_model", c); }
   else config.set("default_model", mdl);
   try { writeFileSync(join(getProjectRoot(), ".env"), generateEnvContent()); } catch {}
-  console.log("  " + RD("──") + R("•") + " Setup complete. Model: " + chalk.bold(config.get("default_model")));
+  console.log("  " + RD("──") + R("•") + " Done. Model: " + chalk.bold(config.get("default_model")));
   console.log("");
 }
 
@@ -119,11 +124,9 @@ async function cmdModel() {
   let models = [];
   try { const r = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${config.get("openai_api_key")}` }, signal: AbortSignal.timeout(10000) }); if (r.ok) { const d = await r.json(); models = (d.data || d.models || []).map(i => typeof i === "string" ? i : (i.id || i.name || "")).filter(Boolean).slice(0, 30); } } catch {}
   if (!models.length) models = ["llama3.3-70b-instruct"];
-  models.push(new inquirer.Separator(), { name: D("Custom..."), value: "__custom__" });
   const { m } = await inquirer.prompt([{ type: "list", name: "m", message: "Model:", choices: models, pageSize: 15, prefix: PFX }]);
-  if (m === "__custom__") { const { c } = await inquirer.prompt([{ type: "input", name: "c", message: "ID:", prefix: PFX }]); config.set("default_model", c); }
-  else config.set("default_model", m);
-  console.log("  " + RD("──") + R("•") + " Model: " + chalk.bold(config.get("default_model")));
+  config.set("default_model", m);
+  console.log("  " + RD("──") + R("•") + " Model: " + chalk.bold(m));
   console.log("");
 }
 
@@ -149,7 +152,7 @@ async function cmdProviders() {
 
 async function sendMessage(msg) {
   const apiKey = config.get("openai_api_key"), apiBase = config.get("openai_api_base"), model = config.get("default_model");
-  if (!apiKey) { console.log("  " + Y("No API key. Running setup...")); await cmdSetup(); return; }
+  if (!apiKey) { console.log("  " + Y("No API key. Running /setup...")); await cmdSetup(); return; }
   chatHistory.push({ role: "user", content: msg });
   process.stdout.write("  " + D("⠋ Thinking..."));
   try {
@@ -170,111 +173,68 @@ async function sendMessage(msg) {
   }
 }
 
-async function handleCmd(input, rl) {
-  const [cmd, ...args] = input.split(" ");
-  const arg = args.join(" ");
-  switch (cmd) {
-    case "/setup": return cmdSetup();
-    case "/model": return cmdModel();
-    case "/providers": return cmdProviders();
-    case "/skills": {
-      const { a } = await inquirer.prompt([{ type: "list", name: "a", message: "Skills:", choices: ["Install @user/skill", "List installed", "Remove"], prefix: PFX }]);
-      if (a.startsWith("I")) { const { p } = await inquirer.prompt([{ type: "input", name: "p", message: "@user/skill:", prefix: PFX }]); if (p) console.log("  " + RD("──") + R("•") + ` ${p} installed`); }
-      else console.log("  " + D("Skills managed via Telegram /skills or web frontend."));
-      console.log(""); return;
-    }
-    case "/society": case "/agents":
-      console.log(""); console.log("  " + R("AGENT SOCIETY"));
-      console.log("  " + RD("──•") + " " + RA("Orchestrator") + "  " + D("plans + delegates"));
-      console.log("  " + RD("  ├─") + " " + RA("Researcher") + "   " + D("gathers info"));
-      console.log("  " + RD("  ├─") + " " + RA("Executor") + "     " + D("runs commands"));
-      console.log("  " + RD("  ├─") + " " + RA("Reviewer") + "     " + D("validates results"));
-      console.log("  " + RD("  └─") + " " + RA("Observer") + "     " + D("monitors execution"));
-      console.log("  " + D("Complex tasks auto-delegate via should_delegate().")); console.log(""); return;
-    case "/run":
-      if (!arg) { const { c } = await inquirer.prompt([{ type: "input", name: "c", message: "$", prefix: PFX }]); if (c) return handleCmd("/run " + c, rl); return; }
-      try { const o = execSync(arg, { encoding: "utf-8", timeout: 30000, cwd: getProjectRoot(), stdio: ["pipe", "pipe", "pipe"] }); console.log(D(o.trim().split("\n").slice(0, 20).map(l => "  " + l).join("\n"))); }
-      catch (e) { console.log("  " + Y("✗") + " " + (e.stderr || e.message || "").slice(0, 100)); }
-      console.log(""); return;
-    case "/clear": chatHistory.length = 0; console.log("  " + D("Chat cleared.")); console.log(""); return;
-    case "/help":
-      console.log(""); console.log("  " + R("COMMANDS"));
-      console.log("  " + RD("──•") + " " + R("/setup") + "       " + D("Configure provider & model"));
-      console.log("  " + RD("──•") + " " + R("/model") + "       " + D("Switch LLM model"));
-      console.log("  " + RD("──•") + " " + R("/providers") + "   " + D("Manage API keys"));
-      console.log("  " + RD("──•") + " " + R("/skills") + "      " + D("Install/manage skills"));
-      console.log("  " + RD("──•") + " " + R("/society") + "     " + D("Agent Society tree"));
-      console.log("  " + RD("──•") + " " + R("/run <cmd>") + "   " + D("Execute shell command"));
-      console.log("  " + RD("──•") + " " + R("/clear") + "       " + D("Clear chat"));
-      console.log("  " + RD("──•") + " " + R("/quit") + "        " + D("Exit"));
-      console.log(""); return;
-    case "/quit": case "/exit": process.exit(0);
-    default: return sendMessage(input);
-  }
-}
-
 // ══════════════════════════════════════════════════════════════════════════════
-//  MAIN — Simple readline. NO alternate screen. NO raw mode.
+//  MAIN LOOP — uses inquirer input prompt for EVERYTHING (no readline)
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function runDashboard() {
   printHeader();
 
-  // Auto-setup if no key configured
   if (!config.get("openai_api_key")) {
     console.log("  " + R("●") + " No API key found. Let's configure:");
     console.log("");
     await cmdSetup();
+  } else {
+    console.log("  " + D("Type a message to chat. Type") + " " + R("/") + " " + D("to see commands."));
+    console.log("");
   }
 
-  // Simple readline — inquirer handles its own stdin when called
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: "  " + RD(BX.v) + " " + R("▸") + " ",
-    terminal: true,
-  });
-
-  rl.prompt();
-
-  rl.on("line", async (line) => {
-    const input = line.trim();
-    if (!input) { rl.prompt(); return; }
-
-    // CRITICAL: pause readline so inquirer can use stdin
-    rl.pause();
-
+  // Main loop — inquirer input prompt is the input field
+  while (true) {
+    let input = "";
     try {
-      if (input === "/") {
-        // Show command menu
-        const { c } = await inquirer.prompt([{
-          type: "list",
-          name: "c",
-          message: R("▸") + " Command:",
-          choices: CMD_CHOICES,
-          pageSize: 12,
-        }]);
-        await handleCmd(c, rl);
-      } else if (input.startsWith("/")) {
-        await handleCmd(input, rl);
-      } else {
-        await sendMessage(input);
-      }
-    } catch (e) {
-      if (!e.message?.includes("force closed")) {
-        console.log("  " + Y("✗") + " " + (e.message || "Error"));
-      }
+      const { msg } = await inquirer.prompt([{ type: "input", name: "msg", message: R("▸"), prefix: "  " + RD(BX.v) }]);
+      input = (msg || "").trim();
+    } catch { break; }
+
+    if (!input) continue;
+
+    // Number = command from menu
+    const cmdByNum = COMMANDS.find(c => c.key === input);
+    if (cmdByNum) input = cmdByNum.cmd;
+
+    if (input === "/" || input === "/help") { printMenu(); continue; }
+    if (input === "/quit" || input === "/exit") break;
+    if (input === "/setup") { await cmdSetup(); continue; }
+    if (input === "/model") { await cmdModel(); continue; }
+    if (input === "/providers") { await cmdProviders(); continue; }
+    if (input === "/skills") {
+      const { a } = await inquirer.prompt([{ type: "list", name: "a", message: "Skills:", choices: ["Install @user/skill", "List", "Remove"], prefix: PFX }]);
+      if (a.startsWith("I")) { const { p } = await inquirer.prompt([{ type: "input", name: "p", message: "@user/skill:", prefix: PFX }]); if (p) console.log("  " + RD("──") + R("•") + ` ${p} installed`); }
+      console.log(""); continue;
     }
+    if (input === "/society" || input === "/agents") {
+      console.log(""); console.log("  " + R("AGENT SOCIETY"));
+      console.log("  " + RD("──•") + " " + RA("Orchestrator") + "  " + D("plans + delegates"));
+      console.log("  " + RD("  ├─") + " " + RA("Researcher") + "   " + D("gathers info"));
+      console.log("  " + RD("  ├─") + " " + RA("Executor") + "     " + D("runs commands"));
+      console.log("  " + RD("  ├─") + " " + RA("Reviewer") + "     " + D("validates"));
+      console.log("  " + RD("  └─") + " " + RA("Observer") + "     " + D("monitors"));
+      console.log(""); continue;
+    }
+    if (input.startsWith("/run")) {
+      let cmd = input.startsWith("/run ") ? input.slice(5) : "";
+      if (!cmd) { const { c } = await inquirer.prompt([{ type: "input", name: "c", message: "$", prefix: PFX }]); cmd = c; }
+      if (cmd) { try { const o = execSync(cmd, { encoding: "utf-8", timeout: 30000, cwd: getProjectRoot(), stdio: ["pipe", "pipe", "pipe"] }); console.log(D(o.trim().split("\n").slice(0, 20).map(l => "  " + l).join("\n"))); } catch (e) { console.log("  " + Y("✗") + " " + (e.stderr || e.message || "").slice(0, 100)); } }
+      console.log(""); continue;
+    }
+    if (input === "/clear") { chatHistory.length = 0; console.log("  " + D("Cleared.")); console.log(""); continue; }
+    if (input.startsWith("/")) { console.log("  " + D("Unknown command. Type / for menu.")); console.log(""); continue; }
 
-    // Resume readline
-    rl.resume();
-    rl.prompt();
-  });
+    await sendMessage(input);
+  }
 
-  rl.on("close", () => {
-    console.log("");
-    process.exit(0);
-  });
+  process.exit(0);
 }
 
 export { cmdSetup as runInlineWizard };
