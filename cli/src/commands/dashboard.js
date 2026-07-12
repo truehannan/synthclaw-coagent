@@ -189,7 +189,7 @@ async function sendMessage(msg) {
   }
 }
 
-async function handleCmd(input) {
+async function handleCmd(input, rl) {
   const [cmd, ...args] = input.split(" ");
   const arg = args.join(" ");
   switch (cmd) {
@@ -224,7 +224,7 @@ async function handleCmd(input) {
     case "/run":
       if (!arg) {
         const { c } = await inquirer.prompt([{ type: "input", name: "c", message: "$", prefix: PFX }]);
-        if (c) return handleCmd("/run " + c);
+        if (c) return handleCmd("/run " + c, rl);
         return;
       }
       try {
@@ -250,15 +250,21 @@ async function handleCmd(input) {
 //  SLASH MENU (triggered by typing just "/")
 // ══════════════════════════════════════════════════════════════════════════════
 
-async function showSlashMenu() {
-  const { c } = await inquirer.prompt([{
-    type: "list",
-    name: "c",
-    message: R("▸") + " Command:",
-    choices: CMD_LIST,
-    pageSize: 12,
-  }]);
-  await handleCmd(c);
+async function showSlashMenu(rl) {
+  rl.pause(); // CRITICAL: pause readline so inquirer can use stdin
+  try {
+    const { c } = await inquirer.prompt([{
+      type: "list",
+      name: "c",
+      message: R("▸") + " Command:",
+      choices: CMD_LIST,
+      pageSize: 12,
+    }]);
+    await handleCmd(c, rl);
+  } catch {
+    // User cancelled (Ctrl+C during menu) — just resume
+  }
+  rl.resume();
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -291,13 +297,17 @@ export async function runDashboard() {
 
     if (input === "/") {
       // Show interactive command menu
-      await showSlashMenu();
+      await showSlashMenu(rl);
     } else if (input.startsWith("/")) {
       // Direct slash command
-      await handleCmd(input);
+      rl.pause();
+      await handleCmd(input, rl);
+      rl.resume();
     } else {
       // Chat message
+      rl.pause();
       await sendMessage(input);
+      rl.resume();
     }
 
     rl.prompt();
