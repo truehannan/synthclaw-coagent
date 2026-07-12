@@ -12,6 +12,34 @@ const D = chalk.dim;
 const isWin = process.platform === "win32";
 
 export async function runDeploy(args) {
+  // ── Frontend Deployment Target ─────────────────────────────────────────────
+  console.log("");
+  console.log("  " + RD("╭─── Deployment Mode ────────────────────────────╮"));
+  console.log("  " + RD("│") + "                                               " + RD("│"));
+  console.log("  " + RD("│") + "  Where should SynthClaw be deployed?           " + RD("│"));
+  console.log("  " + RD("│") + "                                               " + RD("│"));
+  console.log("  " + RD("╰───────────────────────────────────────────────╯"));
+  console.log("");
+
+  const { deployMode } = await inquirer.prompt([{
+    type: "list",
+    name: "deployMode",
+    message: "Deployment mode:",
+    choices: [
+      { name: `Localhost — run locally on this machine`, value: "localhost" },
+      { name: `Remote IP — http://your-vps-ip`, value: "ip" },
+      { name: `Remote Domain — https://your-domain.com`, value: "domain" },
+      { name: `Remote Path — http://your-vps-ip/path`, value: "path" },
+    ],
+  }]);
+
+  // Localhost mode — no SSH needed
+  if (deployMode === "localhost") {
+    const root = getProjectRoot();
+    return await deployLocalhost(root);
+  }
+
+  // Remote modes — need SSH details
   let host = config.get("remote_host");
   let user = config.get("remote_user") || "root";
 
@@ -26,27 +54,6 @@ export async function runDeploy(args) {
     config.set("remote_user", user);
   }
 
-  // ── Frontend Deployment Target ─────────────────────────────────────────────
-  console.log("");
-  console.log("  " + RD("╭─── Frontend Deployment ───────────────────────╮"));
-  console.log("  " + RD("│") + "                                               " + RD("│"));
-  console.log("  " + RD("│") + "  Where should the frontend be accessible?      " + RD("│"));
-  console.log("  " + RD("│") + "                                               " + RD("│"));
-  console.log("  " + RD("╰───────────────────────────────────────────────╯"));
-  console.log("");
-
-  const { deployMode } = await inquirer.prompt([{
-    type: "list",
-    name: "deployMode",
-    message: "Frontend access mode:",
-    choices: [
-      { name: `IP only — http://${host}:3000`, value: "ip" },
-      { name: `Domain — https://your-domain.com`, value: "domain" },
-      { name: `Path — http://${host}/path`, value: "path" },
-      { name: `Localhost — http://localhost:3000 (local dev/personal)`, value: "localhost" },
-    ],
-  }]);
-
   let domain = "";
   let basePath = "/";
   let frontendPort = 3000;
@@ -60,9 +67,6 @@ export async function runDeploy(args) {
   } else if (deployMode === "path") {
     const { p } = await inquirer.prompt([{ type: "input", name: "p", message: "Path (e.g. /agent):", default: "/agent" }]);
     basePath = p.startsWith("/") ? p : "/" + p;
-  } else if (deployMode === "localhost") {
-    // Localhost mode — run everything locally, no SSH
-    return await deployLocalhost(root);
   }
 
   config.set("deploy_mode", deployMode);
