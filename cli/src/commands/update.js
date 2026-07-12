@@ -67,25 +67,36 @@ export async function runUpdate() {
   // Step 5: npm link (make synthclaw command available globally)
   const s5 = ora("Linking synthclaw command...").start();
   try {
-    execSync("npm link --prefix cli", { encoding: "utf-8", cwd: root, timeout: 15000 });
-    s5.succeed("synthclaw command linked");
+    execSync("npm link --prefix cli 2>&1", { encoding: "utf-8", cwd: root, timeout: 15000 });
+    s5.succeed("synthclaw command linked globally");
   } catch (err) {
-    s5.warn("Link may have failed — try: cd cli && npm link");
+    // Try with --force or suggest manual
+    try {
+      execSync("npm link --prefix cli --force 2>&1", { encoding: "utf-8", cwd: root, timeout: 15000 });
+      s5.succeed("synthclaw command linked (forced)");
+    } catch {
+      s5.warn("Link failed (need sudo on Linux, or admin on Windows)");
+      printInfo("Manual fix: cd cli && sudo npm link");
+      printInfo("Or just run: node " + root + "/cli/dist/index.js");
+    }
   }
 
-  // Step 6: Update Python deps if venv exists
-  const venvPip = root + "/venv/bin/pip";
+  // Step 6: Update Python deps
   const reqFile = root + "/requirements.txt";
-  if (existsSync(venvPip) && existsSync(reqFile)) {
+  if (existsSync(reqFile)) {
     const s6 = ora("Updating Python dependencies...").start();
+    const venvPip = root + "/venv/bin/pip";
     try {
-      execSync(`${venvPip} install -r ${reqFile} -q`, { encoding: "utf-8", cwd: root, timeout: 180000 });
+      if (existsSync(venvPip)) {
+        execSync(`${venvPip} install -r ${reqFile} -q`, { encoding: "utf-8", cwd: root, timeout: 180000 });
+      } else {
+        execSync(`python3 -m pip install -r ${reqFile} -q 2>&1 || pip install -r ${reqFile} -q 2>&1`, { encoding: "utf-8", cwd: root, timeout: 180000, shell: true });
+      }
       s6.succeed("Python deps updated");
     } catch (err) {
-      s6.warn("Python deps update failed — run: venv/bin/pip install -r requirements.txt");
+      s6.warn("Python deps update had issues");
+      printInfo("Run manually: pip install -r requirements.txt");
     }
-  } else if (existsSync(reqFile)) {
-    printInfo("No venv found. Create one: python3 -m venv venv && venv/bin/pip install -r requirements.txt");
   }
 
   console.log("");
