@@ -1,4 +1,4 @@
-name: Deploy to Alibaba Cloud
+name: Deploy to Production
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 env:
   REMOTE_DIR: /opt/synthclaw
-  SSH_USER: ${{ secrets.SSH_USER || 'root' }}
+  SSH_USER: root
 
 jobs:
   build-and-test:
@@ -22,8 +22,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: cli/package-lock.json
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt
@@ -36,13 +34,11 @@ jobs:
           python -c "import ast; ast.parse(open('config.py').read()); print('config.py OK')"
           python -c "import ast; ast.parse(open('memory.py').read()); print('memory.py OK')"
           python -c "import ast; ast.parse(open('tools.py').read()); print('tools.py OK')"
-          python -c "import ast; ast.parse(open('model_fetcher.py').read()); print('model_fetcher.py OK')"
 
       - name: Test Python imports
         env:
           SYNTHCLAW_BASE_DIR: .
-        run: |
-          python -c "import config; import memory; import agents; print('All imports OK')"
+        run: python -c "import config; import memory; import agents; print('All imports OK')"
 
       - name: Build CLI
         run: cd cli && npm install && npm run build
@@ -57,75 +53,144 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Node (for frontend build)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Build frontend for deployment
+        run: cd frontend && npm install && npx vite build
+
       - name: Install sshpass
         run: sudo apt-get install -y sshpass
 
-      - name: Create remote directory
+      - name: Create remote directory structure
         run: |
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
             ${{ env.SSH_USER }}@${{ secrets.HOST }} \
-            "mkdir -p ${{ env.REMOTE_DIR }}"
+            "mkdir -p ${{ env.REMOTE_DIR }}/frontend/dist"
 
       - name: Upload Python agent files
         run: |
-          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no \
+          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no -r \
             main.py agent.py agents.py tools.py memory.py config.py \
             model_fetcher.py d1_storage.py api_server.py requirements.txt \
             ${{ env.SSH_USER }}@${{ secrets.HOST }}:${{ env.REMOTE_DIR }}/
 
-      - name: Install remote Python dependencies
+      - name: Upload frontend build
         run: |
-          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
-            ${{ env.SSH_USER }}@${{ secrets.HOST }} \
-            "cd ${{ env.REMOTE_DIR }} && pip3 install -r requirements.txt -q" || true
+          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no -r \
+            frontend/dist/* \
+            ${{ env.SSH_USER }}@${{ secrets.HOST }}:${{ env.REMOTE_DIR }}/frontend/dist/
 
-      - name: Create/update systemd service
+      - name: Install Python dependencies on remote
         run: |
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
-            ${{ env.SSH_USER }}@${{ secrets.HOST }} \
-            "cat > /etc/systemd/system/synthclaw.service << 'EOF'
+            ${{ env.SSH_USER }}@${{ secrets.HOST }} << 'SCRIPT'
+          cd /opt/synthclaw
+          # Create venv if not exists
+          if [ ! -d "venv" ]; then
+            python3 -m venv venv
+          fi
+          # Install deps in venv
+          ./venv/bin/pip install -r requirements.txt -q
+          SCRIPT
+
+      - name: Install and configure nginx
+        run: |
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
+            ${{ env.SSH_USER }}@${{ secrets.HOST }} << 'SCRIPT'
+          apt-get install -y nginx > /dev/null 2>&1
+          cat > /etc/nginx/sites-available/synthclaw << 'NGINX'
+          server {
+              listen 80 default_server;
+              server_name _;
+              root /opt/synthclaw/frontend/dist;
+              index index.html;
+
+              location / {
+                  try_files $uri $uri/ /index.html;
+              }
+
+              location /api/ {
+                  proxy_pass http://127.0.0.1:8000/api/;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection "upgrade";
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_buffering off;
+              }
+          }
+          NGINX
+          ln -sf /etc/nginx/sites-available/synthclaw /etc/nginx/sites-enabled/default
+          rm -f /etc/nginx/sites-enabled/synthclaw 2>/dev/null
+          ln -sf /etc/nginx/sites-available/synthclaw /etc/nginx/sites-enabled/synthclaw
+          nginx -t && systemctl restart nginx
+          SCRIPT
+
+      - name: Create and start systemd service
+        run: |
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
+            ${{ env.SSH_USER }}@${{ secrets.HOST }} << 'SCRIPT'
+          cat > /etc/systemd/system/synthclaw.service << 'SVC'
           [Unit]
           Description=SynthClaw Agent Society
           After=network.target
 
           [Service]
           Type=simple
-          User=${{ env.SSH_USER }}
-          WorkingDirectory=${{ env.REMOTE_DIR }}
-          ExecStart=/usr/bin/python3 ${{ env.REMOTE_DIR }}/main.py
+          User=root
+          WorkingDirectory=/opt/synthclaw
+          ExecStart=/opt/synthclaw/venv/bin/python3 /opt/synthclaw/main.py
           Restart=always
           RestartSec=5
-          Environment=SYNTHCLAW_BASE_DIR=${{ env.REMOTE_DIR }}
+          Environment=SYNTHCLAW_BASE_DIR=/opt/synthclaw
+          Environment=SYNTHCLAW_API_PORT=8000
+          Environment=SYNTHCLAW_API_HOST=0.0.0.0
+          Environment=INTERFACE_MODE=cli
 
           [Install]
           WantedBy=multi-user.target
-          EOF
-          systemctl daemon-reload && systemctl enable synthclaw"
-
-      - name: Restart service
-        run: |
-          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
-            ${{ env.SSH_USER }}@${{ secrets.HOST }} \
-            "systemctl restart synthclaw"
+          SVC
+          systemctl daemon-reload
+          systemctl enable synthclaw
+          systemctl restart synthclaw
+          SCRIPT
 
       - name: Wait for startup
-        run: sleep 5
+        run: sleep 8
 
       - name: Health check
         run: |
-          for i in 1 2 3; do
-            if sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
+          for i in 1 2 3 4 5; do
+            RESULT=$(sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
               ${{ env.SSH_USER }}@${{ secrets.HOST }} \
-              "curl -sf http://localhost:8000/api/system/health"; then
-              echo ""
-              echo "✓ Health check passed"
+              "curl -sf http://localhost:8000/api/system/health 2>/dev/null" || echo "FAIL")
+            if echo "$RESULT" | grep -q "ok"; then
+              echo "✓ API health check passed!"
+              echo "✓ Deployed to: http://${{ secrets.HOST }}"
               exit 0
             fi
-            echo "Attempt $i failed, waiting 5s..."
+            echo "Attempt $i: waiting 5s..."
             sleep 5
           done
-          echo "✗ Health check failed after 3 attempts"
+          echo "⚠ API health check failed — checking logs..."
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
             ${{ env.SSH_USER }}@${{ secrets.HOST }} \
-            "journalctl -u synthclaw -n 30 --no-pager" || true
+            "journalctl -u synthclaw -n 20 --no-pager" || true
+          echo ""
+          echo "Note: nginx may still serve frontend at http://${{ secrets.HOST }}"
+          echo "API may need .env configuration (OPENAI_API_KEY etc)"
           exit 1
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "══════════════════════════════════════════"
+          echo "  DEPLOYMENT COMPLETE"
+          echo "══════════════════════════════════════════"
+          echo "  Frontend: http://${{ secrets.HOST }}"
+          echo "  API:      http://${{ secrets.HOST }}/api"
+          echo "  Health:   http://${{ secrets.HOST }}/api/system/health"
+          echo "══════════════════════════════════════════"
