@@ -4,11 +4,9 @@
   "private": true,
   "description": "SynthClaw CoAgent — Personal AI Agent",
   "scripts": {
-    "setup": "cd cli && npm install && npm run build && (npm link 2>/dev/null || echo 'Note: npm link failed (try with sudo or use npx). You can run: node cli/dist/index.js')",
-    "install": "cd cli && npm install",
+    "setup": "cd cli && npm install && npm run build && npm link",
     "build": "cd cli && npm install && npm run build",
-    "link": "cd cli && npm install && npm run build && npm link",
-    "postinstall": "cd cli && npm run build 2>/dev/null || true"
+    "link": "cd cli && npm link"
   },
   "engines": {
     "node": ">=18"

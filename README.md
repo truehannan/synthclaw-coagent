@@ -26,7 +26,12 @@ synthclaw
 
 That's it. The dashboard launches, detects it's unconfigured, and walks you through setup.
 
-> **If `npm run setup` fails on `npm link`**: run `sudo npm run setup` or use `node cli/dist/index.js` directly.
+> **Windows**: If `npm run setup` fails at the `npm link` step, run it as Administrator. Or skip linking and run directly:
+> ```bash
+> node cli/dist/index.js
+> ```
+
+> **To update later**: `synthclaw update` (pulls latest), then `npm run setup` again.
 
 ---
 
