@@ -14,6 +14,7 @@ import Settings from "@/pages/Settings";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = getToken();
+  // If no token stored, try to auto-detect (API might not require auth for health)
   if (!token) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }

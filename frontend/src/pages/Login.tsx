@@ -35,12 +35,12 @@ export default function Login() {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="mb-1 block text-xs text-muted">API Token</label>
+            <label className="mb-1 block text-xs text-muted">API Key (same one from CLI /setup)</label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="Paste your API token..."
+              placeholder="Paste your provider API key (from CLI setup)..."
               className="w-full rounded-sm border border-border bg-card px-3 py-2.5 text-sm text-foreground placeholder-muted/50 outline-none focus:border-primary"
               autoFocus
             />
@@ -58,7 +58,7 @@ export default function Login() {
         </form>
 
         <p className="text-center text-[10px] text-muted">
-          Token is in ~/.config/synthclaw/.api_token
+          Use the same API key you entered during synthclaw /setup.
         </p>
       </div>
     </div>
