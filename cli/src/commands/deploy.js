@@ -120,7 +120,7 @@ async function deployLocalhost(root) {
     }
   }
 
-  // Summary
+  // Summary + auto-serve frontend
   console.log("");
   console.log(RD("━".repeat(50)));
   console.log(chalk.bold("  ✓ LOCAL DEPLOYMENT COMPLETE"));
@@ -129,11 +129,21 @@ async function deployLocalhost(root) {
   printSuccess("API:      http://localhost:8000");
   printSuccess("Health:   http://localhost:8000/api/system/health");
   if (existsSync(join(root, "frontend", "dist"))) {
-    printSuccess("Frontend: cd frontend && npx serve dist -l 3000");
+    // Actually run the serve command in background
+    const servePath = join(root, "frontend", "dist");
+    try {
+      const serveCmd = isWin
+        ? `start "" /b npx --yes serve "${servePath}" -l 3000 -s`
+        : `npx --yes serve "${servePath}" -l 3000 -s > /dev/null 2>&1 &`;
+      execSync(serveCmd, { encoding: "utf-8", timeout: 15000, shell: true, cwd: root });
+      printSuccess("Frontend: http://localhost:3000 (running)");
+    } catch {
+      printInfo("Frontend: run → npx serve frontend/dist -l 3000 -s");
+    }
   }
   console.log("");
-  printInfo("API token: " + join(root, ".api_token"));
-  printInfo("Logs:      " + join(root, "agent.log"));
+  printInfo("Login with the same API key you used in CLI setup.");
+  printInfo("Logs: " + join(root, "agent.log"));
   console.log("");
 }
 

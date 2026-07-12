@@ -117,21 +117,33 @@ async function cmdSetup() {
 
 async function cmdModel() {
   if (!config.get("openai_api_key")) { console.log("  " + Y("No API key. Running setup...")); await cmdSetup(); return; }
-  const { p } = await inquirer.prompt([{ type: "list", name: "p", message: "Provider:", choices: Object.keys(PROVIDERS), prefix: PFX }]);
+  const provChoices = [...Object.keys(PROVIDERS), new inquirer.Separator(), { name: D("← Back"), value: "__back__" }];
+  const { p } = await inquirer.prompt([{ type: "list", name: "p", message: "Provider:", choices: provChoices, prefix: PFX }]);
+  if (p === "__back__") return;
   const pc = PROVIDERS[p];
   const base = pc.buildBase ? pc.buildBase({ account_id: config.get("cf_account_id") }) : (pc.base || config.get("openai_api_base"));
   console.log("  " + D("Fetching models..."));
   let models = [];
   try { const r = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${config.get("openai_api_key")}` }, signal: AbortSignal.timeout(10000) }); if (r.ok) { const d = await r.json(); models = (d.data || d.models || []).map(i => typeof i === "string" ? i : (i.id || i.name || "")).filter(Boolean).slice(0, 30); } } catch {}
-  if (!models.length) models = ["llama3.3-70b-instruct"];
+  if (!models.length) models = [];
+  // Always add custom input + back options
+  models.push(new inquirer.Separator(), { name: R("✎") + "  Enter model ID manually", value: "__custom__" }, { name: D("← Back"), value: "__back__" });
   const { m } = await inquirer.prompt([{ type: "list", name: "m", message: "Model:", choices: models, pageSize: 15, prefix: PFX }]);
-  config.set("default_model", m);
-  console.log("  " + RD("──") + R("•") + " Model: " + chalk.bold(m));
+  if (m === "__back__") return;
+  if (m === "__custom__") {
+    const { c } = await inquirer.prompt([{ type: "input", name: "c", message: "Model ID:", prefix: PFX }]);
+    if (c) { config.set("default_model", c); console.log("  " + RD("──") + R("•") + " Model: " + chalk.bold(c)); }
+  } else {
+    config.set("default_model", m);
+    console.log("  " + RD("──") + R("•") + " Model: " + chalk.bold(m));
+  }
   console.log("");
 }
 
 async function cmdProviders() {
-  const { p } = await inquirer.prompt([{ type: "list", name: "p", message: "Provider:", choices: Object.keys(PROVIDERS), prefix: PFX }]);
+  const provChoices = [...Object.keys(PROVIDERS), new inquirer.Separator(), { name: D("← Back"), value: "__back__" }];
+  const { p } = await inquirer.prompt([{ type: "list", name: "p", message: "Provider:", choices: provChoices, prefix: PFX }]);
+  if (p === "__back__") return;
   const pc = PROVIDERS[p];
   if (!pc.fields.length) { console.log("  " + D("No config needed.")); return; }
   const pf = {};
@@ -227,7 +239,8 @@ export async function runDashboard() {
     if (input === "/model") { await cmdModel(); continue; }
     if (input === "/providers") { await cmdProviders(); continue; }
     if (input === "/skills") {
-      const { a } = await inquirer.prompt([{ type: "list", name: "a", message: "Skills:", choices: ["Install @user/skill", "List", "Remove"], prefix: PFX }]);
+      const { a } = await inquirer.prompt([{ type: "list", name: "a", message: "Skills:", choices: ["Install @user/skill", "List", "Remove", new inquirer.Separator(), { name: D("← Back"), value: "__back__" }], prefix: PFX }]);
+      if (a === "__back__") continue;
       if (a.startsWith("I")) { const { p } = await inquirer.prompt([{ type: "input", name: "p", message: "@user/skill:", prefix: PFX }]); if (p) console.log("  " + RD("──") + R("•") + ` ${p} installed`); }
       console.log(""); continue;
     }
