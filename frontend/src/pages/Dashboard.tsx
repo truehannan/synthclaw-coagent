@@ -1,16 +1,26 @@
 import { useEffect, useState } from "react";
 import { system, models, society } from "@/lib/api";
-import { Cpu, HardDrive, MemoryStick, Clock, Brain, Activity } from "lucide-react";
+import { Cpu, HardDrive, MemoryStick, Clock, Brain, Activity, BarChart3 } from "lucide-react";
+
+interface UsageEntry {
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  calls: number;
+}
 
 export default function Dashboard() {
   const [status, setStatus] = useState<any>(null);
   const [model, setModel] = useState("");
   const [societyStatus, setSocietyStatus] = useState<any>(null);
+  const [usage, setUsage] = useState<UsageEntry[]>([]);
 
   useEffect(() => {
     system.status().then(setStatus).catch(() => {});
     models.current().then((r) => setModel(r.model)).catch(() => {});
     society.status().then(setSocietyStatus).catch(() => {});
+    models.usage().then((r) => setUsage(r.usage || [])).catch(() => {});
   }, []);
 
   const formatBytes = (b: number) => {
@@ -24,6 +34,25 @@ export default function Dashboard() {
     const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
     return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`;
   };
+
+  const formatTokens = (n: number) => {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+    return String(n);
+  };
+
+  // Simple cost estimation (approximate $/1M tokens)
+  const estimateCost = (entry: UsageEntry): string => {
+    // Default pricing tiers (rough averages)
+    const inputRate = 0.5; // $/1M input tokens
+    const outputRate = 1.5; // $/1M output tokens
+    const cost = (entry.input_tokens * inputRate + entry.output_tokens * outputRate) / 1_000_000;
+    if (cost < 0.001) return "<$0.001";
+    return `~$${cost.toFixed(3)}`;
+  };
+
+  const totalTokens = usage.reduce((sum, u) => sum + u.total_tokens, 0);
+  const totalCalls = usage.reduce((sum, u) => sum + u.calls, 0);
 
   return (
     <div className="p-6">
@@ -62,6 +91,45 @@ export default function Dashboard() {
             {societyStatus?.agents?.total_completed || 0} tasks completed
           </p>
         </div>
+      </div>
+
+      {/* Usage section */}
+      <div className="mt-6 rounded-sm border border-border bg-card p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2 text-xs text-muted">
+            <BarChart3 className="h-3.5 w-3.5" />
+            Token Usage
+          </div>
+          <div className="flex gap-4 text-[10px] text-muted">
+            <span>Total: <span className="text-foreground font-medium">{formatTokens(totalTokens)}</span> tokens</span>
+            <span>Calls: <span className="text-foreground font-medium">{totalCalls}</span></span>
+          </div>
+        </div>
+
+        {usage.length > 0 ? (
+          <div className="space-y-2">
+            {/* Header */}
+            <div className="grid grid-cols-5 gap-2 text-[10px] text-muted border-b border-border/50 pb-1">
+              <span className="col-span-2">Model</span>
+              <span className="text-right">Input</span>
+              <span className="text-right">Output</span>
+              <span className="text-right">Est. Cost</span>
+            </div>
+            {/* Rows */}
+            {usage.map((u) => (
+              <div key={u.model} className="grid grid-cols-5 gap-2 text-xs items-center">
+                <span className="col-span-2 text-foreground font-medium truncate" title={u.model}>
+                  {u.model}
+                </span>
+                <span className="text-right text-muted">{formatTokens(u.input_tokens)}</span>
+                <span className="text-right text-muted">{formatTokens(u.output_tokens)}</span>
+                <span className="text-right text-primary font-medium">{estimateCost(u)}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-muted text-center py-4">No usage data yet. Start chatting to track tokens.</p>
+        )}
       </div>
 
       {/* Quick info */}

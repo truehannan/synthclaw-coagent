@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { setToken } from "@/lib/api";
+import Mascot from "@/components/Mascot";
 
 export default function Signup() {
   const [password, setPassword] = useState("");
@@ -32,6 +33,7 @@ export default function Signup() {
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
+          <Mascot className="mx-auto mb-4" />
           <h1 className="text-2xl font-bold text-primary">[+] SynthClaw</h1>
           <p className="mt-2 text-xs text-muted">First time setup — create your password</p>
         </div>

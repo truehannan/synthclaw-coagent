@@ -37,6 +37,7 @@ export const auth = {
   exists: () => fetch(`${BASE}/auth/exists`).then(r => r.json()),
   signup: (password: string) => fetch(`${BASE}/auth/signup`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) }).then(r => r.json()),
   login: (password: string) => request("/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
+  changePassword: (current_password: string, new_password: string) => request("/auth/change-password", { method: "POST", body: JSON.stringify({ current_password, new_password }) }),
 };
 
 // ── Chat ─────────────────────────────────────────────────────────────────────
@@ -123,4 +124,16 @@ export const apis = {
 
 export const composio = {
   connections: () => request("/composio/connections"),
+};
+
+// ── MCP Servers ──────────────────────────────────────────────────────────────
+export const mcp = {
+  list: () => request("/mcp/servers"),
+  add: (config: any) => request("/mcp/servers", { method: "POST", body: JSON.stringify({ config }) }),
+  remove: (name: string) => request(`/mcp/servers/${name}`, { method: "DELETE" }),
+};
+
+// ── Setup ────────────────────────────────────────────────────────────────────
+export const setup = {
+  status: () => request("/setup/status"),
 };

@@ -3,6 +3,7 @@ import { Send, Square, CheckCircle, XCircle } from "lucide-react";
 import { chat } from "@/lib/api";
 import type { Message } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
+import Mascot from "@/components/Mascot";
 
 export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -10,16 +11,34 @@ export default function Chat() {
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState("");
   const [pendingApproval, setPendingApproval] = useState(false);
+  const [approvalDesc, setApprovalDesc] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     loadHistory();
+    // Start polling for task status / approval requests
+    pollRef.current = setInterval(pollTaskStatus, 3000);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamText]);
+
+  async function pollTaskStatus() {
+    try {
+      const res = await chat.taskStatus();
+      if (res.pending_approval?.active && !res.pending_approval?.resolved) {
+        setPendingApproval(true);
+        setApprovalDesc(res.pending_approval.description || "");
+      } else {
+        setPendingApproval(false);
+        setApprovalDesc("");
+      }
+    } catch {}
+  }
 
   async function loadHistory() {
     try {
@@ -95,6 +114,7 @@ export default function Chat() {
           {messages.length === 0 && !streaming && (
             <div className="flex h-64 items-center justify-center text-center">
               <div>
+                <Mascot className="mx-auto mb-4" />
                 <p className="text-lg font-semibold text-primary">[+] SynthClaw</p>
                 <p className="mt-2 text-xs text-muted">Send a message to start. Your agent is ready.</p>
               </div>
@@ -140,7 +160,9 @@ export default function Chat() {
           {pendingApproval && (
             <div className="animate-slide-up rounded-sm border border-warning bg-warning/10 p-4">
               <p className="text-sm font-semibold text-warning">Approval Required</p>
-              <p className="mt-1 text-xs text-muted">The agent wants to perform a dangerous operation.</p>
+              <p className="mt-1 text-xs text-muted">
+                {approvalDesc || "The agent wants to perform a dangerous operation."}
+              </p>
               <div className="mt-3 flex gap-2">
                 <button onClick={() => { chat.approve(); setPendingApproval(false); }}
                   className="flex items-center gap-1.5 rounded-sm bg-success/20 px-3 py-1.5 text-xs font-medium text-success hover:bg-success/30">

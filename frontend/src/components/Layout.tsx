@@ -1,7 +1,7 @@
 import { Outlet, NavLink, useLocation } from "react-router-dom";
 import {
   MessageSquare, LayoutDashboard, Server, Brain, Key,
-  BookOpen, Puzzle, Settings, LogOut,
+  BookOpen, Puzzle, Settings, LogOut, Link2,
 } from "lucide-react";
 import { clearToken } from "@/lib/api";
 import SessionSidebar from "@/components/SessionSidebar";
@@ -15,6 +15,7 @@ const NAV = [
   { to: "/memory", icon: BookOpen, label: "Memory" },
   { to: "/credentials", icon: Key, label: "Credentials" },
   { to: "/skills", icon: Puzzle, label: "Skills" },
+  { to: "/integrations", icon: Link2, label: "Integrations" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ];
 

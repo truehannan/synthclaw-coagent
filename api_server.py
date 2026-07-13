@@ -160,6 +160,54 @@ async def auth_login(request: Request):
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 
+@app.post("/api/auth/change-password", dependencies=[Depends(verify_token)])
+async def auth_change_password(request: Request):
+    """Change user password. Requires current password."""
+    body = await request.json()
+    current = body.get("current_password", "")
+    new_pw = body.get("new_password", "")
+    if not new_pw or len(new_pw) < 4:
+        raise HTTPException(status_code=400, detail="New password must be at least 4 characters")
+    # Verify current password
+    stored_hash = mem.get_memory("user_password_hash")
+    if stored_hash:
+        if hashlib.sha256(current.encode()).hexdigest() != stored_hash:
+            # Also accept API token as current password
+            if current != API_TOKEN:
+                raise HTTPException(status_code=401, detail="Current password is incorrect")
+    else:
+        # No password set — accept API token
+        if current != API_TOKEN:
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+    # Set new password
+    new_hash = hashlib.sha256(new_pw.encode()).hexdigest()
+    mem.set_memory("user_password_hash", new_hash)
+    return {"success": True}
+
+
+@app.get("/api/setup/status", dependencies=[Depends(verify_token)])
+async def setup_status():
+    """Check if initial setup (provider + model) is complete."""
+    has_provider = False
+    try:
+        from agent import PROVIDER_META, _provider_key_name
+        for name in PROVIDER_META:
+            key_name = _provider_key_name(name)
+            if mem.get_credential(key_name):
+                has_provider = True
+                break
+    except Exception:
+        # Fallback: check if OPENAI_API_KEY env is set
+        has_provider = bool(cfg.OPENAI_API_KEY)
+
+    has_model = bool(mem.get_memory("default_model") or cfg.DEFAULT_MODEL)
+    configured = has_provider and has_model
+    return {
+        "configured": configured,
+        "has_provider": has_provider,
+        "has_model": has_model,
+    }
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CHAT ENDPOINTS
@@ -702,6 +750,67 @@ async def switch_session(session_id: str):
 # ══════════════════════════════════════════════════════════════════════════════
 #  INTEGRATIONS ENDPOINTS
 # ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/mcp/servers", dependencies=[Depends(verify_token)])
+async def list_mcp_servers():
+    """List all configured MCP servers."""
+    all_mem = mem.get_all_memory()
+    servers = []
+    for key, value in all_mem.items():
+        if key.startswith("mcp:"):
+            name = key[4:]  # strip "mcp:" prefix
+            try:
+                config_data = json.loads(value)
+            except Exception:
+                config_data = {}
+            servers.append({
+                "name": name,
+                "config": config_data,
+                "transport": config_data.get("transport", "stdio") if "transport" in config_data else ("stdio" if "command" in config_data else "sse"),
+            })
+    return {"servers": servers}
+
+
+@app.post("/api/mcp/servers", dependencies=[Depends(verify_token)])
+async def add_mcp_server(request: Request):
+    """Add MCP server(s) from JSON config."""
+    body = await request.json()
+    json_config = body.get("config", {})
+
+    # Support both {mcpServers: {...}} and direct {name: {command, args}}
+    if isinstance(json_config, str):
+        try:
+            json_config = json.loads(json_config)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    servers = json_config.get("mcpServers", json_config)
+    if not isinstance(servers, dict) or not servers:
+        raise HTTPException(status_code=400, detail="Expected JSON with server configs")
+
+    added = []
+    for name, conf in servers.items():
+        mem.set_memory(f"mcp:{name}", json.dumps(conf))
+        added.append(name)
+
+    return {"success": True, "added": added}
+
+
+@app.delete("/api/mcp/servers/{name}", dependencies=[Depends(verify_token)])
+async def remove_mcp_server(name: str):
+    """Remove an MCP server configuration."""
+    key = f"mcp:{name}"
+    if not mem.get_memory(key):
+        raise HTTPException(status_code=404, detail=f"MCP server not found: {name}")
+    try:
+        conn = mem._get_conn()
+        conn.execute("DELETE FROM memory WHERE key = ?", (key,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    return {"success": True}
+
 
 @app.get("/api/apis", dependencies=[Depends(verify_token)])
 async def list_apis():

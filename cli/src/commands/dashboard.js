@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { execSync } from "child_process";
-import { existsSync, writeFileSync } from "fs";
+import { existsSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
 import inquirer from "inquirer";
 import { config, generateEnvContent, getProjectRoot } from "../utils.js";
@@ -62,10 +62,13 @@ const COMMANDS = [
   { key: "3", cmd: "/providers", label: "Providers", desc: "manage API keys" },
   { key: "4", cmd: "/skills", label: "Skills", desc: "install/manage skills" },
   { key: "5", cmd: "/society", label: "Society", desc: "agent tree view" },
-  { key: "6", cmd: "/run", label: "Run", desc: "execute shell command" },
-  { key: "7", cmd: "/clear", label: "Clear", desc: "clear chat history" },
-  { key: "8", cmd: "/help", label: "Help", desc: "show this menu" },
-  { key: "9", cmd: "/quit", label: "Quit", desc: "exit" },
+  { key: "6", cmd: "/usage", label: "Usage", desc: "token usage stats" },
+  { key: "7", cmd: "/approve", label: "Approve", desc: "approve pending action" },
+  { key: "8", cmd: "/deny", label: "Deny", desc: "deny pending action" },
+  { key: "9", cmd: "/run", label: "Run", desc: "execute shell command" },
+  { key: "0", cmd: "/clear", label: "Clear", desc: "clear chat history" },
+  { key: "h", cmd: "/help", label: "Help", desc: "show this menu" },
+  { key: "q", cmd: "/quit", label: "Quit", desc: "exit" },
 ];
 
 function printMenu() {
@@ -197,6 +200,9 @@ const CMD_CHOICES = [
   { name: R("⊞") + "  Providers    " + D("— manage API keys"), value: "/providers" },
   { name: R("◈") + "  Skills       " + D("— install/manage skills"), value: "/skills" },
   { name: R("🏛") + " Society      " + D("— agent tree view"), value: "/society" },
+  { name: R("◆") + "  Usage        " + D("— token usage stats"), value: "/usage" },
+  { name: G("✓") + "  Approve      " + D("— approve pending action"), value: "/approve" },
+  { name: R("✗") + "  Deny         " + D("— deny pending action"), value: "/deny" },
   { name: R("▷") + "  Run          " + D("— execute shell command"), value: "/run" },
   { name: R("◻") + "  Clear        " + D("— clear chat"), value: "/clear" },
   { name: R("⊘") + "  Quit         " + D("— exit"), value: "/quit" },
@@ -251,6 +257,66 @@ export async function runDashboard() {
       console.log("  " + RD("  ├─") + " " + RA("Executor") + "     " + D("runs commands"));
       console.log("  " + RD("  ├─") + " " + RA("Reviewer") + "     " + D("validates"));
       console.log("  " + RD("  └─") + " " + RA("Observer") + "     " + D("monitors"));
+      console.log(""); continue;
+    }
+    if (input === "/usage") {
+      const apiBase = config.get("openai_api_base");
+      const apiKey = config.get("openai_api_key");
+      console.log("");
+      console.log("  " + R("TOKEN USAGE"));
+      console.log("");
+      // Try to fetch from local API server
+      try {
+        const port = config.get("api_port") || 8000;
+        const tokenFile = join(getProjectRoot(), ".api_token");
+        let token = "";
+        try { token = existsSync(tokenFile) ? readFileSync(tokenFile, "utf-8").trim() : apiKey; } catch { token = apiKey; }
+        const r = await fetch(`http://127.0.0.1:${port}/api/models/usage`, { headers: { "X-API-Token": token }, signal: AbortSignal.timeout(5000) });
+        if (r.ok) {
+          const data = await r.json();
+          const usage = data.usage || [];
+          if (usage.length === 0) {
+            console.log("  " + D("No usage data yet."));
+          } else {
+            console.log("  " + D("Model".padEnd(30)) + D("Input".padStart(10)) + D("Output".padStart(10)) + D("Calls".padStart(8)));
+            console.log("  " + D("─".repeat(58)));
+            for (const u of usage) {
+              const name = (u.model || "").length > 28 ? u.model.slice(0, 26) + "…" : u.model;
+              console.log("  " + RA(name.padEnd(30)) + D(String(u.input_tokens || 0).padStart(10)) + D(String(u.output_tokens || 0).padStart(10)) + D(String(u.calls || 0).padStart(8)));
+            }
+          }
+        } else {
+          console.log("  " + Y("Could not fetch usage (server returned " + r.status + ")"));
+        }
+      } catch (e) {
+        console.log("  " + Y("Could not connect to API server. Is it running?"));
+      }
+      console.log(""); continue;
+    }
+    if (input === "/approve") {
+      try {
+        const port = config.get("api_port") || 8000;
+        const tokenFile = join(getProjectRoot(), ".api_token");
+        const apiKey = config.get("openai_api_key");
+        let token = "";
+        try { token = existsSync(tokenFile) ? readFileSync(tokenFile, "utf-8").trim() : apiKey; } catch { token = apiKey; }
+        const r = await fetch(`http://127.0.0.1:${port}/api/chat/approve`, { method: "POST", headers: { "X-API-Token": token }, signal: AbortSignal.timeout(5000) });
+        if (r.ok) { console.log("  " + G("✓") + " Approved."); }
+        else { console.log("  " + Y("✗") + " Failed to approve (HTTP " + r.status + ")"); }
+      } catch { console.log("  " + Y("✗") + " Could not connect to API server."); }
+      console.log(""); continue;
+    }
+    if (input === "/deny") {
+      try {
+        const port = config.get("api_port") || 8000;
+        const tokenFile = join(getProjectRoot(), ".api_token");
+        const apiKey = config.get("openai_api_key");
+        let token = "";
+        try { token = existsSync(tokenFile) ? readFileSync(tokenFile, "utf-8").trim() : apiKey; } catch { token = apiKey; }
+        const r = await fetch(`http://127.0.0.1:${port}/api/chat/deny`, { method: "POST", headers: { "X-API-Token": token }, signal: AbortSignal.timeout(5000) });
+        if (r.ok) { console.log("  " + R("✗") + " Denied."); }
+        else { console.log("  " + Y("✗") + " Failed to deny (HTTP " + r.status + ")"); }
+      } catch { console.log("  " + Y("✗") + " Could not connect to API server."); }
       console.log(""); continue;
     }
     if (input.startsWith("/run")) {

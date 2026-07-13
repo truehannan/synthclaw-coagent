@@ -50,6 +50,11 @@ except Exception:
     _use_d1 = False
 
 
+def _get_conn():
+    """Get a SQLite connection (convenience helper for api_server)."""
+    return sqlite3.connect(DB_PATH)
+
+
 def get_fernet() -> Fernet:
     if KEY_FILE.exists():
         key = KEY_FILE.read_bytes()
@@ -893,3 +898,31 @@ def get_skill_source(name: str) -> dict | None:
         "version": row[3] or "",
         "auto_update": bool(row[4]),
     }
+
+
+
+# ── Aliases for api_server compatibility ──────────────────────────────────────
+
+def get_messages(chat_id: int, limit: int = 50) -> list[dict]:
+    """Alias for get_history — used by api_server."""
+    return get_history(chat_id, limit)
+
+
+def clear_messages(chat_id: int):
+    """Alias for clear_history — used by api_server."""
+    return clear_history(chat_id)
+
+
+def get_usage_stats() -> list[dict]:
+    """Return usage stats as a list (used by api_server /api/models/usage)."""
+    summary = get_model_usage_summary()
+    result = []
+    for model, data in summary.items():
+        result.append({
+            "model": model,
+            "input_tokens": data["input_tokens"],
+            "output_tokens": data["output_tokens"],
+            "calls": data["calls"],
+            "total_tokens": data["input_tokens"] + data["output_tokens"],
+        })
+    return result
