@@ -14,6 +14,12 @@ interface ProviderInfo {
   key_name: string;
 }
 
+interface SetupState {
+  has_provider: boolean;
+  has_model: boolean;
+  configured: boolean;
+}
+
 export default function SetupWizard() {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>("provider");
@@ -25,17 +31,25 @@ export default function SetupWizard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [checking, setChecking] = useState(true);
+  const [setupState, setSetupState] = useState<SetupState>({ has_provider: false, has_model: false, configured: false });
 
-  // Check setup status on mount — skip wizard if already configured
+  // Check setup status on mount — skip wizard if fully configured, or jump to the right step
   useEffect(() => {
     fetch("/api/setup/status", {
       headers: { "X-API-Token": getToken() },
     })
       .then((r) => r.json())
-      .then((data) => {
+      .then((data: SetupState) => {
+        setSetupState(data);
         if (data.configured) {
+          // Fully configured — skip wizard entirely
           navigate("/", { replace: true });
+        } else if (data.has_provider && !data.has_model) {
+          // Provider done, jump to model step
+          setStep("model");
+          setChecking(false);
         } else {
+          // Need provider setup
           setChecking(false);
         }
       })
@@ -45,9 +59,28 @@ export default function SetupWizard() {
   // Load providers list
   useEffect(() => {
     if (!checking) {
-      providersApi.list().then((r) => setProvidersList(r.providers || [])).catch(() => {});
+      providersApi.list().then((r) => {
+        setProvidersList(r.providers || []);
+        // If a provider is already configured, pre-select it
+        const configured = (r.providers || []).find((p: ProviderInfo) => p.configured);
+        if (configured) {
+          setSelectedProvider(configured.name);
+        }
+      }).catch(() => {});
     }
   }, [checking]);
+
+  // If we jumped to model step, load models for configured provider
+  useEffect(() => {
+    if (step === "model" && setupState.has_provider && !modelsList.length) {
+      // Find the configured provider and fetch its models
+      const configured = providersList.find((p) => p.configured);
+      if (configured) {
+        setSelectedProvider(configured.name);
+        providersApi.models(configured.name).then((r) => setModelsList(r.models || [])).catch(() => {});
+      }
+    }
+  }, [step, providersList, setupState.has_provider]);
 
   async function handleKeySubmit() {
     if (!apiKey.trim()) { setError("API key is required"); return; }
@@ -79,6 +112,10 @@ export default function SetupWizard() {
     }
   }
 
+  function handleSkip() {
+    navigate("/", { replace: true });
+  }
+
   if (checking) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
@@ -99,11 +136,11 @@ export default function SetupWizard() {
 
         {/* Step indicator */}
         <div className="flex items-center justify-center gap-2 text-[10px]">
-          <StepBadge label="Provider" active={step === "provider"} done={step !== "provider"} />
+          <StepBadge label="Provider" active={step === "provider"} done={setupState.has_provider || step === "key" || step === "model"} />
           <ChevronRight className="h-3 w-3 text-muted" />
-          <StepBadge label="API Key" active={step === "key"} done={step === "model"} />
+          <StepBadge label="API Key" active={step === "key"} done={setupState.has_provider || step === "model"} />
           <ChevronRight className="h-3 w-3 text-muted" />
-          <StepBadge label="Model" active={step === "model"} done={false} />
+          <StepBadge label="Model" active={step === "model"} done={setupState.has_model} />
         </div>
 
         {/* Step: Provider selection */}
@@ -114,7 +151,16 @@ export default function SetupWizard() {
               {providersList.map((p) => (
                 <button
                   key={p.name}
-                  onClick={() => { setSelectedProvider(p.name); setStep("key"); }}
+                  onClick={() => {
+                    setSelectedProvider(p.name);
+                    if (p.configured) {
+                      // Already has a key — jump straight to model
+                      setStep("model");
+                      providersApi.models(p.name).then((r) => setModelsList(r.models || [])).catch(() => {});
+                    } else {
+                      setStep("key");
+                    }
+                  }}
                   className="flex items-center gap-2 rounded-sm border border-border bg-card px-3 py-2.5 text-left text-xs hover:border-primary transition-colors"
                 >
                   <span className="text-base">{p.emoji}</span>
@@ -126,6 +172,10 @@ export default function SetupWizard() {
             {providersList.length === 0 && (
               <p className="text-center text-xs text-muted py-4">Loading providers...</p>
             )}
+            {/* Skip link */}
+            <button onClick={handleSkip} className="block mx-auto text-[10px] text-muted hover:text-foreground">
+              Skip setup for now
+            </button>
           </div>
         )}
 
@@ -185,12 +235,17 @@ export default function SetupWizard() {
                 <p className="text-center text-xs text-muted py-4">No models found. Check your API key.</p>
               )}
             </div>
-            <button
-              onClick={() => { setStep("key"); setError(""); }}
-              className="rounded-sm border border-border px-4 py-2 text-xs text-muted hover:text-foreground"
-            >
-              Back
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setStep(setupState.has_provider ? "provider" : "key"); setError(""); }}
+                className="rounded-sm border border-border px-4 py-2 text-xs text-muted hover:text-foreground"
+              >
+                Back
+              </button>
+              <button onClick={handleSkip} className="ml-auto text-[10px] text-muted hover:text-foreground">
+                Skip
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -209,7 +264,7 @@ function StepBadge({ label, active, done }: { label: string; active: boolean; do
           : "bg-card text-muted"
       }`}
     >
-      {done ? <Check className="inline h-2.5 w-2.5 mr-0.5" /> : null}
+      {done && !active ? <Check className="inline h-2.5 w-2.5 mr-0.5" /> : null}
       {label}
     </span>
   );
