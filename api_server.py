@@ -114,6 +114,7 @@ class ConfigUpdateItem(BaseModel):
 # ── Provider metadata (standalone, no heavy agent.py import) ──────────────────
 
 PROVIDER_META = {
+    "Qwen": {"slug": "qw", "emoji": "🟠"},
     "DigitalOcean": {"slug": "do", "emoji": "🌊"},
     "Anthropic": {"slug": "an", "emoji": "🟣"},
     "OpenAI": {"slug": "oa", "emoji": "🟢"},
@@ -123,7 +124,6 @@ PROVIDER_META = {
     "HuggingFace": {"slug": "hf", "emoji": "🤗"},
     "Google": {"slug": "gg", "emoji": "🔵"},
     "Cloudflare": {"slug": "cf", "emoji": "🔶"},
-    "Qwen": {"slug": "qw", "emoji": "🟠"},
 }
 
 
@@ -158,6 +158,30 @@ def _provider_base_url(provider: str) -> str:
         "Cloudflare": "",  # needs account_id, handled separately
     }
     return _map.get(provider, cfg.OPENAI_API_BASE or "https://inference.do-ai.run/v1")
+
+
+def _resolve_model_routing(model: str) -> tuple:
+    """Given a model string (possibly prefixed), return (api_model_name, base_url, provider_name).
+
+    Handles prefixes like 'qwen:', 'google:', 'nvidia:', 'hf:', 'openrouter:', 'github:', 'cloudflare:'.
+    Unprefixed models go to DigitalOcean/default.
+    """
+    _prefix_map = {
+        "qwen:": ("Qwen", cfg.QWEN_API_BASE),
+        "google:": ("Google", cfg.GOOGLE_AI_API_BASE),
+        "nvidia:": ("NVIDIA", cfg.NVIDIA_API_BASE),
+        "hf:": ("HuggingFace", cfg.HUGGINGFACE_API_BASE),
+        "openrouter:": ("OpenRouter", cfg.OPENROUTER_API_BASE),
+        "github:": ("GitHub", cfg.GITHUB_MODELS_API_BASE),
+        "cloudflare:": ("Cloudflare", ""),
+    }
+    for prefix, (provider, base_url) in _prefix_map.items():
+        if model.startswith(prefix):
+            stripped = model[len(prefix):]
+            return (stripped, base_url, provider)
+
+    # No prefix — use default (DigitalOcean or env base)
+    return (model, cfg.OPENAI_API_BASE or "https://inference.do-ai.run/v1", "DigitalOcean")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -317,27 +341,25 @@ async def chat_send(msg: ChatMessage):
         from agent import _resolve_client_and_model
         client, api_model, provider = _resolve_client_and_model(model)
     except Exception:
-        # Fallback — build client from stored credential or env
-        api_key = cfg.OPENAI_API_KEY or ""
-        base_url = cfg.OPENAI_API_BASE or "https://inference.do-ai.run/v1"
-        # Try to get key from credential store
+        # Fallback — resolve model prefix to provider + base_url + stripped model name
+        api_model, base_url, provider = _resolve_model_routing(model)
+        api_key = ""
+
+        # Get the API key for this provider
+        key_name = _provider_key_name(provider)
+        api_key = mem.get_credential(key_name) or ""
+
+        # Also check env-level key
         if not api_key:
-            for prov_name in PROVIDER_META:
-                key_name = _provider_key_name(prov_name)
-                stored = mem.get_credential(key_name)
-                if stored:
-                    api_key = stored
-                    # Also resolve the correct base URL for this provider
-                    base_url = _provider_base_url(prov_name)
-                    break
+            api_key = cfg.OPENAI_API_KEY or ""
+
         if not api_key:
             async def error_gen():
-                yield f"data: {json.dumps({'error': 'No API key configured. Go to Providers to add one.'})}\n\n"
+                yield f"data: {json.dumps({'error': 'No API key configured for ' + provider + '. Go to Providers to add one.'})}\n\n"
             return StreamingResponse(error_gen(), media_type="text/event-stream")
+
         from openai import OpenAI
         client = OpenAI(api_key=api_key, base_url=base_url)
-        api_model = model
-        provider = "DigitalOcean"
 
     # Build messages for LLM
     system_prompt = (
@@ -725,18 +747,18 @@ async def system_status():
 
 @app.get("/api/system/config", dependencies=[Depends(verify_token)])
 async def system_config():
-    """Get current non-secret configuration."""
+    """Get current non-secret configuration (reads from DB overrides first, then env defaults)."""
     return {
-        "interface_mode": cfg.INTERFACE_MODE,
-        "storage_mode": cfg.STORAGE_MODE,
-        "default_model": cfg.DEFAULT_MODEL,
-        "max_tool_iterations": cfg.MAX_TOOL_ITERATIONS,
+        "interface_mode": mem.get_memory("config_interface_mode") or cfg.INTERFACE_MODE,
+        "storage_mode": mem.get_memory("config_storage_mode") or cfg.STORAGE_MODE,
+        "default_model": mem.get_memory("default_model") or cfg.DEFAULT_MODEL,
+        "max_tool_iterations": int(mem.get_memory("config_max_tool_iterations") or cfg.MAX_TOOL_ITERATIONS),
         "max_history_messages": cfg.MAX_HISTORY_MESSAGES,
         "checkpoint_every": cfg.CHECKPOINT_EVERY,
-        "max_rpm": cfg.MAX_RPM,
+        "max_rpm": int(mem.get_memory("config_max_rpm") or cfg.MAX_RPM),
         "base_dir": str(cfg.BASE_DIR),
-        "has_composio": bool(cfg.COMPOSIO_API_KEY),
-        "has_d1": bool(cfg.CF_D1_DATABASE_ID and cfg.CF_API_TOKEN),
+        "has_composio": bool(cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY")),
+        "has_d1": bool(cfg.CF_D1_DATABASE_ID and cfg.CF_API_TOKEN) or bool(mem.get_memory("cf_d1_database_id")),
     }
 
 

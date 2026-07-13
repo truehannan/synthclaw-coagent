@@ -51,8 +51,23 @@ QWEN_API_BASE = _clean_env("QWEN_API_BASE", "https://dashscope-intl.aliyuncs.com
 GOOGLE_SEARCH_API_KEY = _clean_env("GOOGLE_SEARCH_API_KEY")
 GOOGLE_SEARCH_CX = _clean_env("GOOGLE_SEARCH_CX")
 
-DEFAULT_MODEL = "llama3.3-70b-instruct"
+DEFAULT_MODEL = "qwen:qwen-plus"
 MODEL_CATALOG = {
+    "Qwen": [
+        "qwen:qwen-max",
+        "qwen:qwen-plus",
+        "qwen:qwen-turbo",
+        "qwen:qwen3-235b-a22b",
+        "qwen:qwen3-32b",
+        "qwen:qwen3-30b-a3b",
+        "qwen:qwen3-14b",
+        "qwen:qwen3-8b",
+        "qwen:qwen3-4b",
+        "qwen:qwen-coder-plus",
+        "qwen:qwen-long",
+        "qwen:qwen-vl-max",
+        "qwen:qwen-vl-plus",
+    ],
     "DigitalOcean": [
         "llama3.3-70b-instruct",
         "llama3-8b-instruct",
@@ -156,16 +171,6 @@ MODEL_CATALOG = {
         "cloudflare:@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
         "cloudflare:@cf/qwen/qwen1.5-14b-chat-awq",
         "cloudflare:@hf/google/gemma-7b-it",
-    ],
-    "Qwen": [
-        "qwen:qwen-max",
-        "qwen:qwen-plus",
-        "qwen:qwen-turbo",
-        "qwen:qwen3-235b-a22b",
-        "qwen:qwen3-32b",
-        "qwen:qwen-coder-plus",
-        "qwen:qwen-long",
-        "qwen:qwen-vl-max",
     ],
 }
 
