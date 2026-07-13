@@ -101,6 +101,7 @@ export const system = {
   updateConfig: (key: string, value: string) => request("/system/config", { method: "POST", body: JSON.stringify({ key, value }) }),
   health: () => fetch(`${BASE}/system/health`).then(r => r.json()),
   logs: (lines = 50) => request(`/system/logs?lines=${lines}`),
+  run: (command: string) => request("/system/run", { method: "POST", body: JSON.stringify({ command }) }),
 };
 
 // ── Society ──────────────────────────────────────────────────────────────────

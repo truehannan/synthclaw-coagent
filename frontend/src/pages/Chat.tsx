@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Square, CheckCircle, XCircle } from "lucide-react";
+import { Send, Square, CheckCircle, XCircle, Trash2 } from "lucide-react";
 import { chat } from "@/lib/api";
 import type { Message } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
@@ -106,6 +106,11 @@ export default function Chat() {
     setStreaming(false);
   }
 
+  async function handleClear() {
+    await chat.clear();
+    setMessages([]);
+  }
+
   return (
     <div className="flex h-full flex-col">
       {/* Messages area */}
@@ -183,6 +188,12 @@ export default function Chat() {
       {/* Input area */}
       <div className="border-t border-border bg-card px-4 py-3">
         <div className="mx-auto flex max-w-3xl items-end gap-2">
+          {messages.length > 0 && (
+            <button onClick={handleClear} title="Clear chat"
+              className="rounded-sm border border-border p-2.5 text-muted hover:border-danger hover:text-danger">
+              <Trash2 className="h-4 w-4" />
+            </button>
+          )}
           <textarea
             ref={inputRef}
             value={input}

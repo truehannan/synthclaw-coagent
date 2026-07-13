@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { system, models, society } from "@/lib/api";
-import { Cpu, HardDrive, MemoryStick, Clock, Brain, Activity, BarChart3 } from "lucide-react";
+import { Cpu, HardDrive, MemoryStick, Clock, Brain, Activity, BarChart3, Terminal } from "lucide-react";
 
 interface UsageEntry {
   model: string;
@@ -15,6 +15,9 @@ export default function Dashboard() {
   const [model, setModel] = useState("");
   const [societyStatus, setSocietyStatus] = useState<any>(null);
   const [usage, setUsage] = useState<UsageEntry[]>([]);
+  const [cmd, setCmd] = useState("");
+  const [cmdOutput, setCmdOutput] = useState("");
+  const [cmdRunning, setCmdRunning] = useState(false);
 
   useEffect(() => {
     system.status().then(setStatus).catch(() => {});
@@ -53,6 +56,21 @@ export default function Dashboard() {
 
   const totalTokens = usage.reduce((sum, u) => sum + u.total_tokens, 0);
   const totalCalls = usage.reduce((sum, u) => sum + u.calls, 0);
+
+  async function runCommand() {
+    if (!cmd.trim() || cmdRunning) return;
+    setCmdRunning(true);
+    setCmdOutput("");
+    try {
+      const res = await system.run(cmd.trim());
+      const out = (res.stdout || "") + (res.stderr ? `\n${res.stderr}` : "");
+      setCmdOutput(out || "(no output)");
+    } catch (err: any) {
+      setCmdOutput(`Error: ${err.message}`);
+    } finally {
+      setCmdRunning(false);
+    }
+  }
 
   return (
     <div className="p-6">
@@ -144,6 +162,35 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* Run Command */}
+      <div className="mt-6 rounded-sm border border-border bg-card p-4">
+        <div className="flex items-center gap-2 text-xs text-muted mb-3">
+          <Terminal className="h-3.5 w-3.5" />
+          Run Command
+        </div>
+        <div className="flex gap-2">
+          <input
+            value={cmd}
+            onChange={(e) => setCmd(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && runCommand()}
+            placeholder="ls -la, systemctl status, etc..."
+            className="flex-1 rounded-sm border border-border bg-background px-3 py-2 text-xs font-mono text-foreground placeholder-muted/50 outline-none focus:border-primary"
+          />
+          <button
+            onClick={runCommand}
+            disabled={!cmd.trim() || cmdRunning}
+            className="rounded-sm bg-primary px-3 py-2 text-xs text-white hover:bg-primary-hover disabled:opacity-30"
+          >
+            {cmdRunning ? "..." : "Run"}
+          </button>
+        </div>
+        {cmdOutput && (
+          <pre className="mt-3 max-h-48 overflow-y-auto rounded-sm bg-background p-3 text-[10px] leading-relaxed text-muted whitespace-pre-wrap font-mono">
+            {cmdOutput}
+          </pre>
+        )}
+      </div>
     </div>
   );
 }
