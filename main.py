@@ -39,6 +39,10 @@ def start_api():
 def main():
     mode = cfg.INTERFACE_MODE
 
+    # Initialize database before anything else
+    import memory as mem
+    mem.init_db()
+
     # Always start the API server (for frontend access)
     start_api()
 

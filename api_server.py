@@ -51,6 +51,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Initialize database tables on module load — prevents 500 on first request
+mem.init_db()
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 API_TOKEN = os.getenv("SYNTHCLAW_API_TOKEN", "")
@@ -668,6 +671,35 @@ async def system_logs(lines: int = 50):
     except Exception:
         pass
     return {"logs": []}
+
+
+@app.post("/api/system/run", dependencies=[Depends(verify_token)])
+async def system_run(request: Request):
+    """Execute a shell command on the server (owner-only, dangerous)."""
+    import subprocess
+    body = await request.json()
+    command = body.get("command", "").strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="No command provided")
+    timeout = min(body.get("timeout", 30), 60)  # cap at 60s
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(cfg.WORKSPACE_DIR),
+        )
+        return {
+            "stdout": result.stdout[-5000:] if result.stdout else "",
+            "stderr": result.stderr[-2000:] if result.stderr else "",
+            "returncode": result.returncode,
+        }
+    except subprocess.TimeoutExpired:
+        return {"stdout": "", "stderr": f"Command timed out after {timeout}s", "returncode": -1}
+    except Exception as e:
+        return {"stdout": "", "stderr": str(e), "returncode": -1}
 
 
 

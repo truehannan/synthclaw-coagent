@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { providers as api, models as modelsApi } from "@/lib/api";
 import type { Provider } from "@/lib/types";
-import { Check, X, Key, RefreshCw } from "lucide-react";
+import { Check, X, Key, RefreshCw, Trash2 } from "lucide-react";
 
 export default function Providers() {
   const [list, setList] = useState<Provider[]>([]);
@@ -43,6 +43,11 @@ export default function Providers() {
     setCurrentModel(model);
   }
 
+  async function handleDeleteKey(name: string) {
+    await api.deleteKey(name);
+    loadProviders();
+  }
+
   return (
     <div className="p-6">
       <h1 className="text-lg font-bold">[+] Providers</h1>
@@ -76,6 +81,12 @@ export default function Providers() {
                 className="flex items-center gap-1 rounded-sm border border-border px-2 py-1 text-[10px] text-muted hover:border-primary hover:text-primary">
                 <Key className="h-3 w-3" /> Set Key
               </button>
+              {p.configured && (
+                <button onClick={() => handleDeleteKey(p.name)}
+                  className="flex items-center gap-1 rounded-sm border border-border px-2 py-1 text-[10px] text-muted hover:border-danger hover:text-danger">
+                  <Trash2 className="h-3 w-3" /> Remove
+                </button>
+              )}
             </div>
           </div>
         ))}
