@@ -260,8 +260,6 @@ _pending_approval = {"active": False, "description": "", "resolved": None}
 @app.post("/api/chat/send", dependencies=[Depends(verify_token)])
 async def chat_send(msg: ChatMessage):
     """Send a message and get streaming response via SSE."""
-    from openai import OpenAI
-
     model = msg.model or mem.get_memory("default_model") or cfg.DEFAULT_MODEL
     user_message = msg.message.strip()
     if not user_message:
@@ -278,8 +276,25 @@ async def chat_send(msg: ChatMessage):
         from agent import _resolve_client_and_model
         client, api_model, provider = _resolve_client_and_model(model)
     except Exception:
-        # Fallback to default client
-        client = OpenAI(api_key=cfg.OPENAI_API_KEY, base_url=cfg.OPENAI_API_BASE)
+        # Fallback — build client from stored credential or env
+        api_key = cfg.OPENAI_API_KEY
+        base_url = cfg.OPENAI_API_BASE
+        # Try to get key from credential store for the model's provider
+        if not api_key:
+            # Check if any provider key is stored
+            for prov_name in PROVIDER_META:
+                key_name = _provider_key_name(prov_name)
+                stored = mem.get_credential(key_name)
+                if stored:
+                    api_key = stored
+                    break
+        if not api_key:
+            # No key anywhere — return error via SSE
+            async def error_gen():
+                yield f"data: {json.dumps({'error': 'No API key configured. Go to Providers to add one.'})}\n\n"
+            return StreamingResponse(error_gen(), media_type="text/event-stream")
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, base_url=base_url)
         api_model = model
         provider = "DigitalOcean"
 
@@ -382,14 +397,20 @@ async def chat_task_status():
 @app.get("/api/society/status", dependencies=[Depends(verify_token)])
 async def society_status():
     """Get current agent society state."""
-    from agents import get_society_status
-    return get_society_status()
+    try:
+        from agents import get_society_status
+        return get_society_status()
+    except Exception:
+        return {"agents": {"active": 0, "by_status": {}, "by_role": {}, "total_completed": 0}, "tree": [], "active": []}
 
 
 @app.get("/api/society/stream", dependencies=[Depends(verify_token)])
 async def society_stream():
     """SSE stream — pushes agent society state every 1s while active."""
-    from agents import get_society_status
+    try:
+        from agents import get_society_status
+    except Exception:
+        get_society_status = lambda: {"agents": {"active": 0}, "tree": [], "active": []}
 
     async def generate():
         while True:
@@ -403,8 +424,11 @@ async def society_stream():
 @app.post("/api/society/reset", dependencies=[Depends(verify_token)])
 async def society_reset():
     """Reset all agents."""
-    from agents import reset_society
-    reset_society()
+    try:
+        from agents import reset_society
+        reset_society()
+    except Exception:
+        pass
     return {"success": True}
 
 
@@ -432,8 +456,11 @@ async def list_providers():
 @app.get("/api/providers/{name}/models", dependencies=[Depends(verify_token)])
 async def provider_models(name: str):
     """Fetch models for a specific provider (live from API)."""
-    from model_fetcher import fetch_provider_models
-    models = fetch_provider_models(name, force=True)
+    try:
+        from model_fetcher import fetch_provider_models
+        models = fetch_provider_models(name, force=True)
+    except Exception:
+        models = []
     if not models:
         # Fallback to catalog
         models = list(cfg.MODEL_CATALOG.get(name, []))
@@ -466,8 +493,12 @@ async def delete_provider_key(name: str):
 @app.get("/api/models", dependencies=[Depends(verify_token)])
 async def list_all_models():
     """Get all available models across providers."""
-    from model_fetcher import get_all_available_models
-    models = get_all_available_models()
+    try:
+        from model_fetcher import get_all_available_models
+        models = get_all_available_models()
+    except Exception:
+        # Fallback: flatten catalog
+        models = [m for provider_models in cfg.MODEL_CATALOG.values() for m in provider_models]
     return {"models": models}
 
 
