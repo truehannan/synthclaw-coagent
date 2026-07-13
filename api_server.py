@@ -111,6 +111,38 @@ class ConfigUpdateItem(BaseModel):
     value: str
 
 
+# ── Provider metadata (standalone, no heavy agent.py import) ──────────────────
+
+PROVIDER_META = {
+    "DigitalOcean": {"slug": "do", "emoji": "🌊"},
+    "Anthropic": {"slug": "an", "emoji": "🟣"},
+    "OpenAI": {"slug": "oa", "emoji": "🟢"},
+    "OpenRouter": {"slug": "or", "emoji": "🧭"},
+    "GitHub": {"slug": "gh", "emoji": "🐙"},
+    "NVIDIA": {"slug": "nv", "emoji": "🟩"},
+    "HuggingFace": {"slug": "hf", "emoji": "🤗"},
+    "Google": {"slug": "gg", "emoji": "🔵"},
+    "Cloudflare": {"slug": "cf", "emoji": "🔶"},
+    "Qwen": {"slug": "qw", "emoji": "🟠"},
+}
+
+
+def _provider_key_name(provider: str) -> str:
+    """Map provider name to credential store key name."""
+    _map = {
+        "OpenRouter": "OPENROUTER_API_KEY",
+        "GitHub": "GITHUB_MODELS_API_KEY",
+        "OpenAI": "OPENAI_PROVIDER_API_KEY",
+        "Anthropic": "ANTHROPIC_API_KEY",
+        "NVIDIA": "NVIDIA_API_KEY",
+        "HuggingFace": "HUGGINGFACE_API_KEY",
+        "Google": "GOOGLE_AI_API_KEY",
+        "Qwen": "QWEN_API_KEY",
+        "Cloudflare": "CLOUDFLARE_API_KEY",
+    }
+    return _map.get(provider, "OPENAI_API_KEY")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  AUTH ENDPOINTS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -198,7 +230,6 @@ async def setup_status():
     else:
         # Then check stored provider keys
         try:
-            from agent import PROVIDER_META, _provider_key_name
             for name in PROVIDER_META:
                 key_name = _provider_key_name(name)
                 if mem.get_credential(key_name):
@@ -384,11 +415,8 @@ async def society_reset():
 @app.get("/api/providers", dependencies=[Depends(verify_token)])
 async def list_providers():
     """List all providers with configuration status."""
-    from agent import PROVIDER_META
     providers = []
     for name, meta in PROVIDER_META.items():
-        # Check if provider has a stored key
-        from agent import _provider_key_name
         key_name = _provider_key_name(name)
         has_key = bool(mem.get_credential(key_name))
         providers.append({
@@ -415,7 +443,6 @@ async def provider_models(name: str):
 @app.post("/api/providers/{name}/key", dependencies=[Depends(verify_token)])
 async def store_provider_key(name: str, item: ProviderKeyItem):
     """Store API key for a provider."""
-    from agent import _provider_key_name
     key_name = _provider_key_name(name)
     mem.store_credential(key_name, item.key)
     return {"success": True, "key_name": key_name}
@@ -424,7 +451,6 @@ async def store_provider_key(name: str, item: ProviderKeyItem):
 @app.delete("/api/providers/{name}/key", dependencies=[Depends(verify_token)])
 async def delete_provider_key(name: str):
     """Remove stored API key for a provider."""
-    from agent import _provider_key_name
     key_name = _provider_key_name(name)
     # Delete credential
     try:
