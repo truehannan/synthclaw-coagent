@@ -143,6 +143,23 @@ def _provider_key_name(provider: str) -> str:
     return _map.get(provider, "OPENAI_API_KEY")
 
 
+def _provider_base_url(provider: str) -> str:
+    """Map provider name to its API base URL."""
+    _map = {
+        "DigitalOcean": "https://inference.do-ai.run/v1",
+        "OpenAI": "https://api.openai.com/v1",
+        "Anthropic": "https://inference.do-ai.run/v1",
+        "OpenRouter": cfg.OPENROUTER_API_BASE,
+        "GitHub": cfg.GITHUB_MODELS_API_BASE,
+        "NVIDIA": cfg.NVIDIA_API_BASE,
+        "HuggingFace": cfg.HUGGINGFACE_API_BASE,
+        "Google": cfg.GOOGLE_AI_API_BASE,
+        "Qwen": cfg.QWEN_API_BASE,
+        "Cloudflare": "",  # needs account_id, handled separately
+    }
+    return _map.get(provider, cfg.OPENAI_API_BASE or "https://inference.do-ai.run/v1")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  AUTH ENDPOINTS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -221,29 +238,53 @@ async def auth_change_password(request: Request):
 
 @app.get("/api/setup/status", dependencies=[Depends(verify_token)])
 async def setup_status():
-    """Check if initial setup (provider + model) is complete."""
+    """Return detailed setup status — what's configured vs missing.
+    Used by SetupWizard to jump to the first unconfigured step."""
     has_provider = False
+    provider_name = ""
 
-    # First check if any env-level API key is set
+    # Check env-level API key first
     if cfg.OPENAI_API_KEY:
         has_provider = True
+        provider_name = "DigitalOcean"
     else:
-        # Then check stored provider keys
+        # Check stored provider keys
         try:
             for name in PROVIDER_META:
                 key_name = _provider_key_name(name)
                 if mem.get_credential(key_name):
                     has_provider = True
+                    provider_name = name
                     break
         except Exception:
             pass
 
     has_model = bool(mem.get_memory("default_model") or cfg.DEFAULT_MODEL)
+    default_model = mem.get_memory("default_model") or cfg.DEFAULT_MODEL
+
+    # Storage mode
+    storage_mode = cfg.STORAGE_MODE or "local"
+    has_d1 = bool(cfg.CF_D1_DATABASE_ID and cfg.CF_API_TOKEN)
+
+    # Interface mode
+    interface_mode = cfg.INTERFACE_MODE or "cli"
+
+    # Composio
+    has_composio = bool(cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY"))
+
+    # Overall: configured means provider + model are set (minimum viable)
     configured = has_provider and has_model
+
     return {
         "configured": configured,
         "has_provider": has_provider,
+        "provider_name": provider_name,
         "has_model": has_model,
+        "default_model": default_model,
+        "storage_mode": storage_mode,
+        "has_d1": has_d1,
+        "interface_mode": interface_mode,
+        "has_composio": has_composio,
     }
 
 
@@ -277,19 +318,19 @@ async def chat_send(msg: ChatMessage):
         client, api_model, provider = _resolve_client_and_model(model)
     except Exception:
         # Fallback — build client from stored credential or env
-        api_key = cfg.OPENAI_API_KEY
-        base_url = cfg.OPENAI_API_BASE
-        # Try to get key from credential store for the model's provider
+        api_key = cfg.OPENAI_API_KEY or ""
+        base_url = cfg.OPENAI_API_BASE or "https://inference.do-ai.run/v1"
+        # Try to get key from credential store
         if not api_key:
-            # Check if any provider key is stored
             for prov_name in PROVIDER_META:
                 key_name = _provider_key_name(prov_name)
                 stored = mem.get_credential(key_name)
                 if stored:
                     api_key = stored
+                    # Also resolve the correct base URL for this provider
+                    base_url = _provider_base_url(prov_name)
                     break
         if not api_key:
-            # No key anywhere — return error via SSE
             async def error_gen():
                 yield f"data: {json.dumps({'error': 'No API key configured. Go to Providers to add one.'})}\n\n"
             return StreamingResponse(error_gen(), media_type="text/event-stream")
@@ -702,7 +743,7 @@ async def system_config():
 @app.post("/api/system/config", dependencies=[Depends(verify_token)])
 async def update_system_config(item: ConfigUpdateItem):
     """Update a configuration value."""
-    allowed_keys = {"default_model", "max_tool_iterations", "max_history_messages", "max_rpm"}
+    allowed_keys = {"default_model", "max_tool_iterations", "max_history_messages", "max_rpm", "interface_mode", "storage_mode"}
     if item.key not in allowed_keys:
         raise HTTPException(status_code=400, detail=f"Cannot update key: {item.key}")
     mem.set_memory(f"config_{item.key}", item.value)

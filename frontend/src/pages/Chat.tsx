@@ -51,6 +51,8 @@ export default function Chat() {
     if (!input.trim() || streaming) return;
     const userMsg = input.trim();
     setInput("");
+    // Reset textarea height
+    if (inputRef.current) inputRef.current.style.height = "auto";
     setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
     setStreaming(true);
     setStreamText("");
@@ -197,12 +199,17 @@ export default function Chat() {
           <textarea
             ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value);
+              // Auto-grow
+              e.target.style.height = "auto";
+              e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+            }}
             onKeyDown={handleKeyDown}
             placeholder="Message SynthClaw..."
             rows={1}
             className="flex-1 resize-none rounded-sm border border-border bg-background px-3 py-2.5 text-sm text-foreground placeholder-muted/50 outline-none focus:border-primary"
-            style={{ maxHeight: "120px" }}
+            style={{ maxHeight: "160px", overflow: "auto" }}
           />
           {streaming ? (
             <button onClick={handleStop}
