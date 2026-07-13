@@ -74,7 +74,7 @@ function buildGraph(facts: Record<string, string>): { nodes: Node[]; edges: Edge
       type: "default",
       style: {
         background: color + "20",
-        border: `2px solid ${color}`,
+        border: "2px solid #ffffffcc",
         borderRadius: "8px",
         padding: "8px 16px",
         fontSize: "11px",
@@ -104,7 +104,7 @@ function buildGraph(facts: Record<string, string>): { nodes: Node[]; edges: Edge
         type: "default",
         style: {
           background: "#111",
-          border: `1px solid ${color}50`,
+          border: "1px solid #ffffff60",
           borderRadius: "4px",
           padding: "6px 10px",
           fontSize: "9px",
@@ -118,8 +118,8 @@ function buildGraph(facts: Record<string, string>): { nodes: Node[]; edges: Edge
         id: `e_${catNodeId}_${factNodeId}`,
         source: catNodeId,
         target: factNodeId,
-        style: { stroke: color + "40", strokeWidth: 1 },
-        markerEnd: { type: MarkerType.ArrowClosed, color: color + "60" },
+        style: { stroke: "#ffffff50", strokeWidth: 1 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: "#ffffff70" },
       });
     });
   });

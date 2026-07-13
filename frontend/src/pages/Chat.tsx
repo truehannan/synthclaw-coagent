@@ -31,6 +31,7 @@ export default function Chat() {
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [providerModels, setProviderModels] = useState<ProviderModels[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
+  const [modelSearch, setModelSearch] = useState("");
 
   // Agent society sidebar
   const [showSociety, setShowSociety] = useState(false);
@@ -188,43 +189,7 @@ export default function Chat() {
               className="rounded-sm border border-border p-1.5 text-muted hover:border-primary hover:text-primary">
               <Plus className="h-3.5 w-3.5" />
             </button>
-            {/* Model picker — grouped by provider */}
-            <div className="relative">
-              <button onClick={openModelPicker}
-                className="flex items-center gap-1.5 rounded-sm border border-border px-2.5 py-1.5 text-[10px] text-muted hover:border-primary hover:text-primary">
-                <span className="max-w-[200px] truncate font-medium">{currentModel || "Select model"}</span>
-                <ChevronDown className="h-3 w-3" />
-              </button>
-              {showModelPicker && (
-                <div className="absolute left-0 top-full z-50 mt-1 w-80 max-h-80 overflow-y-auto rounded-sm border border-border bg-card shadow-lg">
-                  {loadingModels && <p className="px-3 py-3 text-[10px] text-muted">Fetching models from providers...</p>}
-                  {providerModels.map((p, idx) => (
-                    <div key={p.name}>
-                      <button onClick={() => toggleProviderExpand(idx)}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-card-hover border-b border-border/50">
-                        {p.expanded ? <ChevronDown className="h-3 w-3 text-muted" /> : <ChevronRight className="h-3 w-3 text-muted" />}
-                        <span>{p.emoji}</span>
-                        <span className="text-[10px] font-semibold text-foreground">{p.name}</span>
-                        <span className="ml-auto text-[9px] text-muted">{p.models.length}</span>
-                      </button>
-                      {p.expanded && (
-                        <div className="bg-background">
-                          {p.models.map(m => (
-                            <button key={m} onClick={() => switchModel(m)}
-                              className={`block w-full px-6 py-1.5 text-left text-[10px] hover:bg-card-hover ${m === currentModel ? "text-primary bg-primary/5" : "text-foreground"}`}>
-                              {m}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                  {!loadingModels && providerModels.length === 0 && (
-                    <p className="px-3 py-3 text-[10px] text-muted">No providers configured</p>
-                  )}
-                </div>
-              )}
-            </div>
+            <span className="text-[10px] text-muted truncate max-w-[200px]">{currentModel || "No model"}</span>
           </div>
           <button onClick={toggleSociety} title="Agent Society"
             className={`rounded-sm border p-1.5 ${showSociety ? "border-primary text-primary" : "border-border text-muted hover:border-primary hover:text-primary"}`}>
@@ -290,22 +255,72 @@ export default function Chat() {
 
         {/* Input */}
         <div className="border-t border-border bg-card px-4 py-3">
-          <div className="mx-auto flex max-w-3xl items-end gap-2">
-            {messages.length > 0 && (
-              <button onClick={handleClear} title="Clear" className="rounded-sm border border-border p-2.5 text-muted hover:border-danger hover:text-danger">
-                <Trash2 className="h-4 w-4" />
-              </button>
-            )}
-            <textarea ref={inputRef} value={input}
-              onChange={(e) => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
-              onKeyDown={handleKeyDown} placeholder="Message SynthClaw..." rows={1}
-              className="flex-1 resize-none rounded-sm border border-border bg-background px-3 py-2.5 text-sm text-foreground placeholder-muted/50 outline-none focus:border-primary"
-              style={{ maxHeight: "160px", overflow: "auto" }} />
-            {streaming ? (
-              <button onClick={handleStop} className="rounded-sm bg-danger/20 p-2.5 text-danger hover:bg-danger/30"><Square className="h-4 w-4" /></button>
-            ) : (
-              <button onClick={handleSend} disabled={!input.trim()} className="rounded-sm bg-primary p-2.5 text-white hover:bg-primary-hover disabled:opacity-30"><Send className="h-4 w-4" /></button>
-            )}
+          <div className="mx-auto max-w-3xl">
+            {/* Model selector row */}
+            <div className="flex items-center gap-2 mb-2">
+              <div className="relative">
+                <button onClick={openModelPicker}
+                  className="flex items-center gap-1.5 rounded-sm border border-border px-2 py-1 text-[9px] text-muted hover:border-primary hover:text-primary">
+                  <span className="max-w-[150px] truncate">{currentModel || "Select model"}</span>
+                  <ChevronDown className="h-2.5 w-2.5" />
+                </button>
+                {showModelPicker && (
+                  <div className="absolute left-0 bottom-full z-50 mb-1 w-80 max-h-72 overflow-hidden rounded-sm border border-border bg-card shadow-lg flex flex-col">
+                    {/* Search */}
+                    <div className="p-2 border-b border-border">
+                      <input value={modelSearch} onChange={e => setModelSearch(e.target.value)} placeholder="Search models..."
+                        autoFocus className="w-full rounded-sm border border-border bg-background px-2 py-1 text-[10px] outline-none focus:border-primary" />
+                    </div>
+                    <div className="overflow-y-auto flex-1">
+                      {loadingModels && <p className="px-3 py-3 text-[10px] text-muted animate-pulse">Fetching live models from providers...</p>}
+                      {providerModels.map((p, idx) => {
+                        const filtered = modelSearch ? p.models.filter(m => m.toLowerCase().includes(modelSearch.toLowerCase())) : p.models;
+                        if (modelSearch && filtered.length === 0) return null;
+                        return (
+                          <div key={p.name}>
+                            <button onClick={() => toggleProviderExpand(idx)}
+                              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-card-hover border-b border-border/30">
+                              {p.expanded ? <ChevronDown className="h-2.5 w-2.5 text-muted" /> : <ChevronRight className="h-2.5 w-2.5 text-muted" />}
+                              <span className="text-xs">{p.emoji}</span>
+                              <span className="text-[10px] font-semibold">{p.name}</span>
+                              <span className="ml-auto text-[9px] text-muted">{filtered.length}</span>
+                            </button>
+                            {(p.expanded || !!modelSearch) && (
+                              <div className="bg-background/50">
+                                {filtered.map(m => (
+                                  <button key={m} onClick={() => switchModel(m)}
+                                    className={`block w-full px-5 py-1 text-left text-[10px] hover:bg-card-hover ${m === currentModel ? "text-primary" : "text-muted"}`}>
+                                    {m}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* Input row */}
+            <div className="flex items-end gap-2">
+              {messages.length > 0 && (
+                <button onClick={handleClear} title="Clear" className="rounded-sm border border-border p-2.5 text-muted hover:border-danger hover:text-danger">
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              )}
+              <textarea ref={inputRef} value={input}
+                onChange={(e) => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
+                onKeyDown={handleKeyDown} placeholder="Message SynthClaw... (type / for commands)" rows={1}
+                className="flex-1 resize-none rounded-sm border border-border bg-background px-3 py-2.5 text-sm text-foreground placeholder-muted/50 outline-none focus:border-primary"
+                style={{ maxHeight: "160px", overflow: "auto" }} />
+              {streaming ? (
+                <button onClick={handleStop} className="rounded-sm bg-danger/20 p-2.5 text-danger hover:bg-danger/30"><Square className="h-4 w-4" /></button>
+              ) : (
+                <button onClick={handleSend} disabled={!input.trim()} className="rounded-sm bg-primary p-2.5 text-white hover:bg-primary-hover disabled:opacity-30"><Send className="h-4 w-4" /></button>
+              )}
+            </div>
           </div>
         </div>
       </div>

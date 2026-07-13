@@ -692,8 +692,10 @@ async def install_skill(item: SkillInstallItem):
         from tools import install_skill
         result = install_skill({"source": item.source})
         return json.loads(result) if isinstance(result, str) else {"result": result}
+    except ImportError:
+        raise HTTPException(status_code=400, detail="Skills system not available (agent not fully initialized)")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.delete("/api/skills/{name}", dependencies=[Depends(verify_token)])
@@ -703,8 +705,10 @@ async def uninstall_skill(name: str):
         from tools import uninstall_skill
         result = uninstall_skill({"name": name})
         return json.loads(result) if isinstance(result, str) else {"result": result}
+    except ImportError:
+        raise HTTPException(status_code=400, detail="Skills system not available")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/skills/reinstall", dependencies=[Depends(verify_token)])
@@ -714,8 +718,10 @@ async def reinstall_skills():
         from tools import reinstall_all_skills
         result = reinstall_all_skills({})
         return json.loads(result) if isinstance(result, str) else {"result": result}
+    except ImportError:
+        raise HTTPException(status_code=400, detail="Skills system not available")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 
