@@ -317,9 +317,24 @@ async def setup_status(request: Request):
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Chat session for web frontend (separate from Telegram chat_id)
-WEB_CHAT_ID = 999999  # Fixed chat_id for web interface
+WEB_CHAT_ID = 999999  # Default chat_id for web interface
 _chat_lock = asyncio.Lock()
 _pending_approval = {"active": False, "description": "", "resolved": None}
+
+
+def _get_active_chat_id() -> int:
+    """Resolve the active session's chat_id from DB. Falls back to WEB_CHAT_ID."""
+    try:
+        active_id = mem.get_memory("active_session") or "default"
+        sessions_raw = mem.get_memory("web_sessions")
+        if sessions_raw:
+            sessions_list = json.loads(sessions_raw)
+            for s in sessions_list:
+                if s.get("id") == active_id:
+                    return s.get("chat_id", WEB_CHAT_ID)
+    except Exception:
+        pass
+    return WEB_CHAT_ID
 
 
 @app.post("/api/chat/send", dependencies=[Depends(verify_token)])
@@ -331,10 +346,11 @@ async def chat_send(msg: ChatMessage):
         raise HTTPException(status_code=400, detail="Empty message")
 
     # Save user message
-    mem.save_message(WEB_CHAT_ID, "user", user_message)
+    chat_id = _get_active_chat_id()
+    mem.save_message(chat_id, "user", user_message)
 
     # Get conversation history
-    history = mem.get_messages(WEB_CHAT_ID, limit=cfg.MAX_HISTORY_MESSAGES)
+    history = mem.get_messages(chat_id, limit=cfg.MAX_HISTORY_MESSAGES)
 
     # Resolve client
     try:
@@ -392,7 +408,7 @@ async def chat_send(msg: ChatMessage):
             # Strip think tags
             import re
             clean = re.sub(r"<think>[\s\S]*?</think>", "", full_reply).strip()
-            mem.save_message(WEB_CHAT_ID, "assistant", clean)
+            mem.save_message(chat_id, "assistant", clean)
             yield f"data: {json.dumps({'done': True, 'full': clean})}\n\n"
 
         except Exception as e:
@@ -403,15 +419,17 @@ async def chat_send(msg: ChatMessage):
 
 @app.get("/api/chat/history", dependencies=[Depends(verify_token)])
 async def chat_history(limit: int = 50):
-    """Get conversation history for web interface."""
-    messages = mem.get_messages(WEB_CHAT_ID, limit=limit)
+    """Get conversation history for active session."""
+    chat_id = _get_active_chat_id()
+    messages = mem.get_messages(chat_id, limit=limit)
     return {"messages": messages}
 
 
 @app.post("/api/chat/clear", dependencies=[Depends(verify_token)])
 async def chat_clear():
-    """Clear web chat history."""
-    mem.clear_messages(WEB_CHAT_ID)
+    """Clear active session chat history."""
+    chat_id = _get_active_chat_id()
+    mem.clear_messages(chat_id)
     return {"success": True}
 
 
@@ -982,7 +1000,8 @@ async def list_apis():
 @app.get("/api/composio/connections", dependencies=[Depends(verify_token)])
 async def composio_connections():
     """List Composio connections."""
-    if not cfg.COMPOSIO_API_KEY:
+    composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
+    if not composio_key:
         return {"connections": [], "available": False}
     try:
         from tools import composio_list_connections

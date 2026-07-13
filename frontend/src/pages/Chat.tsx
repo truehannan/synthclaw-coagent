@@ -1,10 +1,17 @@
 import { useState, useRef, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Send, Square, CheckCircle, XCircle, Trash2, ChevronDown, Plus, Brain } from "lucide-react";
-import { chat, models, sessions, society } from "@/lib/api";
+import { Send, Square, CheckCircle, XCircle, Trash2, ChevronDown, ChevronRight, Plus, Brain } from "lucide-react";
+import { chat, models, sessions, society, providers as providersApi } from "@/lib/api";
 import type { Message } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import Mascot from "@/components/Mascot";
+
+interface ProviderModels {
+  name: string;
+  emoji: string;
+  models: string[];
+  expanded: boolean;
+}
 
 export default function Chat() {
   const { id: sessionId } = useParams<{ id: string }>();
@@ -22,14 +29,21 @@ export default function Chat() {
   // Model switcher
   const [currentModel, setCurrentModel] = useState("");
   const [showModelPicker, setShowModelPicker] = useState(false);
-  const [allModels, setAllModels] = useState<string[]>([]);
+  const [providerModels, setProviderModels] = useState<ProviderModels[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
 
   // Agent society sidebar
   const [showSociety, setShowSociety] = useState(false);
   const [societyData, setSocietyData] = useState<any>(null);
 
+  // Load chat when session changes
   useEffect(() => {
-    loadHistory();
+    // If we have a sessionId, switch to it on the backend
+    if (sessionId) {
+      sessions.switch(sessionId).then(() => loadHistory()).catch(() => loadHistory());
+    } else {
+      loadHistory();
+    }
     models.current().then(r => setCurrentModel(r.model)).catch(() => {});
     pollRef.current = setInterval(pollTaskStatus, 3000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
@@ -65,12 +79,14 @@ export default function Chat() {
     setInput("");
     if (inputRef.current) inputRef.current.style.height = "auto";
 
-    // If this is a new chat (no session ID and no messages yet), create session
+    // If no session yet, create one named after first message
     if (!sessionId && messages.length === 0) {
       try {
         const name = userMsg.slice(0, 30) + (userMsg.length > 30 ? "..." : "");
         const res = await sessions.create(name);
         if (res.session?.id) {
+          // Switch backend to new session
+          await sessions.switch(res.session.id);
           navigate(`/chat/${res.session.id}`, { replace: true });
         }
       } catch {}
@@ -83,7 +99,6 @@ export default function Chat() {
     try {
       const res = await chat.sendStream(userMsg, currentModel || undefined);
       if (!res.body) throw new Error("No response body");
-
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let fullText = "";
@@ -92,8 +107,7 @@ export default function Chat() {
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
-        for (const line of lines) {
+        for (const line of chunk.split("\n")) {
           if (!line.startsWith("data: ")) continue;
           try {
             const data = JSON.parse(line.slice(6));
@@ -125,13 +139,31 @@ export default function Chat() {
   }
 
   async function openModelPicker() {
-    if (allModels.length === 0) {
+    if (showModelPicker) { setShowModelPicker(false); return; }
+    if (providerModels.length === 0) {
+      setLoadingModels(true);
       try {
-        const res = await models.all();
-        setAllModels(res.models || []);
+        // Fetch providers list then fetch models for each configured one
+        const provRes = await providersApi.list();
+        const provList = provRes.providers || [];
+        const grouped: ProviderModels[] = [];
+        for (const p of provList) {
+          try {
+            const mRes = await providersApi.models(p.name);
+            if (mRes.models && mRes.models.length > 0) {
+              grouped.push({ name: p.name, emoji: p.emoji, models: mRes.models, expanded: false });
+            }
+          } catch {}
+        }
+        setProviderModels(grouped);
       } catch {}
+      setLoadingModels(false);
     }
-    setShowModelPicker(!showModelPicker);
+    setShowModelPicker(true);
+  }
+
+  function toggleProviderExpand(idx: number) {
+    setProviderModels(prev => prev.map((p, i) => i === idx ? { ...p, expanded: !p.expanded } : { ...p, expanded: false }));
   }
 
   async function toggleSociety() {
@@ -148,36 +180,54 @@ export default function Chat() {
 
   return (
     <div className="flex h-full">
-      {/* Main chat area */}
       <div className="flex flex-1 flex-col">
-        {/* Top bar — model switcher + actions */}
+        {/* Top bar */}
         <div className="flex items-center justify-between border-b border-border bg-card px-4 py-2">
           <div className="flex items-center gap-2">
             <button onClick={handleNewChat} title="New Chat"
               className="rounded-sm border border-border p-1.5 text-muted hover:border-primary hover:text-primary">
               <Plus className="h-3.5 w-3.5" />
             </button>
+            {/* Model picker — grouped by provider */}
             <div className="relative">
               <button onClick={openModelPicker}
                 className="flex items-center gap-1.5 rounded-sm border border-border px-2.5 py-1.5 text-[10px] text-muted hover:border-primary hover:text-primary">
-                <span className="max-w-[180px] truncate font-medium">{currentModel || "Select model"}</span>
+                <span className="max-w-[200px] truncate font-medium">{currentModel || "Select model"}</span>
                 <ChevronDown className="h-3 w-3" />
               </button>
               {showModelPicker && (
-                <div className="absolute left-0 top-full z-50 mt-1 max-h-64 w-72 overflow-y-auto rounded-sm border border-border bg-card shadow-lg">
-                  {allModels.map(m => (
-                    <button key={m} onClick={() => switchModel(m)}
-                      className={`block w-full px-3 py-1.5 text-left text-[10px] hover:bg-card-hover ${m === currentModel ? "text-primary bg-primary/5" : "text-foreground"}`}>
-                      {m}
-                    </button>
+                <div className="absolute left-0 top-full z-50 mt-1 w-80 max-h-80 overflow-y-auto rounded-sm border border-border bg-card shadow-lg">
+                  {loadingModels && <p className="px-3 py-3 text-[10px] text-muted">Fetching models from providers...</p>}
+                  {providerModels.map((p, idx) => (
+                    <div key={p.name}>
+                      <button onClick={() => toggleProviderExpand(idx)}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-card-hover border-b border-border/50">
+                        {p.expanded ? <ChevronDown className="h-3 w-3 text-muted" /> : <ChevronRight className="h-3 w-3 text-muted" />}
+                        <span>{p.emoji}</span>
+                        <span className="text-[10px] font-semibold text-foreground">{p.name}</span>
+                        <span className="ml-auto text-[9px] text-muted">{p.models.length}</span>
+                      </button>
+                      {p.expanded && (
+                        <div className="bg-background">
+                          {p.models.map(m => (
+                            <button key={m} onClick={() => switchModel(m)}
+                              className={`block w-full px-6 py-1.5 text-left text-[10px] hover:bg-card-hover ${m === currentModel ? "text-primary bg-primary/5" : "text-foreground"}`}>
+                              {m}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   ))}
-                  {allModels.length === 0 && <p className="px-3 py-2 text-[10px] text-muted">Loading...</p>}
+                  {!loadingModels && providerModels.length === 0 && (
+                    <p className="px-3 py-3 text-[10px] text-muted">No providers configured</p>
+                  )}
                 </div>
               )}
             </div>
           </div>
           <button onClick={toggleSociety} title="Agent Society"
-            className={`rounded-sm border p-1.5 text-xs ${showSociety ? "border-primary text-primary" : "border-border text-muted hover:border-primary hover:text-primary"}`}>
+            className={`rounded-sm border p-1.5 ${showSociety ? "border-primary text-primary" : "border-border text-muted hover:border-primary hover:text-primary"}`}>
             <Brain className="h-3.5 w-3.5" />
           </button>
         </div>
@@ -194,7 +244,6 @@ export default function Chat() {
                 </div>
               </div>
             )}
-
             {messages.map((msg, i) => (
               <div key={i} className={`animate-fade-in ${msg.role === "user" ? "flex justify-end" : ""}`}>
                 <div className={`max-w-[85%] rounded-sm px-4 py-3 text-sm leading-relaxed ${
@@ -208,7 +257,6 @@ export default function Chat() {
                 </div>
               </div>
             ))}
-
             {streaming && streamText && (
               <div className="animate-fade-in border border-border bg-card rounded-sm px-4 py-3 text-sm max-w-[85%]">
                 <div className="prose prose-invert prose-sm max-w-none"><ReactMarkdown>{streamText}</ReactMarkdown></div>
@@ -220,11 +268,10 @@ export default function Chat() {
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" /> Thinking...
               </div>
             )}
-
             {pendingApproval && (
               <div className="animate-slide-up rounded-sm border border-warning bg-warning/10 p-4">
                 <p className="text-sm font-semibold text-warning">Approval Required</p>
-                <p className="mt-1 text-xs text-muted">{approvalDesc || "The agent wants to perform a dangerous operation."}</p>
+                <p className="mt-1 text-xs text-muted">{approvalDesc || "Dangerous operation pending."}</p>
                 <div className="mt-3 flex gap-2">
                   <button onClick={() => { chat.approve(); setPendingApproval(false); }}
                     className="flex items-center gap-1.5 rounded-sm bg-success/20 px-3 py-1.5 text-xs font-medium text-success hover:bg-success/30">
@@ -273,10 +320,9 @@ export default function Chat() {
                 <div key={i} className="rounded-sm border border-border p-2">
                   <div className="flex items-center gap-2">
                     <span className="h-2 w-2 rounded-full bg-primary animate-pulse" />
-                    <span className="text-[10px] font-semibold text-foreground">{a.name || a.role}</span>
+                    <span className="text-[10px] font-semibold">{a.name || a.role}</span>
                   </div>
                   <p className="mt-1 text-[9px] text-muted truncate">{a.task || a.status}</p>
-                  {a.elapsed && <p className="text-[9px] text-muted">{a.elapsed}s</p>}
                 </div>
               ))}
             </div>
