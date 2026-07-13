@@ -66,6 +66,7 @@ export default function App() {
       <Route path="/" element={<AuthGate><Layout /></AuthGate>}>
         <Route index element={<Dashboard />} />
         <Route path="chat" element={<Chat />} />
+        <Route path="chat/:id" element={<Chat />} />
         <Route path="providers" element={<Providers />} />
         <Route path="memory" element={<Memory />} />
         <Route path="credentials" element={<Credentials />} />
