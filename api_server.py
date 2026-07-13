@@ -236,10 +236,10 @@ async def auth_change_password(request: Request):
     return {"success": True}
 
 
-@app.get("/api/setup/status", dependencies=[Depends(verify_token)])
-async def setup_status():
+@app.get("/api/setup/status")
+async def setup_status(request: Request):
     """Return detailed setup status — what's configured vs missing.
-    Used by SetupWizard to jump to the first unconfigured step."""
+    No auth required — called during signup/setup flow before token is available."""
     has_provider = False
     provider_name = ""
 

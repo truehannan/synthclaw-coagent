@@ -174,12 +174,6 @@ jobs:
           SVC
           systemctl daemon-reload
           systemctl enable synthclaw
-
-          # Factory reset — clear DB + auth tokens for fresh setup
-          echo "Performing factory reset..."
-          rm -f /opt/synthclaw/agent.db /opt/synthclaw/.api_token /opt/synthclaw/.fernet_key
-          rm -f /opt/synthclaw/.env
-
           systemctl restart synthclaw
           SCRIPT
 

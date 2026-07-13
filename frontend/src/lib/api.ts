@@ -20,8 +20,12 @@ async function request<T = any>(path: string, opts: RequestInit = {}): Promise<T
     },
   });
   if (res.status === 401) {
-    clearToken();
-    window.location.href = "/login";
+    // Don't redirect if already on auth/setup pages (prevents loops)
+    const loc = window.location.pathname;
+    if (loc !== "/login" && loc !== "/signup" && loc !== "/setup") {
+      clearToken();
+      window.location.href = "/login";
+    }
     throw new Error("Unauthorized");
   }
   if (!res.ok) {
