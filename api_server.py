@@ -126,15 +126,14 @@ async def auth_status(request: Request):
 @app.get("/api/auth/exists")
 async def auth_exists():
     """Check if a user has been set up (controls signup vs login on frontend)."""
-    has_key = bool(cfg.OPENAI_API_KEY)
     has_password = bool(mem.get_memory("user_password_hash"))
-    return {"exists": has_key or has_password}
+    return {"exists": has_password}
 
 
 @app.post("/api/auth/signup")
 async def auth_signup(request: Request):
-    """First-time user registration. Only works if no user exists yet."""
-    if cfg.OPENAI_API_KEY or mem.get_memory("user_password_hash"):
+    """First-time user registration. Only works if no password has been set."""
+    if mem.get_memory("user_password_hash"):
         raise HTTPException(status_code=409, detail="User already exists. Use login.")
     body = await request.json()
     password = body.get("password", "")
@@ -189,16 +188,21 @@ async def auth_change_password(request: Request):
 async def setup_status():
     """Check if initial setup (provider + model) is complete."""
     has_provider = False
-    try:
-        from agent import PROVIDER_META, _provider_key_name
-        for name in PROVIDER_META:
-            key_name = _provider_key_name(name)
-            if mem.get_credential(key_name):
-                has_provider = True
-                break
-    except Exception:
-        # Fallback: check if OPENAI_API_KEY env is set
-        has_provider = bool(cfg.OPENAI_API_KEY)
+
+    # First check if any env-level API key is set
+    if cfg.OPENAI_API_KEY:
+        has_provider = True
+    else:
+        # Then check stored provider keys
+        try:
+            from agent import PROVIDER_META, _provider_key_name
+            for name in PROVIDER_META:
+                key_name = _provider_key_name(name)
+                if mem.get_credential(key_name):
+                    has_provider = True
+                    break
+        except Exception:
+            pass
 
     has_model = bool(mem.get_memory("default_model") or cfg.DEFAULT_MODEL)
     configured = has_provider and has_model
