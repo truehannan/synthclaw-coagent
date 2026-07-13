@@ -87,17 +87,27 @@ jobs:
         run: |
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
             ${{ env.SSH_USER }}@${{ secrets.HOST }} << 'SCRIPT'
+          set -e
           cd /opt/synthclaw
-          # Install system packages needed (server is fresh Ubuntu 24)
+
+          # Ubuntu 24.04 uses python3.12 — need the specific venv package
+          PYVER=$(python3 --version 2>&1 | grep -oP '\d+\.\d+')
+          echo "Python version: $PYVER"
+
           apt-get update -qq
-          apt-get install -y -qq python3-venv python3-pip nginx curl > /dev/null 2>&1
-          # Create venv if not exists
-          if [ ! -d "venv" ]; then
-            python3 -m venv venv
+          apt-get install -y -qq python3-venv python3-pip python3.${PYVER##*.}-venv nginx curl 2>/dev/null || \
+          apt-get install -y -qq python3-venv python3-pip nginx curl 2>/dev/null
+
+          # Create venv
+          python3 -m venv venv
+          if [ ! -f "./venv/bin/pip" ]; then
+            echo "ERROR: venv creation failed"
+            # Fallback: install directly with --break-system-packages
+            pip3 install --break-system-packages -r requirements.txt -q
+          else
+            ./venv/bin/pip install --upgrade pip -q
+            ./venv/bin/pip install -r requirements.txt -q
           fi
-          # Install deps in venv
-          ./venv/bin/pip install --upgrade pip -q
-          ./venv/bin/pip install -r requirements.txt -q
           SCRIPT
 
       - name: Install and configure nginx
@@ -135,7 +145,14 @@ jobs:
         run: |
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
             ${{ env.SSH_USER }}@${{ secrets.HOST }} << 'SCRIPT'
-          cat > /etc/systemd/system/synthclaw.service << 'SVC'
+          # Determine which python to use
+          if [ -f "/opt/synthclaw/venv/bin/python3" ]; then
+            PYTHON_BIN="/opt/synthclaw/venv/bin/python3"
+          else
+            PYTHON_BIN="/usr/bin/python3"
+          fi
+
+          cat > /etc/systemd/system/synthclaw.service << SVC
           [Unit]
           Description=SynthClaw Agent Society
           After=network.target
@@ -144,7 +161,7 @@ jobs:
           Type=simple
           User=root
           WorkingDirectory=/opt/synthclaw
-          ExecStart=/opt/synthclaw/venv/bin/python3 /opt/synthclaw/main.py
+          ExecStart=$PYTHON_BIN /opt/synthclaw/main.py
           Restart=always
           RestartSec=5
           Environment=SYNTHCLAW_BASE_DIR=/opt/synthclaw
