@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { system, auth } from "@/lib/api";
-import { KeyRound, Check } from "lucide-react";
+import { system, auth, clearToken } from "@/lib/api";
+import { KeyRound, Check, RotateCcw, AlertTriangle, Wand2 } from "lucide-react";
 
 export default function Settings() {
   const [cfg, setCfg] = useState<any>(null);
@@ -13,6 +13,10 @@ export default function Settings() {
   const [pwError, setPwError] = useState("");
   const [pwSuccess, setPwSuccess] = useState(false);
   const [pwLoading, setPwLoading] = useState(false);
+
+  // Reset state
+  const [resetConfirm, setResetConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     system.config().then(setCfg).catch(() => {});
@@ -38,6 +42,24 @@ export default function Settings() {
     } finally {
       setPwLoading(false);
     }
+  }
+
+  async function handleReset() {
+    setResetting(true);
+    try {
+      // Delete the database and clear auth
+      await system.run("rm -f /opt/agent/agent.db /opt/agent/.api_token /opt/agent/.fernet_key");
+      clearToken();
+      window.location.href = "/signup";
+    } catch {
+      // Even if command fails, redirect to signup
+      clearToken();
+      window.location.href = "/signup";
+    }
+  }
+
+  function handleRerunSetup() {
+    window.location.href = "/setup";
   }
 
   return (
@@ -96,6 +118,50 @@ export default function Settings() {
             {pwLoading ? "Changing..." : "Change Password"}
           </button>
         </form>
+      </div>
+
+      {/* Re-run Setup / Reset */}
+      <div className="mb-6 rounded-sm border border-border bg-card p-4">
+        <p className="text-xs font-semibold text-muted mb-3">Setup & Reset</p>
+        <div className="flex flex-wrap gap-3">
+          <button
+            onClick={handleRerunSetup}
+            className="flex items-center gap-2 rounded-sm border border-border px-4 py-2 text-xs text-muted hover:border-primary hover:text-primary"
+          >
+            <Wand2 className="h-3.5 w-3.5" /> Re-run Setup Wizard
+          </button>
+
+          {!resetConfirm ? (
+            <button
+              onClick={() => setResetConfirm(true)}
+              className="flex items-center gap-2 rounded-sm border border-border px-4 py-2 text-xs text-muted hover:border-danger hover:text-danger"
+            >
+              <RotateCcw className="h-3.5 w-3.5" /> Factory Reset
+            </button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-3.5 w-3.5 text-danger" />
+              <span className="text-[10px] text-danger">Delete ALL data?</span>
+              <button
+                onClick={handleReset}
+                disabled={resetting}
+                className="rounded-sm bg-danger px-3 py-1.5 text-[10px] font-semibold text-white hover:bg-danger/80"
+              >
+                {resetting ? "Resetting..." : "Yes, Reset"}
+              </button>
+              <button
+                onClick={() => setResetConfirm(false)}
+                className="rounded-sm border border-border px-3 py-1.5 text-[10px] text-muted hover:text-foreground"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
+        <p className="mt-2 text-[10px] text-muted">
+          Re-run wizard: keeps data, lets you reconfigure storage/provider/model.
+          Factory reset: deletes database, credentials, and auth — starts fresh.
+        </p>
       </div>
 
       {/* Config */}
