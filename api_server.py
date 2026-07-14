@@ -438,6 +438,97 @@ async def chat_send(msg: ChatMessage):
         return StreamingResponse(crash_gen(), media_type="text/event-stream")
 
 
+@app.post("/api/chat/run", dependencies=[Depends(verify_token)])
+async def chat_run(msg: ChatMessage):
+    """Run the full agentic loop (same as Telegram/CLI) with structured SSE events.
+
+    Event types:
+    - thinking: agent is processing
+    - tool_call: agent is calling a tool {tool, args}
+    - tool_result: tool execution result {tool, output}
+    - agent_spawn: sub-agent created {agent}
+    - plan: orchestrator plan {steps}
+    - text: intermediate text message
+    - progress: status update
+    - done: final response {full}
+    - error: error occurred {message}
+    """
+    import asyncio as _asyncio
+
+    model = msg.model or mem.get_memory("default_model") or cfg.DEFAULT_MODEL
+    user_message = msg.message.strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Empty message")
+
+    chat_id = _get_active_chat_id()
+    event_queue: _asyncio.Queue = _asyncio.Queue()
+
+    async def send_fn(text: str):
+        """Callback passed to run_agent — intercepts intermediate messages."""
+        if not text:
+            return
+        # Detect event type from text patterns
+        if text.startswith("🔄") or text.startswith("📋"):
+            await event_queue.put({"type": "progress", "content": text})
+        elif text.startswith("  ──•"):
+            # Agent delegation step
+            await event_queue.put({"type": "agent_step", "content": text})
+        else:
+            await event_queue.put({"type": "text", "content": text})
+
+    async def run_agent_task():
+        """Run the agent in background, push events to queue."""
+        try:
+            await event_queue.put({"type": "thinking", "content": "Processing..."})
+
+            # Try importing and running the full agent
+            from agent import run_agent, ACTIVE_TASKS
+            ACTIVE_TASKS[chat_id] = True
+
+            reply, media = await run_agent(
+                chat_id=chat_id,
+                user_message=user_message,
+                model=model,
+                send_fn=send_fn,
+            )
+
+            if reply:
+                await event_queue.put({"type": "done", "full": reply})
+            else:
+                await event_queue.put({"type": "done", "full": "(No response)"})
+
+        except Exception as e:
+            logger.error(f"run_agent failed: {e}", exc_info=True)
+            await event_queue.put({"type": "error", "message": str(e)})
+        finally:
+            await event_queue.put(None)  # Signal stream end
+
+    async def generate():
+        """SSE generator — reads from event queue."""
+        # Start the agent task in background
+        task = _asyncio.create_task(run_agent_task())
+
+        try:
+            while True:
+                try:
+                    event = await _asyncio.wait_for(event_queue.get(), timeout=120.0)
+                except _asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'Timeout waiting for agent response'})}\n\n"
+                    break
+
+                if event is None:
+                    break  # Stream end
+
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
 @app.get("/api/chat/debug", dependencies=[Depends(verify_token)])
 async def chat_debug():
     """Debug endpoint — shows what model/provider/key would be used for chat.
