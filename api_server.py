@@ -1215,51 +1215,61 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
-    """Initiate OAuth connection for a Composio toolkit via Connect Link."""
+    """Initiate OAuth connection for a Composio toolkit.
+    
+    Flow:
+    1. Get auth_config for the toolkit (GET /auth_configs?toolkit=X)
+    2. Create auth link session with auth_config_id (POST /connected_accounts/link)
+    3. Return redirect URL for user to authorize
+    """
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         raise HTTPException(status_code=400, detail="Composio API key not configured")
     try:
         import requests as req
-        body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+        headers = {"x-api-key": composio_key, "Content-Type": "application/json"}
+        base = "https://backend.composio.dev/api/v3"
 
-        # Use the v3 link endpoint (new API as of 2026)
-        resp = req.post(
-            "https://backend.composio.dev/api/v3/connected_accounts/link",
-            headers={"x-api-key": composio_key, "Content-Type": "application/json"},
+        # Step 1: Get auth_config for this toolkit
+        auth_resp = req.get(
+            f"{base}/auth_configs",
+            headers=headers,
+            params={"toolkit": toolkit},
+            timeout=10,
+        )
+        if auth_resp.status_code != 200:
+            return {"error": f"Failed to get auth config: HTTP {auth_resp.status_code}", "detail": auth_resp.text[:200]}
+
+        auth_data = auth_resp.json()
+        auth_configs = auth_data.get("items", auth_data.get("auth_configs", []))
+        if not auth_configs:
+            return {"error": f"No auth config found for toolkit '{toolkit}'", "detail": "This toolkit may not support OAuth connections."}
+
+        auth_config_id = auth_configs[0].get("id") or auth_configs[0].get("nanoid", "")
+        if not auth_config_id:
+            return {"error": "Auth config found but has no ID"}
+
+        # Step 2: Create auth link session
+        body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+        link_resp = req.post(
+            f"{base}/connected_accounts/link",
+            headers=headers,
             json={
-                "toolkit": toolkit,
+                "auth_config_id": auth_config_id,
                 "user_id": "default",
                 "callback_url": body.get("callback_url", ""),
             },
             timeout=15,
         )
-        if resp.status_code in (200, 201):
-            data = resp.json()
+        if link_resp.status_code in (200, 201):
+            data = link_resp.json()
+            redirect_url = data.get("redirect_url") or data.get("redirectUrl") or data.get("url", "")
             return {
                 "success": True,
-                "redirectUrl": data.get("redirect_url") or data.get("redirectUrl") or data.get("url", ""),
+                "redirectUrl": redirect_url,
                 "connection_id": data.get("connected_account_id") or data.get("id", ""),
             }
-        # Fallback: try the older endpoint format
-        resp2 = req.post(
-            "https://backend.composio.dev/api/v3/connected_accounts",
-            headers={"x-api-key": composio_key, "Content-Type": "application/json"},
-            json={
-                "integration_id": toolkit,
-                "user_id": "default",
-                "redirect_uri": body.get("callback_url", ""),
-            },
-            timeout=15,
-        )
-        if resp2.status_code in (200, 201):
-            data = resp2.json()
-            return {
-                "success": True,
-                "redirectUrl": data.get("redirect_url") or data.get("redirectUrl") or data.get("url", ""),
-                "connection_id": data.get("connected_account_id") or data.get("id", ""),
-            }
-        return {"error": f"HTTP {resp.status_code}/{resp2.status_code}", "detail": (resp.text + resp2.text)[:300]}
+        return {"error": f"Link creation failed: HTTP {link_resp.status_code}", "detail": link_resp.text[:300]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

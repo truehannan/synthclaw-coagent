@@ -6,6 +6,7 @@ interface ComposioTool {
   slug: string;
   name: string;
   description: string;
+  logo?: string;
   toolkit?: { slug: string; name: string; logo: string };
   tags?: string[];
   no_auth?: boolean;
@@ -130,41 +131,44 @@ export default function Integrations() {
               </div>
             )}
             <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
-              {tools.map(tool => (
-                <div key={tool.slug} className="rounded-sm border border-border bg-card p-3 hover:border-muted transition-colors">
+              {tools.map(tool => {
+                const logo = tool.logo || tool.toolkit?.logo || "";
+                const name = tool.name || tool.toolkit?.name || tool.slug || "";
+                const slug = tool.slug || "";
+                const desc = tool.description || "";
+                const tags: string[] = tool.tags || [];
+                return (
+                <div key={slug} className="rounded-sm border border-border bg-card p-3 hover:border-muted transition-colors">
                   <div className="flex items-start gap-2">
-                    {tool.toolkit?.logo && (
-                      <img src={tool.toolkit.logo} alt="" className="h-5 w-5 rounded-sm flex-shrink-0 mt-0.5" />
+                    {logo && (
+                      <img src={logo} alt="" className="h-5 w-5 rounded-sm flex-shrink-0 mt-0.5" onError={e => (e.currentTarget.style.display = "none")} />
                     )}
                     <div className="flex-1 min-w-0">
-                      <p className="text-[10px] font-semibold text-foreground truncate">{tool.toolkit?.name || tool.name}</p>
-                      <p className="text-[9px] text-muted mt-0.5 line-clamp-2">{tool.description}</p>
+                      <p className="text-[10px] font-semibold text-foreground truncate">{name}</p>
+                      <p className="text-[9px] text-muted mt-0.5 line-clamp-2">{desc}</p>
                     </div>
                   </div>
-                  {tool.tags && tool.tags.length > 0 && (
+                  {tags.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-2">
-                      {tool.tags.slice(0, 3).map(tag => (
+                      {tags.slice(0, 3).map(tag => (
                         <span key={tag} className="rounded-full bg-muted/10 px-1.5 py-0.5 text-[8px] text-muted">{tag}</span>
                       ))}
                     </div>
                   )}
                   <div className="mt-2 flex items-center justify-between">
-                    <span className="text-[8px] text-muted font-mono">{tool.slug}</span>
-                    {!tool.no_auth ? (
-                      <button onClick={() => handleConnect(tool.toolkit?.slug || tool.slug)}
-                        disabled={connecting === (tool.toolkit?.slug || tool.slug)}
-                        className="flex items-center gap-1 rounded-sm bg-primary/10 px-2 py-0.5 text-[9px] text-primary hover:bg-primary/20 disabled:opacity-50">
-                        {connecting === (tool.toolkit?.slug || tool.slug)
-                          ? <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                          : <ExternalLink className="h-2.5 w-2.5" />}
-                        Connect
-                      </button>
-                    ) : (
-                      <span className="text-[8px] text-success">No auth needed</span>
-                    )}
+                    <span className="text-[8px] text-muted font-mono truncate max-w-[120px]">{slug}</span>
+                    <button onClick={() => handleConnect(slug)}
+                      disabled={connecting === slug}
+                      className="flex items-center gap-1 rounded-sm bg-primary/10 px-2 py-0.5 text-[9px] text-primary hover:bg-primary/20 disabled:opacity-50">
+                      {connecting === slug
+                        ? <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                        : <ExternalLink className="h-2.5 w-2.5" />}
+                      Connect
+                    </button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Pagination */}
