@@ -1184,7 +1184,17 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
         )
         if resp.status_code == 200:
             data = resp.json()
-            items = data.get("items", data.get("toolkits", []))
+            raw_items = data.get("items", data.get("toolkits", []))
+            # Normalize fields (API may use icon/logo_url/logo inconsistently)
+            items = []
+            for item in raw_items:
+                items.append({
+                    "slug": item.get("slug") or item.get("name", ""),
+                    "name": item.get("name") or item.get("display_name") or item.get("slug", ""),
+                    "description": item.get("description") or item.get("short_description") or "",
+                    "logo": item.get("logo") or item.get("icon") or item.get("logo_url") or item.get("image", ""),
+                    "tags": item.get("tags") or item.get("categories") or [],
+                })
             return {
                 "items": items,
                 "total_pages": data.get("total_pages", 1),
@@ -1218,8 +1228,8 @@ async def composio_connect(toolkit: str, request: Request):
     """Initiate OAuth connection for a Composio toolkit.
     
     Flow:
-    1. Get auth_config for the toolkit (GET /auth_configs?toolkit=X)
-    2. Create auth link session with auth_config_id (POST /connected_accounts/link)
+    1. Get auth_config for the toolkit (filter by toolkit slug)
+    2. Create auth link session with auth_config_id
     3. Return redirect URL for user to authorize
     """
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
@@ -1230,46 +1240,71 @@ async def composio_connect(toolkit: str, request: Request):
         headers = {"x-api-key": composio_key, "Content-Type": "application/json"}
         base = "https://backend.composio.dev/api/v3"
 
-        # Step 1: Get auth_config for this toolkit
+        # Step 1: Get auth_config for this specific toolkit
         auth_resp = req.get(
             f"{base}/auth_configs",
             headers=headers,
-            params={"toolkit": toolkit},
+            params={"toolkit": toolkit, "status": "enabled"},
             timeout=10,
         )
-        if auth_resp.status_code != 200:
-            return {"error": f"Failed to get auth config: HTTP {auth_resp.status_code}", "detail": auth_resp.text[:200]}
-
-        auth_data = auth_resp.json()
-        auth_configs = auth_data.get("items", auth_data.get("auth_configs", []))
-        if not auth_configs:
-            return {"error": f"No auth config found for toolkit '{toolkit}'", "detail": "This toolkit may not support OAuth connections."}
-
-        auth_config_id = auth_configs[0].get("id") or auth_configs[0].get("nanoid", "")
-        if not auth_config_id:
-            return {"error": "Auth config found but has no ID"}
-
-        # Step 2: Create auth link session
+        
+        auth_config_id = ""
+        if auth_resp.status_code == 200:
+            auth_data = auth_resp.json()
+            auth_configs = auth_data.get("items", auth_data.get("auth_configs", []))
+            # Find the config that MATCHES this toolkit (not just first result)
+            for ac in auth_configs:
+                ac_toolkit = ac.get("toolkit", ac.get("toolkit_slug", "")).lower()
+                if ac_toolkit == toolkit.lower() or not ac_toolkit:
+                    auth_config_id = ac.get("id") or ac.get("nanoid", "")
+                    break
+        
+        # Step 2: Create connection — use link endpoint if we have auth_config_id,
+        # otherwise try direct connection with toolkit slug
         body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
-        link_resp = req.post(
-            f"{base}/connected_accounts/link",
-            headers=headers,
-            json={
-                "auth_config_id": auth_config_id,
-                "user_id": "default",
-                "callback_url": body.get("callback_url", ""),
-            },
-            timeout=15,
-        )
+        
+        if auth_config_id:
+            link_resp = req.post(
+                f"{base}/connected_accounts/link",
+                headers=headers,
+                json={
+                    "auth_config_id": auth_config_id,
+                    "user_id": body.get("user_id", "default"),
+                    "callback_url": body.get("callback_url", ""),
+                },
+                timeout=15,
+            )
+        else:
+            # No auth_config found — try creating connection directly with toolkit
+            link_resp = req.post(
+                f"{base}/connected_accounts",
+                headers=headers,
+                json={
+                    "toolkit": toolkit,
+                    "user_id": body.get("user_id", "default"),
+                    "redirect_uri": body.get("callback_url", ""),
+                },
+                timeout=15,
+            )
+
         if link_resp.status_code in (200, 201):
             data = link_resp.json()
-            redirect_url = data.get("redirect_url") or data.get("redirectUrl") or data.get("url", "")
+            redirect_url = (
+                data.get("redirect_url") or 
+                data.get("redirectUrl") or 
+                data.get("url") or 
+                data.get("link", {}).get("url") or
+                ""
+            )
             return {
                 "success": True,
                 "redirectUrl": redirect_url,
                 "connection_id": data.get("connected_account_id") or data.get("id", ""),
             }
-        return {"error": f"Link creation failed: HTTP {link_resp.status_code}", "detail": link_resp.text[:300]}
+        return {
+            "error": f"Connection failed: HTTP {link_resp.status_code}",
+            "detail": link_resp.text[:300],
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
