@@ -48,9 +48,10 @@ export default function Chat() {
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [skillsSearch, setSkillsSearch] = useState("");
 
-  // Society sidebar
+  // Society panel
   const [showSociety, setShowSociety] = useState(false);
   const [societyData, setSocietyData] = useState<any>(null);
+  const societyPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     if (sessionId) {
@@ -59,6 +60,9 @@ export default function Chat() {
       loadHistory();
     }
     models.current().then(r => setCurrentModel(r.model)).catch(() => {});
+    return () => {
+      if (societyPollRef.current) { clearInterval(societyPollRef.current); societyPollRef.current = null; }
+    };
   }, [sessionId]);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [items, streamText, liveEvents]);
@@ -207,12 +211,26 @@ export default function Chat() {
   }
 
   function toggleSkill(name: string) { setSelectedSkills(prev => prev.includes(name) ? prev.filter(s => s !== name) : [...prev, name]); }
-  async function toggleSociety() { if (!showSociety) { try { setSocietyData(await society.status()); } catch {} } setShowSociety(!showSociety); }
+  async function toggleSociety() {
+    if (!showSociety) {
+      try { setSocietyData(await society.status()); } catch {}
+      // Start polling society status while panel is open
+      if (!societyPollRef.current) {
+        societyPollRef.current = setInterval(async () => {
+          try { setSocietyData(await society.status()); } catch {}
+        }, 2000);
+      }
+    } else {
+      // Stop polling when closing
+      if (societyPollRef.current) { clearInterval(societyPollRef.current); societyPollRef.current = null; }
+    }
+    setShowSociety(!showSociety);
+  }
   function handleNewChat() { navigate("/chat"); setItems([]); setLiveEvents([]); }
 
   return (
-    <div className="flex h-full">
-      <div className="flex flex-1 flex-col">
+    <div className="flex h-full flex-col">
+      <div className="flex flex-1 flex-col min-h-0">
         {/* Top bar */}
         <div className="flex items-center justify-between border-b border-border bg-card px-4 py-2">
           <div className="flex items-center gap-2">
@@ -389,24 +407,61 @@ export default function Chat() {
         </div>
       </div>
 
-      {/* Society sidebar */}
+      {/* Agent Society Panel — bottom split when active */}
       {showSociety && (
-        <div className="w-64 border-l border-border bg-card overflow-y-auto p-3">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-3">Agent Society</p>
-          {societyData?.active?.length > 0 ? (
-            <div className="space-y-2">
-              {societyData.active.map((a: any, i: number) => (
-                <div key={i} className="rounded-sm border border-border p-2">
-                  <AgentBadge role={a.role || a.name} task={a.task} />
+        <div className="border-t border-border bg-card" style={{ height: "40vh", minHeight: "200px" }}>
+          <div className="flex h-full flex-col">
+            {/* Panel header */}
+            <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+              <div className="flex items-center gap-3">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">Agent Society</span>
+                {societyData?.agents?.active > 0 && (
+                  <span className="flex items-center gap-1 text-[9px] text-success">
+                    <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
+                    {societyData.agents.active} active
+                  </span>
+                )}
+              </div>
+              <button onClick={() => setShowSociety(false)} className="text-[10px] text-muted hover:text-foreground">Close</button>
+            </div>
+            {/* Panel content */}
+            <div className="flex-1 overflow-y-auto p-3">
+              {societyData?.active?.length > 0 ? (
+                <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+                  {societyData.active.map((a: any, i: number) => {
+                    const colorMap: Record<string, string> = { orchestrator: "#ef4444", researcher: "#3b82f6", executor: "#10b981", reviewer: "#f59e0b", observer: "#8b5cf6" };
+                    const color = colorMap[a.role?.toLowerCase()] || "#6b7280";
+                    return (
+                      <div key={i} className="rounded-sm border border-border p-3 relative overflow-hidden">
+                        <div className="absolute inset-0 opacity-5" style={{ background: color }} />
+                        <div className="relative flex items-center gap-2 mb-1">
+                          <span className="h-2.5 w-2.5 rounded-full animate-pulse" style={{ background: color }} />
+                          <span className="text-[11px] font-bold capitalize" style={{ color }}>{a.name || a.role}</span>
+                          <span className="ml-auto text-[8px] text-muted">{a.elapsed ? `${a.elapsed}s` : ""}</span>
+                        </div>
+                        <p className="text-[9px] text-muted truncate">{a.task || a.status || "idle"}</p>
+                        {a.status && (
+                          <span className={`inline-block mt-1 rounded-full px-1.5 py-0.5 text-[8px] font-medium ${
+                            a.status === "executing" ? "bg-success/10 text-success" :
+                            a.status === "thinking" ? "bg-blue-500/10 text-blue-400" :
+                            "bg-muted/10 text-muted"
+                          }`}>{a.status}</span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
+              ) : (
+                <div className="flex h-full items-center justify-center">
+                  <div className="text-center">
+                    <Brain className="h-8 w-8 text-muted/30 mx-auto mb-2" />
+                    <p className="text-[10px] text-muted">No active agents</p>
+                    <p className="text-[9px] text-muted mt-1">Agents appear here when processing complex tasks</p>
+                  </div>
+                </div>
+              )}
             </div>
-          ) : (
-            <div className="text-center py-8">
-              <Brain className="h-6 w-6 text-muted mx-auto mb-2" />
-              <p className="text-[10px] text-muted">No active agents</p>
-            </div>
-          )}
+          </div>
         </div>
       )}
     </div>
