@@ -86,22 +86,22 @@ export default function Chat() {
     setInput("");
     if (inputRef.current) inputRef.current.style.height = "auto";
 
-    // If no session yet, create one named after first message
+    setMessages(prev => [...prev, { role: "user", content: userMsg }]);
+    setStreaming(true);
+    setStreamText("");
+
+    // Create session on first message (but DON'T navigate yet — wait until send completes)
+    let newSessionId = sessionId;
     if (!sessionId && messages.length === 0) {
       try {
         const name = userMsg.slice(0, 30) + (userMsg.length > 30 ? "..." : "");
         const res = await sessions.create(name);
         if (res.session?.id) {
-          // Switch backend to new session
           await sessions.switch(res.session.id);
-          navigate(`/chat/${res.session.id}`, { replace: true });
+          newSessionId = res.session.id;
         }
       } catch {}
     }
-
-    setMessages(prev => [...prev, { role: "user", content: userMsg }]);
-    setStreaming(true);
-    setStreamText("");
 
     try {
       const res = await chat.sendStream(userMsg, currentModel || undefined);
@@ -129,7 +129,6 @@ export default function Chat() {
           } catch {}
         }
       }
-      // If stream ended without explicit done/error, commit whatever we got
       if (!gotDone && fullText) {
         setMessages(prev => [...prev, { role: "assistant", content: fullText }]);
         setStreamText("");
@@ -141,6 +140,10 @@ export default function Chat() {
     } finally {
       setStreaming(false);
       setStreamText("");
+      // Navigate to session URL after send completes (not before)
+      if (newSessionId && newSessionId !== sessionId) {
+        navigate(`/chat/${newSessionId}`, { replace: true });
+      }
     }
   }
 
