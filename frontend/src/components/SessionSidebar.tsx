@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { sessions as api } from "@/lib/api";
-import { Plus, Trash2 } from "lucide-react";
+import { Trash2 } from "lucide-react";
 import type { Session } from "@/lib/types";
 
 export default function SessionSidebar() {
   const [list, setList] = useState<Session[]>([]);
   const [active, setActive] = useState("default");
   const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => { load(); }, []);
 
@@ -31,21 +32,19 @@ export default function SessionSidebar() {
     load();
   }
 
-  function handleNewChat() {
-    navigate("/chat");
-  }
+  // Deselect all sessions if on /chat (new chat)
+  const isNewChat = location.pathname === "/chat";
 
   return (
     <div className="border-t border-border px-2 py-2">
       <div className="flex items-center justify-between px-2 py-1">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">Chats</span>
-        <button onClick={handleNewChat} title="New Chat" className="text-muted hover:text-primary"><Plus className="h-3 w-3" /></button>
       </div>
       <div className="mt-1 max-h-40 overflow-y-auto space-y-0.5">
         {list.map((s) => (
           <div key={s.id}
             className={`group flex items-center gap-1.5 rounded-sm px-2 py-1.5 text-[10px] cursor-pointer ${
-              s.id === active ? "bg-primary-dim text-primary" : "text-muted hover:bg-card-hover hover:text-foreground"
+              !isNewChat && s.id === active ? "bg-primary-dim text-primary" : "text-muted hover:bg-card-hover hover:text-foreground"
             }`}
             onClick={() => switchTo(s.id)}>
             <span className="flex-1 truncate">{s.name}</span>

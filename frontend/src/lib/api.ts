@@ -52,7 +52,15 @@ export const chat = {
   approve: () => request("/chat/approve", { method: "POST" }),
   deny: () => request("/chat/deny", { method: "POST" }),
   taskStatus: () => request("/chat/task-status"),
-  /** Send message with SSE streaming */
+  /** Full agentic run with structured SSE events */
+  run: (message: string, model?: string) => {
+    return fetch(`${BASE}/chat/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Token": _token },
+      body: JSON.stringify({ message, model }),
+    });
+  },
+  /** Legacy: simple streaming (kept for fallback) */
   sendStream: (message: string, model?: string) => {
     return fetch(`${BASE}/chat/send`, {
       method: "POST",
