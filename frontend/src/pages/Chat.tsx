@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Component, type ReactNode, type ErrorInfo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Send, Square, Trash2, ChevronDown, ChevronRight, Plus, Brain, Puzzle } from "lucide-react";
 import { chat, models, sessions, society, providers as providersApi, skills as skillsApi, getToken } from "@/lib/api";
@@ -6,6 +6,19 @@ import type { Message } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import Mascot from "@/components/Mascot";
 import { ChatEvent, ThinkingIndicator, ToolCallCard, AgentBadge, PlanCard, ProgressCard, ErrorCard } from "@/components/ChatEvents";
+
+// Error Boundary to prevent entire chat from crashing
+class ChatItemBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  state = { error: null as string | null };
+  static getDerivedStateFromError(error: Error) { return { error: error.message }; }
+  componentDidCatch(error: Error, info: ErrorInfo) { console.error("ChatItem render error:", error, info); }
+  render() {
+    if (this.state.error) {
+      return <div className="text-[9px] text-danger/60 px-2 py-1">[Render error: {this.state.error}]</div>;
+    }
+    return this.props.children;
+  }
+}
 
 interface ProviderModels { name: string; emoji: string; models: string[]; expanded: boolean; }
 interface ChatItem { type: "user" | "assistant" | "event"; content?: string; event?: ChatEvent; }
@@ -18,6 +31,7 @@ export default function Chat() {
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState("");
   const [liveEvents, setLiveEvents] = useState<ChatEvent[]>([]);
+  const liveEventsRef = useRef<ChatEvent[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -80,6 +94,7 @@ export default function Chat() {
     setStreaming(true);
     setStreamText("");
     setLiveEvents([]);
+    liveEventsRef.current = [];
 
     try {
       // Use the full agentic endpoint
@@ -109,46 +124,28 @@ export default function Chat() {
           try {
             const event: ChatEvent = JSON.parse(line.slice(6));
 
-            switch (event.type) {
-              case "thinking":
-                setLiveEvents(prev => [...prev, event]);
-                break;
-              case "progress":
-              case "agent_step":
-                setLiveEvents(prev => [...prev, event]);
-                break;
-              case "text":
-                // Intermediate text from agent
-                setLiveEvents(prev => [...prev, event]);
-                break;
-              case "tool_call":
-                setLiveEvents(prev => [...prev, event]);
-                break;
-              case "tool_result":
-                setLiveEvents(prev => [...prev, event]);
-                break;
-              case "plan":
-                setLiveEvents(prev => [...prev, event]);
-                break;
-              case "agent_spawn":
-                setLiveEvents(prev => [...prev, event]);
-                break;
-              case "done":
-                finalResponse = event.full || event.content || "";
-                break;
-              case "error":
-                finalResponse = `Error: ${event.message || event.content || "Unknown error"}`;
-                break;
+            if (event.type === "done") {
+              finalResponse = event.full || event.content || "";
+            } else if (event.type === "error") {
+              finalResponse = `Error: ${event.message || event.content || "Unknown error"}`;
+            } else {
+              // All other events go to live display
+              liveEventsRef.current = [...liveEventsRef.current, event];
+              setLiveEvents([...liveEventsRef.current]);
             }
           } catch {}
         }
       }
 
-      // Commit final response
+      // Commit final response — use ref (not stale state)
+      const eventsToCommit = liveEventsRef.current
+        .filter(e => e.type !== "thinking")
+        .map(e => ({ type: "event" as const, event: e }));
+
       if (finalResponse) {
-        setItems(prev => [...prev, ...liveEventsToItems(liveEvents), { type: "assistant", content: finalResponse }]);
-      } else if (liveEvents.length > 0) {
-        setItems(prev => [...prev, ...liveEventsToItems(liveEvents)]);
+        setItems(prev => [...prev, ...eventsToCommit, { type: "assistant", content: finalResponse }]);
+      } else if (eventsToCommit.length > 0) {
+        setItems(prev => [...prev, ...eventsToCommit]);
       } else {
         setItems(prev => [...prev, { type: "assistant", content: "No response received. Check /api/chat/debug for configuration." }]);
       }
@@ -162,13 +159,6 @@ export default function Chat() {
         navigate(`/chat/${newSessionId}`, { replace: true });
       }
     }
-  }
-
-  function liveEventsToItems(events: ChatEvent[]): ChatItem[] {
-    // Convert non-thinking events to persisted chat items
-    return events
-      .filter(e => e.type !== "thinking" && e.type !== "done")
-      .map(e => ({ type: "event" as const, event: e }));
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -253,26 +243,30 @@ export default function Chat() {
             {items.map((item, i) => {
               if (item.type === "user") {
                 return (
-                  <div key={i} className="flex justify-end animate-fade-in">
-                    <div className="max-w-[85%] rounded-sm bg-primary-dim px-4 py-3 text-sm">
-                      <p className="whitespace-pre-wrap">{item.content}</p>
+                  <ChatItemBoundary key={i}>
+                    <div className="flex justify-end animate-fade-in">
+                      <div className="max-w-[85%] rounded-sm bg-primary-dim px-4 py-3 text-sm">
+                        <p className="whitespace-pre-wrap">{item.content}</p>
+                      </div>
                     </div>
-                  </div>
+                  </ChatItemBoundary>
                 );
               }
               if (item.type === "assistant") {
                 return (
-                  <div key={i} className="animate-fade-in">
-                    <div className="max-w-[85%] rounded-sm border border-border bg-card px-4 py-3 text-sm">
-                      <div className="prose prose-invert prose-sm max-w-none">
-                        <ReactMarkdown>{item.content || ""}</ReactMarkdown>
+                  <ChatItemBoundary key={i}>
+                    <div className="animate-fade-in">
+                      <div className="max-w-[85%] rounded-sm border border-border bg-card px-4 py-3 text-sm">
+                        <div className="prose prose-invert prose-sm max-w-none">
+                          <ReactMarkdown>{item.content || ""}</ReactMarkdown>
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  </ChatItemBoundary>
                 );
               }
               if (item.type === "event" && item.event) {
-                return <div key={i}>{renderEvent(item.event)}</div>;
+                return <ChatItemBoundary key={i}>{renderEvent(item.event)}</ChatItemBoundary>;
               }
               return null;
             })}
@@ -281,7 +275,7 @@ export default function Chat() {
             {streaming && (
               <div className="space-y-1">
                 {liveEvents.map((event, i) => (
-                  <div key={i}>{renderEvent(event)}</div>
+                  <ChatItemBoundary key={i}>{renderEvent(event)}</ChatItemBoundary>
                 ))}
                 {liveEvents.length === 0 && <ThinkingIndicator />}
               </div>
@@ -420,30 +414,38 @@ export default function Chat() {
 }
 
 function renderEvent(event: ChatEvent) {
-  switch (event.type) {
-    case "thinking":
-      return <ThinkingIndicator content={event.content} />;
-    case "progress":
-      return <ProgressCard content={event.content || ""} />;
-    case "agent_step":
-      return <AgentBadge role="executor" task={event.content?.replace("  ──•", "").trim()} />;
-    case "agent_spawn":
-      return <AgentBadge role={event.agent?.role || "agent"} task={event.agent?.task} />;
-    case "tool_call":
-      return <ToolCallCard tool={event.tool || "unknown"} args={event.args} />;
-    case "tool_result":
-      return <ToolCallCard tool={event.tool || "tool"} output={event.output} collapsed={false} />;
-    case "plan":
-      return <PlanCard steps={event.steps || []} />;
-    case "text":
-      return (
-        <div className="text-[10px] text-muted border-l-2 border-primary/30 pl-2 py-0.5 animate-fade-in">
-          {event.content}
-        </div>
-      );
-    case "error":
-      return <ErrorCard message={event.message || event.content || "Unknown error"} />;
-    default:
-      return null;
+  if (!event || !event.type) return null;
+  try {
+    switch (event.type) {
+      case "thinking":
+        return <ThinkingIndicator content={event.content} />;
+      case "progress":
+        return <ProgressCard content={event.content || ""} />;
+      case "agent_step":
+        return <AgentBadge role="executor" task={event.content?.replace("  ──•", "").trim()} />;
+      case "agent_spawn":
+        return <AgentBadge role={event.agent?.role || "agent"} task={event.agent?.task} />;
+      case "tool_call":
+        return <ToolCallCard tool={event.tool || "unknown"} args={event.args} />;
+      case "tool_result":
+        return <ToolCallCard tool={event.tool || "tool"} output={event.output} collapsed={false} />;
+      case "plan":
+        return <PlanCard steps={Array.isArray(event.steps) ? event.steps : []} />;
+      case "text":
+        return (
+          <div className="text-[10px] text-muted border-l-2 border-primary/30 pl-2 py-0.5 animate-fade-in">
+            {event.content || ""}
+          </div>
+        );
+      case "error":
+        return <ErrorCard message={event.message || event.content || "Unknown error"} />;
+      default:
+        // Unknown event type — show raw content as text
+        return event.content ? (
+          <div className="text-[10px] text-muted pl-2 py-0.5">{event.content}</div>
+        ) : null;
+    }
+  } catch (e) {
+    return <div className="text-[9px] text-danger/60 px-2 py-1">[Event render error]</div>;
   }
 }
