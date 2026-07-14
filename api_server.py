@@ -173,11 +173,15 @@ def _resolve_model_routing(model: str) -> tuple:
         "hf:": ("HuggingFace", cfg.HUGGINGFACE_API_BASE),
         "openrouter:": ("OpenRouter", cfg.OPENROUTER_API_BASE),
         "github:": ("GitHub", cfg.GITHUB_MODELS_API_BASE),
-        "cloudflare:": ("Cloudflare", ""),
+        "cloudflare:": ("Cloudflare", "__cloudflare__"),
     }
     for prefix, (provider, base_url) in _prefix_map.items():
         if model.startswith(prefix):
             stripped = model[len(prefix):]
+            # Cloudflare needs account_id to build URL
+            if base_url == "__cloudflare__":
+                account_id = mem.get_memory("cf_account_id") or cfg.CF_ACCOUNT_ID or ""
+                base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1" if account_id else ""
             return (stripped, base_url, provider)
 
     # No prefix — use default (DigitalOcean or env base)
@@ -432,6 +436,40 @@ async def chat_send(msg: ChatMessage):
         async def crash_gen():
             yield f"data: {json.dumps({'error': f'Server error: {str(e)}'})}\n\n"
         return StreamingResponse(crash_gen(), media_type="text/event-stream")
+
+
+@app.get("/api/chat/debug", dependencies=[Depends(verify_token)])
+async def chat_debug():
+    """Debug endpoint — shows what model/provider/key would be used for chat.
+    Hit this from browser: /api/chat/debug (add X-API-Token header or use ?token=xxx)"""
+    model = mem.get_memory("default_model") or cfg.DEFAULT_MODEL
+    api_model, base_url, provider = _resolve_model_routing(model)
+    key_name = _provider_key_name(provider)
+
+    # Check what key we'd use
+    has_credential = False
+    try:
+        cred = mem.get_credential(key_name)
+        has_credential = bool(cred)
+    except Exception as e:
+        has_credential = f"ERROR: {e}"
+
+    has_env_key = bool(cfg.OPENAI_API_KEY)
+    chat_id = _get_active_chat_id()
+    history_count = len(mem.get_messages(chat_id, limit=100))
+
+    return {
+        "stored_model": model,
+        "api_model": api_model,
+        "base_url": base_url,
+        "provider": provider,
+        "key_name": key_name,
+        "has_credential_in_store": has_credential,
+        "has_env_key": has_env_key,
+        "chat_id": chat_id,
+        "history_count": history_count,
+        "base_url_empty": base_url == "" or base_url is None,
+    }
 
 
 @app.get("/api/chat/history", dependencies=[Depends(verify_token)])
