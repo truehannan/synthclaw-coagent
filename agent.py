@@ -59,8 +59,23 @@ def _auto_reinstall_skills():
 
 _auto_reinstall_skills()
 
-client = OpenAI(api_key=cfg.OPENAI_API_KEY, base_url=cfg.OPENAI_API_BASE)
+# Lazy client — do NOT create at module level (crashes if no env key set)
+# Use _get_default_client() instead
+_default_client = None
 CLIENT_CACHE: dict[tuple[str, str], OpenAI] = {}
+
+
+def _get_default_client() -> OpenAI:
+    """Get or create the default OpenAI client. Checks DB credentials first, then env."""
+    global _default_client
+    if _default_client is not None:
+        return _default_client
+    api_key = mem.get_credential("OPENAI_API_KEY") or cfg.OPENAI_API_KEY or ""
+    base_url = cfg.OPENAI_API_BASE or "https://inference.do-ai.run/v1"
+    if not api_key:
+        raise RuntimeError("No default API key configured. Set one via /setup or Providers page.")
+    _default_client = OpenAI(api_key=api_key, base_url=base_url)
+    return _default_client
 
 # Active task tracking -- allows /stop to interrupt a running agent loop
 ACTIVE_TASKS: dict[int, bool] = {}  # chat_id -> is_running
@@ -163,7 +178,7 @@ def _provider_base_url(provider: str) -> str:
 
 def _provider_fallback_key(provider: str) -> str | None:
     if provider in ("DigitalOcean", "Anthropic", "OpenAI"):
-        return cfg.OPENAI_API_KEY
+        return mem.get_credential("OPENAI_API_KEY") or cfg.OPENAI_API_KEY
     return None
 
 
@@ -194,7 +209,7 @@ def _resolve_client_and_model(selected_model: str) -> tuple[OpenAI, str, str]:
     force_gradient = provider == "Anthropic" or (provider == "OpenAI" and not mem.get_credential("OPENAI_PROVIDER_API_KEY"))
     base_provider = "DigitalOcean" if force_gradient else provider
     if force_gradient:
-        api_key = cfg.OPENAI_API_KEY
+        api_key = mem.get_credential("OPENAI_API_KEY") or cfg.OPENAI_API_KEY
     if not api_key:
         raise RuntimeError(
             f"Missing {provider} API key. Use /providerkey {provider.lower()} <key>"
@@ -2152,7 +2167,7 @@ async def cmd_providers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Special case: DigitalOcean uses OPENAI_API_KEY from env
         if provider == "DigitalOcean" and not has_key:
-            has_key = bool(cfg.OPENAI_API_KEY)
+            has_key = bool(mem.get_credential("OPENAI_API_KEY") or cfg.OPENAI_API_KEY)
 
         status = "✅" if has_key else "❌"
         emoji = meta.get("emoji", "•")
