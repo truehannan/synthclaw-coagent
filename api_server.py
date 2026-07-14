@@ -340,81 +340,98 @@ def _get_active_chat_id() -> int:
 @app.post("/api/chat/send", dependencies=[Depends(verify_token)])
 async def chat_send(msg: ChatMessage):
     """Send a message and get streaming response via SSE."""
-    model = msg.model or mem.get_memory("default_model") or cfg.DEFAULT_MODEL
-    user_message = msg.message.strip()
-    if not user_message:
-        raise HTTPException(status_code=400, detail="Empty message")
-
-    # Save user message
-    chat_id = _get_active_chat_id()
-    mem.save_message(chat_id, "user", user_message)
-
-    # Get conversation history
-    history = mem.get_messages(chat_id, limit=cfg.MAX_HISTORY_MESSAGES)
-
-    # Resolve client
     try:
-        from agent import _resolve_client_and_model
-        client, api_model, provider = _resolve_client_and_model(model)
-    except Exception:
-        # Fallback — resolve model prefix to provider + base_url + stripped model name
-        api_model, base_url, provider = _resolve_model_routing(model)
-        api_key = ""
+        model = msg.model or mem.get_memory("default_model") or cfg.DEFAULT_MODEL
+        user_message = msg.message.strip()
+        if not user_message:
+            raise HTTPException(status_code=400, detail="Empty message")
 
-        # Get the API key for this provider
-        key_name = _provider_key_name(provider)
-        api_key = mem.get_credential(key_name) or ""
+        # Save user message
+        chat_id = _get_active_chat_id()
+        mem.save_message(chat_id, "user", user_message)
 
-        # Also check env-level key
-        if not api_key:
-            api_key = cfg.OPENAI_API_KEY or ""
+        # Get conversation history
+        history = mem.get_messages(chat_id, limit=cfg.MAX_HISTORY_MESSAGES)
 
-        if not api_key:
-            async def error_gen():
-                yield f"data: {json.dumps({'error': 'No API key configured for ' + provider + '. Go to Providers to add one.'})}\n\n"
-            return StreamingResponse(error_gen(), media_type="text/event-stream")
-
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30.0)
-
-    # Build messages for LLM
-    system_prompt = (
-        "You are SynthClaw, a personal AI agent running on the user's server. "
-        "Be helpful, concise, and direct. You have access to tools but in this "
-        "web interface you respond conversationally."
-    )
-    messages = [{"role": "system", "content": system_prompt}]
-    for h in history:
-        messages.append({"role": h["role"], "content": h["content"]})
-
-    async def generate():
-        """Stream response tokens via SSE."""
+        # Resolve client
+        client = None
+        api_model = model
         try:
-            response = client.chat.completions.create(
-                model=api_model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=2048,
-                stream=True,
-            )
-            full_reply = ""
-            for chunk in response:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    token = chunk.choices[0].delta.content
-                    full_reply += token
-                    yield f"data: {json.dumps({'token': token})}\n\n"
+            from agent import _resolve_client_and_model
+            client, api_model, provider = _resolve_client_and_model(model)
+        except Exception:
+            pass
 
-            # Save assistant message
-            # Strip think tags
-            import re
-            clean = re.sub(r"<think>[\s\S]*?</think>", "", full_reply).strip()
-            mem.save_message(chat_id, "assistant", clean)
-            yield f"data: {json.dumps({'done': True, 'full': clean})}\n\n"
+        if client is None:
+            # Fallback — resolve model prefix to provider + base_url + stripped model name
+            api_model, base_url, provider = _resolve_model_routing(model)
+            api_key = ""
 
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            # Get the API key for this provider
+            key_name = _provider_key_name(provider)
+            try:
+                api_key = mem.get_credential(key_name) or ""
+            except Exception:
+                api_key = ""
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+            # Also check env-level key
+            if not api_key:
+                api_key = cfg.OPENAI_API_KEY or ""
+
+            if not api_key:
+                async def error_gen():
+                    yield f"data: {json.dumps({'error': 'No API key configured for ' + provider + '. Go to Providers to add one.'})}\n\n"
+                return StreamingResponse(error_gen(), media_type="text/event-stream")
+
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key, base_url=base_url, timeout=30.0)
+
+        # Build messages for LLM
+        system_prompt = (
+            "You are SynthClaw, a personal AI agent running on the user's server. "
+            "Be helpful, concise, and direct. You have access to tools but in this "
+            "web interface you respond conversationally."
+        )
+        messages = [{"role": "system", "content": system_prompt}]
+        for h in history:
+            messages.append({"role": h["role"], "content": h["content"]})
+
+        async def generate():
+            """Stream response tokens via SSE."""
+            try:
+                response = client.chat.completions.create(
+                    model=api_model,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=2048,
+                    stream=True,
+                )
+                full_reply = ""
+                for chunk in response:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        token = chunk.choices[0].delta.content
+                        full_reply += token
+                        yield f"data: {json.dumps({'token': token})}\n\n"
+
+                # Save assistant message
+                import re
+                clean = re.sub(r"<think>[\s\S]*?</think>", "", full_reply).strip()
+                mem.save_message(chat_id, "assistant", clean or "(empty response)")
+                yield f"data: {json.dumps({'done': True, 'full': clean or '(empty response)'})}\n\n"
+
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        return StreamingResponse(generate(), media_type="text/event-stream")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Catch-all: if ANYTHING above crashes, return error as SSE
+        logger.error(f"chat_send crashed: {e}", exc_info=True)
+        async def crash_gen():
+            yield f"data: {json.dumps({'error': f'Server error: {str(e)}'})}\n\n"
+        return StreamingResponse(crash_gen(), media_type="text/event-stream")
 
 
 @app.get("/api/chat/history", dependencies=[Depends(verify_token)])
