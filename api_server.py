@@ -1165,25 +1165,42 @@ async def composio_connections():
 
 @app.get("/api/composio/tools", dependencies=[Depends(verify_token)])
 async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
-    """List available Composio tools (fetched live from Composio API)."""
+    """List available Composio toolkits (apps) with pagination."""
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         return {"items": [], "available": False, "total_pages": 0}
     try:
         import requests as req
-        params = {"page": page, "limit": 20}
+        params = {"page": page, "limit": 30}
         if search:
             params["search"] = search
-        if toolkit:
-            params["toolkit"] = toolkit
+
+        # Fetch toolkits (apps) — not individual tools (23K+)
         resp = req.get(
-            "https://backend.composio.dev/api/v3/tools",
+            "https://backend.composio.dev/api/v3/toolkits",
             headers={"x-api-key": composio_key},
             params=params,
-            timeout=10,
+            timeout=15,
         )
         if resp.status_code == 200:
             data = resp.json()
+            items = data.get("items", data.get("toolkits", []))
+            return {
+                "items": items,
+                "total_pages": data.get("total_pages", 1),
+                "current_page": data.get("current_page", page),
+                "total_items": data.get("total_items", len(items)),
+                "available": True,
+            }
+        # Fallback: try /tools endpoint with toolkit grouping
+        resp2 = req.get(
+            "https://backend.composio.dev/api/v3/tools",
+            headers={"x-api-key": composio_key},
+            params={"page": page, "limit": 30, "search": search} if search else {"page": page, "limit": 30},
+            timeout=15,
+        )
+        if resp2.status_code == 200:
+            data = resp2.json()
             return {
                 "items": data.get("items", []),
                 "total_pages": data.get("total_pages", 0),
@@ -1198,22 +1215,51 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
-    """Initiate OAuth connection for a Composio toolkit."""
+    """Initiate OAuth connection for a Composio toolkit via Connect Link."""
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         raise HTTPException(status_code=400, detail="Composio API key not configured")
     try:
         import requests as req
         body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+
+        # Use the v3 link endpoint (new API as of 2026)
         resp = req.post(
-            f"https://backend.composio.dev/api/v3/connectedAccounts",
+            "https://backend.composio.dev/api/v3/connected_accounts/link",
             headers={"x-api-key": composio_key, "Content-Type": "application/json"},
-            json={"integrationId": toolkit, "redirectUri": body.get("redirect_uri", "")},
-            timeout=10,
+            json={
+                "toolkit": toolkit,
+                "user_id": "default",
+                "callback_url": body.get("callback_url", ""),
+            },
+            timeout=15,
         )
         if resp.status_code in (200, 201):
-            return resp.json()
-        return {"error": f"HTTP {resp.status_code}", "detail": resp.text[:200]}
+            data = resp.json()
+            return {
+                "success": True,
+                "redirectUrl": data.get("redirect_url") or data.get("redirectUrl") or data.get("url", ""),
+                "connection_id": data.get("connected_account_id") or data.get("id", ""),
+            }
+        # Fallback: try the older endpoint format
+        resp2 = req.post(
+            "https://backend.composio.dev/api/v3/connected_accounts",
+            headers={"x-api-key": composio_key, "Content-Type": "application/json"},
+            json={
+                "integration_id": toolkit,
+                "user_id": "default",
+                "redirect_uri": body.get("callback_url", ""),
+            },
+            timeout=15,
+        )
+        if resp2.status_code in (200, 201):
+            data = resp2.json()
+            return {
+                "success": True,
+                "redirectUrl": data.get("redirect_url") or data.get("redirectUrl") or data.get("url", ""),
+                "connection_id": data.get("connected_account_id") or data.get("id", ""),
+            }
+        return {"error": f"HTTP {resp.status_code}/{resp2.status_code}", "detail": (resp.text + resp2.text)[:300]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

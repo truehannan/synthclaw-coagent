@@ -30,10 +30,14 @@ export default function Integrations() {
   const [loadingTools, setLoadingTools] = useState(false);
   const [connecting, setConnecting] = useState("");
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadedRef = useRef(false);
 
   useEffect(() => {
-    loadApis();
-    loadTools(1, "");
+    if (!loadedRef.current) {
+      loadedRef.current = true;
+      loadApis();
+      loadTools(1, "");
+    }
   }, []);
 
   async function loadApis() {
@@ -68,8 +72,14 @@ export default function Integrations() {
       const res = await composio.connect(toolkit);
       if (res.redirectUrl) {
         window.open(res.redirectUrl, "_blank");
+      } else if (res.error) {
+        alert(`Connection failed: ${res.error}\n${res.detail || ""}`);
+      } else {
+        alert("Connection initiated but no redirect URL returned. Check Composio dashboard.");
       }
-    } catch {}
+    } catch (err: any) {
+      alert(`Error: ${err.message}`);
+    }
     setConnecting("");
   }
 
@@ -100,9 +110,23 @@ export default function Integrations() {
           {/* Tools grid */}
           <div className="flex-1 overflow-y-auto p-4">
             {loadingTools && tools.length === 0 && (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="h-5 w-5 animate-spin text-primary" />
-                <span className="ml-2 text-xs text-muted">Loading tools...</span>
+              <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+                {Array.from({ length: 12 }).map((_, i) => (
+                  <div key={i} className="rounded-sm border border-border bg-card p-3 animate-pulse">
+                    <div className="flex items-start gap-2">
+                      <div className="h-5 w-5 rounded-sm bg-muted/20" />
+                      <div className="flex-1 space-y-1.5">
+                        <div className="h-3 w-24 rounded bg-muted/20" />
+                        <div className="h-2 w-full rounded bg-muted/10" />
+                        <div className="h-2 w-3/4 rounded bg-muted/10" />
+                      </div>
+                    </div>
+                    <div className="mt-2 flex gap-1">
+                      <div className="h-3 w-10 rounded-full bg-muted/10" />
+                      <div className="h-3 w-8 rounded-full bg-muted/10" />
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
             <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
