@@ -1251,56 +1251,33 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
-    """Connect a Composio toolkit. Auto-creates auth config if needed."""
+    """Connect a Composio toolkit using the official SDK (same as TrustClaw).
+    
+    Pattern: composio.create(userId) → session.authorize(toolkit, {callbackUrl})
+    """
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         raise HTTPException(status_code=400, detail="Composio API key not configured")
     try:
-        import requests as req
-        headers = {"x-api-key": composio_key, "Content-Type": "application/json"}
-        base = "https://backend.composio.dev/api/v3"
+        from composio import Composio
 
-        # Step 1: Find existing auth config for this toolkit
-        auth_resp = req.get(f"{base}/auth_configs", headers=headers, timeout=10)
-        auth_config_id = ""
-        if auth_resp.status_code == 200:
-            for ac in auth_resp.json().get("items", []):
-                tk = ac.get("toolkit_slug") or ""
-                if not tk:
-                    tk_obj = ac.get("toolkit", "")
-                    tk = tk_obj.get("slug", "") if isinstance(tk_obj, dict) else str(tk_obj)
-                if tk.lower() == toolkit.lower():
-                    auth_config_id = ac.get("id") or ac.get("nanoid", "")
+        composio_client = Composio(api_key=composio_key)
+        session = composio_client.create("conclave", {})
+        connection_request = session.authorize(toolkit, callback_url="")
+
+        redirect_url = getattr(connection_request, "redirect_url", "") or getattr(connection_request, "redirectUrl", "")
+        if not redirect_url and hasattr(connection_request, "__dict__"):
+            # Try to find redirect URL in the response object
+            for attr in ["redirect_url", "redirectUrl", "url"]:
+                redirect_url = getattr(connection_request, attr, "")
+                if redirect_url:
                     break
 
-        # Step 2: If no auth config exists, create one (Composio managed OAuth)
-        if not auth_config_id:
-            create_resp = req.post(
-                f"{base}/auth_configs",
-                headers=headers,
-                json={"toolkit": toolkit, "use_composio_auth": True},
-                timeout=10,
-            )
-            if create_resp.status_code in (200, 201):
-                data = create_resp.json()
-                auth_config_id = data.get("id") or data.get("nanoid", "")
-
-        if not auth_config_id:
-            return {"error": f"Could not create auth config for '{toolkit}'. Try enabling it at composio.dev/dashboard."}
-
-        # Step 3: Create connection link
-        link_resp = req.post(
-            f"{base}/connected_accounts/link",
-            headers=headers,
-            json={"auth_config_id": auth_config_id, "user_id": "conclave"},
-            timeout=15,
-        )
-        if link_resp.status_code in (200, 201):
-            data = link_resp.json()
-            url = data.get("redirect_url") or data.get("redirectUrl") or data.get("url", "")
-            return {"success": True, "redirectUrl": url}
-
-        return {"error": f"Link failed: HTTP {link_resp.status_code}", "detail": link_resp.text[:300]}
+        if redirect_url:
+            return {"success": True, "redirectUrl": redirect_url}
+        return {"error": "No redirect URL returned from Composio", "detail": str(connection_request)}
+    except ImportError:
+        raise HTTPException(status_code=500, detail="composio-core package not installed. Run: pip install composio-core")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
