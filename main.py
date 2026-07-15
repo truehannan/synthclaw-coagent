@@ -36,22 +36,6 @@ def start_api():
         logger.warning(f"API server failed to start: {e}")
 
 
-def main():
-    mode = cfg.INTERFACE_MODE
-
-    # Initialize database before anything else
-    import memory as mem
-    mem.init_db()
-
-    # Sync env credentials to DB (backup — ensures DB always has latest)
-    # This means: if env has a key, store it in DB so it persists across restarts
-    # Only stores if DB doesn't already have a value (doesn't overwrite DB with empty env)
-    _sync_env_to_db(mem)
-
-    # Always start the API server (for frontend access)
-    start_api()
-
-
 def _sync_env_to_db(mem):
     """Sync env credentials to DB for persistence/backup.
     Rule: DB is source of truth. Only writes to DB if DB is empty AND env has value."""
@@ -77,6 +61,20 @@ def _sync_env_to_db(mem):
                 logger.info(f"Synced {key} from env to memory store")
             except Exception:
                 pass
+
+
+def main():
+    mode = cfg.INTERFACE_MODE
+
+    # Initialize database before anything else
+    import memory as mem
+    mem.init_db()
+
+    # Sync env credentials to DB
+    _sync_env_to_db(mem)
+
+    # Always start the API server (for frontend access)
+    start_api()
 
     if mode == "telegram":
         from agent import main as telegram_main
