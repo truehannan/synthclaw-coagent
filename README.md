@@ -3,7 +3,7 @@
 <h1 align="center">Conclave: Agent Society</h1>
 <p align="center"><strong>Multi-agent AI system with 58 tools, 10 LLM providers, and a web + CLI interface.</strong></p>
 
-<p align="center"><img src="screenshot.png" alt="Dashboard" width="700"/></p>
+<p align="center"><img src="https://tryconclave.pages.dev/screenshot.png" alt="Dashboard" width="700"/></p>
 
 <p align="center">
   <img src="https://img.shields.io/github/stars/truehannan/conclave-coagent?style=flat&color=e85d04" />
