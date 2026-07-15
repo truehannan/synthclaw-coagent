@@ -1251,9 +1251,12 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
-    """Connect a Composio toolkit using the official SDK (same as TrustClaw).
+    """Connect a Composio toolkit using the official Python SDK.
     
-    Pattern: composio.create(userId) → session.authorize(toolkit, {callbackUrl})
+    Flow:
+    1. Find or create an integration for the toolkit (with Composio managed auth)
+    2. Initiate connection for user 'conclave'
+    3. Return redirect URL for OAuth
     """
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
@@ -1261,23 +1264,53 @@ async def composio_connect(toolkit: str, request: Request):
     try:
         from composio import Composio
 
-        composio_client = Composio(api_key=composio_key)
-        session = composio_client.create("conclave", {})
-        connection_request = session.authorize(toolkit, callback_url="")
+        client = Composio(api_key=composio_key)
 
-        redirect_url = getattr(connection_request, "redirect_url", "") or getattr(connection_request, "redirectUrl", "")
-        if not redirect_url and hasattr(connection_request, "__dict__"):
-            # Try to find redirect URL in the response object
-            for attr in ["redirect_url", "redirectUrl", "url"]:
-                redirect_url = getattr(connection_request, attr, "")
-                if redirect_url:
-                    break
+        # Step 1: Find existing integration for this toolkit
+        integration_id = ""
+        try:
+            integrations = client.integrations.get(app_name=toolkit)
+            if integrations and isinstance(integrations, list) and len(integrations) > 0:
+                integration_id = integrations[0].id
+        except Exception:
+            pass
+
+        # Step 2: If no integration exists, create one with Composio managed auth
+        if not integration_id:
+            try:
+                integration = client.integrations.create(
+                    app_id=toolkit,
+                    name=f"conclave-{toolkit}",
+                    use_composio_auth=True,
+                )
+                integration_id = integration.id
+            except Exception as e:
+                return {"error": f"Failed to create integration for '{toolkit}': {str(e)}"}
+
+        if not integration_id:
+            return {"error": f"Could not find or create integration for '{toolkit}'"}
+
+        # Step 3: Initiate connection for user 'conclave'
+        connection = client.connected_accounts.initiate(
+            integration_id=integration_id,
+            entity_id="conclave",
+            redirect_url="",
+        )
+
+        redirect_url = getattr(connection, "redirectUrl", "") or getattr(connection, "redirect_url", "")
+        if not redirect_url:
+            # Try accessing as dict
+            if hasattr(connection, "model_dump"):
+                data = connection.model_dump()
+                redirect_url = data.get("redirectUrl", data.get("redirect_url", data.get("connectionStatus", "")))
+            elif hasattr(connection, "__dict__"):
+                redirect_url = connection.__dict__.get("redirectUrl", "")
 
         if redirect_url:
             return {"success": True, "redirectUrl": redirect_url}
-        return {"error": "No redirect URL returned from Composio", "detail": str(connection_request)}
+        return {"error": "Connection initiated but no redirect URL returned", "detail": str(connection)}
     except ImportError:
-        raise HTTPException(status_code=500, detail="composio-core package not installed. Run: pip install composio-core")
+        raise HTTPException(status_code=500, detail="composio-core not installed. Run: pip install composio-core")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
