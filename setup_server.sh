@@ -1,13 +1,13 @@
 #!/bin/bash
-# SynthClaw-CoAgent — Server Setup Script
+# Conclave-CoAgent — Server Setup Script
 # Run this on a fresh Ubuntu/Debian VPS to set up the agent.
 # Usage: bash setup_server.sh
 set -e
 
-INSTALL_DIR="${SYNTHCLAW_BASE_DIR:-/opt/agent}"
+INSTALL_DIR="${CONCLAVE_BASE_DIR:-/opt/agent}"
 
 echo "╔═══════════════════════════════════════════════════╗"
-echo "║     SynthClaw-CoAgent — Server Setup              ║"
+echo "║     Conclave-CoAgent — Server Setup              ║"
 echo "╚═══════════════════════════════════════════════════╝"
 echo ""
 
@@ -34,7 +34,7 @@ fi
 echo "=== [5/6] Systemd service ==="
 cat > /etc/systemd/system/agent.service << SERVICE
 [Unit]
-Description=SynthClaw-CoAgent — Personal AI Agent
+Description=Conclave-CoAgent — Personal AI Agent
 After=network-online.target
 Wants=network-online.target
 

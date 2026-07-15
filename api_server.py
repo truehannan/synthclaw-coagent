@@ -1,5 +1,5 @@
 """
-SynthClaw API Server — REST API for the frontend chat interface.
+Conclave API Server — REST API for the frontend chat interface.
 
 Provides endpoints for:
 - Chat (streaming via SSE)
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # ── App Setup ─────────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="SynthClaw API",
+    title="Conclave API",
     version="1.0.0",
     docs_url="/api/docs",
     redoc_url=None,
@@ -56,7 +56,7 @@ mem.init_db()
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
-API_TOKEN = os.getenv("SYNTHCLAW_API_TOKEN", "")
+API_TOKEN = os.getenv("CONCLAVE_API_TOKEN", "")
 # If no token set, generate one on first run and save it
 if not API_TOKEN:
     token_file = cfg.BASE_DIR / ".api_token"
@@ -392,7 +392,7 @@ async def chat_send(msg: ChatMessage):
 
         # Build messages for LLM
         system_prompt = (
-            "You are SynthClaw, a personal AI agent running on the user's server. "
+            "You are Conclave, a personal AI agent running on the user's server. "
             "Be helpful, concise, and direct. You have access to tools but in this "
             "web interface you respond conversationally."
         )

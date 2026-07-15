@@ -4,7 +4,7 @@ from pathlib import Path
 # Load .env file if present (for local development / non-systemd usage)
 try:
     from dotenv import load_dotenv
-    _env_path = Path(os.getenv("SYNTHCLAW_BASE_DIR", "/opt/agent")) / ".env"
+    _env_path = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/agent")) / ".env"
     if _env_path.exists():
         load_dotenv(_env_path)
     else:
@@ -24,7 +24,7 @@ def _clean_env(key: str, default: str = "") -> str:
     return val
 
 
-BASE_DIR = Path(_clean_env("SYNTHCLAW_BASE_DIR", "/opt/agent"))
+BASE_DIR = Path(_clean_env("CONCLAVE_BASE_DIR", "/opt/agent"))
 WORKSPACE_DIR = BASE_DIR / "workspace"
 MEDIA_DIR = WORKSPACE_DIR / "media"
 DB_PATH = BASE_DIR / "agent.db"

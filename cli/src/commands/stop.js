@@ -7,7 +7,7 @@ import { getProjectRoot, printSuccess, printError, printInfo } from "../utils.js
 
 export async function runStop() {
   const root = getProjectRoot();
-  const spinner = ora("Stopping SynthClaw agent...").start();
+  const spinner = ora("Stopping Conclave agent...").start();
 
   let stopped = false;
 

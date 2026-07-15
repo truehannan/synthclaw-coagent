@@ -6,9 +6,9 @@ export async function runPlan(args) {
   const task = args.join(" ").trim();
 
   if (!task) {
-    console.log(chalk.bold("\n  Usage: ") + "synthclaw plan <describe what you want>");
+    console.log(chalk.bold("\n  Usage: ") + "conclave plan <describe what you want>");
     console.log(
-      chalk.dim('  Example: synthclaw plan "set up nginx reverse proxy for port 3000"\n')
+      chalk.dim('  Example: conclave plan "set up nginx reverse proxy for port 3000"\n')
     );
     return;
   }
@@ -18,7 +18,7 @@ export async function runPlan(args) {
   const model = config.get("default_model");
 
   if (!apiKey) {
-    printError("No API key configured. Run: synthclaw setup");
+    printError("No API key configured. Run: conclave setup");
     return;
   }
 
@@ -60,7 +60,7 @@ export async function runPlan(args) {
     console.log(reply || "(empty response)");
     console.log(chalk.dim("─".repeat(50)));
     console.log(
-      chalk.dim('\n  Execute with: synthclaw agent "' + task.slice(0, 60) + '"\n')
+      chalk.dim('\n  Execute with: conclave agent "' + task.slice(0, 60) + '"\n')
     );
   } catch (err) {
     spinner.fail("Failed to generate plan");

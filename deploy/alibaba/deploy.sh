@@ -1,5 +1,5 @@
 #!/bin/bash
-# SynthClaw Alibaba Cloud ECS Deployment Script
+# Conclave Alibaba Cloud ECS Deployment Script
 # Usage: ./deploy.sh <HOST_IP> <SSH_PASSWORD> [SSH_USER]
 #
 # Prerequisites on the ECS instance:
@@ -11,9 +11,9 @@ set -e
 HOST="${1:?Usage: ./deploy.sh <HOST_IP> <SSH_PASSWORD> [SSH_USER]}"
 PASSWORD="${2:?Password required}"
 USER="${3:-root}"
-REMOTE_DIR="/opt/synthclaw"
+REMOTE_DIR="/opt/conclave"
 
-echo "╭─── SynthClaw Alibaba Cloud Deploy ───╮"
+echo "╭─── Conclave Alibaba Cloud Deploy ───╮"
 echo "│ Host: $HOST                           │"
 echo "│ User: $USER                           │"
 echo "│ Dir:  $REMOTE_DIR                     │"
@@ -47,17 +47,17 @@ eval $SSH "cd $REMOTE_DIR && python3 -m venv venv && ./venv/bin/pip install --up
 
 echo "[4/6] Writing .env..."
 eval $SSH "cat > $REMOTE_DIR/.env << 'ENVEOF'
-SYNTHCLAW_BASE_DIR=$REMOTE_DIR
-SYNTHCLAW_API_PORT=8000
-SYNTHCLAW_API_HOST=0.0.0.0
+CONCLAVE_BASE_DIR=$REMOTE_DIR
+CONCLAVE_API_PORT=8000
+CONCLAVE_API_HOST=0.0.0.0
 INTERFACE_MODE=cli
 ENVEOF
 chmod 600 $REMOTE_DIR/.env"
 
 echo "[5/6] Creating systemd service..."
-eval $SSH "cat > /etc/systemd/system/synthclaw.service << 'SVCEOF'
+eval $SSH "cat > /etc/systemd/system/conclave.service << 'SVCEOF'
 [Unit]
-Description=SynthClaw Agent Society
+Description=Conclave Agent Society
 After=network.target
 
 [Service]
@@ -67,25 +67,25 @@ WorkingDirectory=$REMOTE_DIR
 ExecStart=$REMOTE_DIR/venv/bin/python3 $REMOTE_DIR/main.py
 Restart=always
 RestartSec=5
-Environment=SYNTHCLAW_BASE_DIR=$REMOTE_DIR
+Environment=CONCLAVE_BASE_DIR=$REMOTE_DIR
 
 [Install]
 WantedBy=multi-user.target
 SVCEOF
-systemctl daemon-reload && systemctl enable synthclaw"
+systemctl daemon-reload && systemctl enable conclave"
 
 echo "[6/6] Starting service..."
-eval $SSH "systemctl restart synthclaw"
+eval $SSH "systemctl restart conclave"
 sleep 3
 
 # Health check
 echo ""
 if eval $SSH "curl -sf http://localhost:8000/api/system/health" >/dev/null 2>&1; then
-    echo "✓ SynthClaw is running on $HOST:8000"
+    echo "✓ Conclave is running on $HOST:8000"
     echo "  API:    http://$HOST:8000"
     echo "  Health: http://$HOST:8000/api/system/health"
 else
     echo "⚠ Service started but health check failed"
-    echo "  Check: ssh $USER@$HOST 'journalctl -u synthclaw -n 20'"
+    echo "  Check: ssh $USER@$HOST 'journalctl -u conclave -n 20'"
 fi
 echo ""

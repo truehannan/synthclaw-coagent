@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SynthClaw-CoAgent — Main Entry Point
+Conclave-CoAgent — Main Entry Point
 Launches Telegram, WhatsApp, or both interfaces based on INTERFACE_MODE.
 Also starts the REST API server for the web frontend.
 """
@@ -18,10 +18,10 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-logger = logging.getLogger("synthclaw")
+logger = logging.getLogger("conclave")
 
-API_PORT = int(os.getenv("SYNTHCLAW_API_PORT", "8000"))
-API_HOST = os.getenv("SYNTHCLAW_API_HOST", "0.0.0.0")
+API_PORT = int(os.getenv("CONCLAVE_API_PORT", "8000"))
+API_HOST = os.getenv("CONCLAVE_API_HOST", "0.0.0.0")
 
 
 def start_api():

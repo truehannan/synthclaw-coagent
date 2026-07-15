@@ -111,14 +111,14 @@ function installSystemdService(root, pythonBin) {
 
   const serviceContent = [
     "[Unit]",
-    "Description=SynthClaw-CoAgent — Personal AI Agent",
+    "Description=Conclave-CoAgent — Personal AI Agent",
     "After=network-online.target",
     "Wants=network-online.target",
     "",
     "[Service]",
     "Type=simple",
     `WorkingDirectory=${root}`,
-    `Environment=SYNTHCLAW_BASE_DIR=${root}`,
+    `Environment=CONCLAVE_BASE_DIR=${root}`,
     `ExecStart=${pythonBin} ${mainPy}`,
     "Restart=always",
     "RestartSec=10",
@@ -146,7 +146,7 @@ export async function runStart(args) {
   // Verify main.py exists
   if (!existsSync(mainPy)) {
     printError(`Cannot find main.py at ${root}`);
-    printInfo("cd into the synthclaw-coagent directory and try again.");
+    printInfo("cd into the conclave-coagent directory and try again.");
     return;
   }
 
@@ -156,7 +156,7 @@ export async function runStart(args) {
     writeFileSync(envFile, generateEnvContent());
   } catch (err) {
     if (!existsSync(envFile)) {
-      printError("Cannot write .env file. Run 'synthclaw setup' first.");
+      printError("Cannot write .env file. Run 'conclave setup' first.");
       return;
     }
   }
@@ -210,12 +210,12 @@ export async function runStart(args) {
 
       if (!verifyImports(pythonBin, root)) {
         spinnerDeps.fail("Still can't import modules after install");
-        printError("Try: rm -rf venv && synthclaw start");
+        printError("Try: rm -rf venv && conclave start");
         return;
       }
     } catch (err) {
       spinnerDeps.fail("Install failed: " + (err.stderr || err.message).slice(0, 200));
-      printInfo("Try: rm -rf venv && synthclaw start");
+      printInfo("Try: rm -rf venv && conclave start");
       return;
     }
   }
@@ -239,7 +239,7 @@ export async function runStart(args) {
       execSync(`"${pythonBin}" "${mainPy}"`, {
         cwd: root,
         stdio: "inherit",
-        env: { ...process.env, SYNTHCLAW_BASE_DIR: root },
+        env: { ...process.env, CONCLAVE_BASE_DIR: root },
         timeout: 0,
       });
     } catch (err) {
@@ -254,7 +254,7 @@ export async function runStart(args) {
   }
 
   // --- Background mode ---
-  const spinner = ora("Starting SynthClaw agent...").start();
+  const spinner = ora("Starting Conclave agent...").start();
 
   // Stop any existing agent first
   try { execSync("systemctl stop agent 2>/dev/null", { encoding: "utf-8", timeout: 5000 }); } catch {}
@@ -289,9 +289,9 @@ export async function runStart(args) {
       if (status === "active") {
         spinner.succeed("Agent started (systemd — persists until machine stops)");
         printInfo(`Using: ${pythonBin}`);
-        console.log(chalk.dim("  synthclaw logs     — view output"));
-        console.log(chalk.dim("  synthclaw status   — check status"));
-        console.log(chalk.dim("  synthclaw stop     — stop the agent"));
+        console.log(chalk.dim("  conclave logs     — view output"));
+        console.log(chalk.dim("  conclave status   — check status"));
+        console.log(chalk.dim("  conclave stop     — stop the agent"));
         return;
       } else {
         spinner.fail("Agent failed to start via systemd");
@@ -317,7 +317,7 @@ export async function runStart(args) {
   // Fallback: nohup
   try {
     execSync(
-      `SYNTHCLAW_BASE_DIR="${root}" nohup "${pythonBin}" "${mainPy}" >> "${logFile}" 2>&1 & echo $! > "${pidFile}"`,
+      `CONCLAVE_BASE_DIR="${root}" nohup "${pythonBin}" "${mainPy}" >> "${logFile}" 2>&1 & echo $! > "${pidFile}"`,
       { encoding: "utf-8", cwd: root, timeout: 5000 }
     );
     await new Promise((r) => setTimeout(r, 3000));
@@ -327,8 +327,8 @@ export async function runStart(args) {
       execSync(`kill -0 ${pid}`, { encoding: "utf-8" });
       spinner.succeed(`Agent started (PID: ${pid})`);
       printInfo(`Using: ${pythonBin}`);
-      console.log(chalk.dim("  synthclaw logs     — view output"));
-      console.log(chalk.dim("  synthclaw stop     — stop the agent"));
+      console.log(chalk.dim("  conclave logs     — view output"));
+      console.log(chalk.dim("  conclave stop     — stop the agent"));
     } catch {
       spinner.fail("Agent crashed on startup");
       try {

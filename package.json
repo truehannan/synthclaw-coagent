@@ -1,8 +1,8 @@
 {
-  "name": "synthclaw-coagent",
+  "name": "conclave-coagent",
   "version": "1.0.0",
   "private": true,
-  "description": "SynthClaw CoAgent — Personal AI Agent",
+  "description": "Conclave CoAgent — Personal AI Agent",
   "scripts": {
     "setup": "cd cli && npm install && npm run build && npm link",
     "build": "cd cli && npm install && npm run build",

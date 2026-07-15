@@ -18,7 +18,7 @@
 │                                                     │
 │  ┌─────────────┐     ┌──────────────────────┐      │
 │  │   nginx     │────▶│  Frontend (React)    │      │
-│  │  :80        │     │  /opt/synthclaw/     │      │
+│  │  :80        │     │  /opt/conclave/     │      │
 │  │             │     │  frontend/dist/      │      │
 │  │  /api/* ────│────▶│  API Server (FastAPI)│      │
 │  │             │     │  :8000               │      │
@@ -44,7 +44,7 @@ Pipeline steps:
 1. Build & test locally (Python validation + frontend build)
 2. SSH via `sshpass` using `secrets.HOST` + `secrets.PASSWORD`
 3. Upload Python agent files + built frontend
-4. Install deps in venv (`/opt/synthclaw/venv/`)
+4. Install deps in venv (`/opt/conclave/venv/`)
 5. Configure nginx (reverse proxy :80 → frontend + API)
 6. Create/restart systemd service
 7. Health check with 5x retry
@@ -60,13 +60,13 @@ Pipeline steps:
 
 ```bash
 # Status
-systemctl status synthclaw
+systemctl status conclave
 
 # Logs  
-journalctl -u synthclaw -f
+journalctl -u conclave -f
 
 # Restart
-systemctl restart synthclaw
+systemctl restart conclave
 
 # Nginx
 systemctl status nginx

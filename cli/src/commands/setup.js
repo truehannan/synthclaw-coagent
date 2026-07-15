@@ -36,7 +36,7 @@ export async function runSetup() {
 
   console.log(
     chalk.bold(editMode ? "  Edit Configuration" : "  Setup Wizard") +
-      chalk.dim(editMode ? " — modify existing settings\n" : " — configure your SynthClaw agent\n")
+      chalk.dim(editMode ? " — modify existing settings\n" : " — configure your Conclave agent\n")
   );
 
   if (editMode) {
@@ -441,6 +441,6 @@ export async function runSetup() {
   printSuccess(`Storage: ${config.get("storage_mode")}`);
   if (config.get("max_rpm") !== "0") printSuccess(`RPM: ${config.get("max_rpm")}/min`);
   console.log("");
-  printInfo("Run: synthclaw start");
+  printInfo("Run: conclave start");
   console.log("");
 }

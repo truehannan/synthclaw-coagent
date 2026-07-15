@@ -253,7 +253,7 @@ export default function Chat() {
               <div className="flex h-64 items-center justify-center text-center">
                 <div>
                   <Mascot className="mx-auto mb-4" />
-                  <p className="text-lg font-semibold text-primary">[+] SynthClaw</p>
+                  <p className="text-lg font-semibold text-primary">[+] Conclave</p>
                   <p className="mt-2 text-xs text-muted">Send a message to start. Full agentic loop active.</p>
                 </div>
               </div>
@@ -395,7 +395,7 @@ export default function Chat() {
               )}
               <textarea ref={inputRef} value={input}
                 onChange={(e) => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
-                onKeyDown={handleKeyDown} placeholder="Message SynthClaw..." rows={1}
+                onKeyDown={handleKeyDown} placeholder="Message Conclave..." rows={1}
                 className="flex-1 resize-none rounded-sm border border-border bg-background px-3 py-2.5 text-sm text-foreground placeholder-muted/50 outline-none focus:border-primary"
                 style={{ maxHeight: "160px", overflow: "auto" }} />
               {streaming ? (

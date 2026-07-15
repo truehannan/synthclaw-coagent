@@ -29,7 +29,7 @@ export default function Layout() {
         {/* Brand */}
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
           <Mascot className="text-[5px] leading-[1]" />
-          <span className="text-xs font-semibold">SynthClaw</span>
+          <span className="text-xs font-semibold">Conclave</span>
         </div>
 
         {/* Navigation */}

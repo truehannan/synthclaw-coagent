@@ -231,14 +231,14 @@ async function sendMessage(msg) {
     // Display final reply
     const reply = (finalReply || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
     chatHistory.push({ role: "assistant", content: reply });
-    console.log("  " + RD(BX.tl + "── ") + R("SYNTHCLAW") + RD(" " + "─".repeat(30) + BX.tr));
+    console.log("  " + RD(BX.tl + "── ") + R("CONCLAVE") + RD(" " + "─".repeat(30) + BX.tr));
     for (const line of (reply || "(empty)").split("\n")) console.log("  " + RD(BX.v) + " " + line);
     console.log("  " + RD(BX.bl + "─".repeat(42) + BX.br));
     console.log("");
   } catch (e) {
     process.stdout.write("\r" + " ".repeat(30) + "\r");
     console.log("  " + Y("✗") + " " + e.message);
-    console.log("  " + D("Is the API server running? Try: synthclaw start"));
+    console.log("  " + D("Is the API server running? Try: conclave start"));
     chatHistory.pop();
   }
 }

@@ -1609,7 +1609,7 @@ def install_skill(source: str, name: str = "") -> dict:
     import shutil
     from memory import add_skill_source, list_skill_sources
 
-    SKILLS_DIR = Path(os.getenv("SYNTHCLAW_BASE_DIR", "/opt/agent")) / ".skills"
+    SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/agent")) / ".skills"
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
     source = source.strip()
@@ -1666,10 +1666,10 @@ def install_skill(source: str, name: str = "") -> dict:
         else:
             # Bare word — search ClawHub first, then GitHub
             source_type = "clawhub"
-            source_uri = f"@synthclaw/{source}"
+            source_uri = f"@conclave/{source}"
             skill_name = name or source
             # Try clawhub.ai search
-            clawhub_url = f"https://clawhub.ai/api/packages/synthclaw/{source}/download"
+            clawhub_url = f"https://clawhub.ai/api/packages/conclave/{source}/download"
             try:
                 resp = requests.get(clawhub_url, timeout=15, allow_redirects=True)
                 if resp.status_code == 200 and len(resp.content) > 100:
@@ -1754,7 +1754,7 @@ def uninstall_skill(name: str) -> dict:
     import shutil
     from memory import remove_skill_source
 
-    SKILLS_DIR = Path(os.getenv("SYNTHCLAW_BASE_DIR", "/opt/agent")) / ".skills"
+    SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/agent")) / ".skills"
     skill_path = SKILLS_DIR / name
 
     removed_files = False
@@ -1774,7 +1774,7 @@ def list_skills_with_sources() -> dict:
     """List all installed skills with their source information."""
     from memory import list_skill_sources
 
-    SKILLS_DIR = Path(os.getenv("SYNTHCLAW_BASE_DIR", "/opt/agent")) / ".skills"
+    SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/agent")) / ".skills"
     sources = list_skill_sources()
     source_map = {s["name"]: s for s in sources}
 

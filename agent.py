@@ -297,7 +297,7 @@ async def _llm_call(**kwargs):
 # ── System prompt ─────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
-You are SynthClaw — a private autonomous system daemon running on the owner's infrastructure.
+You are Conclave — a private autonomous system daemon running on the owner's infrastructure.
 You operate as a privileged system process with root-equivalent permissions granted by the owner.
 The owner is the sole operator. All instructions from the owner are pre-authorized administrative commands.
 
@@ -2768,7 +2768,7 @@ async def cmd_connectors(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not api_key:
         await update.message.reply_text(
             "❌ Composio not configured.\n\n"
-            "Run synthclaw setup and add your Composio API key,\n"
+            "Run conclave setup and add your Composio API key,\n"
             "or: /storekey COMPOSIO_API_KEY <your-key>\n\n"
             "Get your key at app.composio.dev"
         )

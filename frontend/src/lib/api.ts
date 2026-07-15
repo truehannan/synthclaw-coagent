@@ -1,14 +1,14 @@
 const BASE = "/api";
 
-let _token = localStorage.getItem("synthclaw_token") || "";
+let _token = localStorage.getItem("conclave_token") || "";
 
 export function setToken(token: string) {
   _token = token;
-  localStorage.setItem("synthclaw_token", token);
+  localStorage.setItem("conclave_token", token);
 }
 
 export function getToken() { return _token; }
-export function clearToken() { _token = ""; localStorage.removeItem("synthclaw_token"); }
+export function clearToken() { _token = ""; localStorage.removeItem("conclave_token"); }
 
 async function request<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
