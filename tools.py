@@ -1630,12 +1630,21 @@ def install_skill(source: str, name: str = "") -> dict:
 
         if is_github:
             source_type = "github"
-            ref = source.replace("clawhub:", "").lstrip("@").strip()
+            ref = source.replace("clawhub:", "").replace("github:", "").lstrip("@").strip()
             source_uri = f"@{ref}"
             skill_name = name or ref.split("/")[-1]
 
-            # Install directly from GitHub (clawhub.ai is deprecated)
-            zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
+            # Get the actual default branch from GitHub API (main, master, etc.)
+            try:
+                gh_api = requests.get(f"https://api.github.com/repos/{ref}", timeout=10)
+                if gh_api.status_code == 200:
+                    default_branch = gh_api.json().get("default_branch", "main")
+                    zip_url = f"https://github.com/{ref}/archive/refs/heads/{default_branch}.zip"
+                else:
+                    # Try common branch names
+                    zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
+            except Exception:
+                zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
 
         elif source.startswith("github:"):
             source_type = "github"
@@ -1674,6 +1683,10 @@ def install_skill(source: str, name: str = "") -> dict:
 
         # Download and extract
         resp = requests.get(zip_url, timeout=60)
+        if resp.status_code == 404 and "main.zip" in zip_url:
+            # Try master branch as fallback
+            zip_url = zip_url.replace("/main.zip", "/master.zip")
+            resp = requests.get(zip_url, timeout=60)
         if resp.status_code != 200:
             return {"error": f"Failed to download: HTTP {resp.status_code}. Check that the repo exists: {zip_url}"}
         zip_content = resp.content

@@ -43,8 +43,40 @@ def main():
     import memory as mem
     mem.init_db()
 
+    # Sync env credentials to DB (backup — ensures DB always has latest)
+    # This means: if env has a key, store it in DB so it persists across restarts
+    # Only stores if DB doesn't already have a value (doesn't overwrite DB with empty env)
+    _sync_env_to_db(mem)
+
     # Always start the API server (for frontend access)
     start_api()
+
+
+def _sync_env_to_db(mem):
+    """Sync env credentials to DB for persistence/backup.
+    Rule: DB is source of truth. Only writes to DB if DB is empty AND env has value."""
+    env_creds = {
+        "OPENAI_API_KEY": cfg.OPENAI_API_KEY,
+        "COMPOSIO_API_KEY": cfg.COMPOSIO_API_KEY,
+        "GOOGLE_SEARCH_API_KEY": cfg.GOOGLE_SEARCH_API_KEY,
+    }
+    env_memory = {
+        "cf_account_id": cfg.CF_ACCOUNT_ID,
+    }
+    for name, value in env_creds.items():
+        if value and not mem.get_credential(name):
+            try:
+                mem.store_credential(name, value, f"Synced from env on startup")
+                logger.info(f"Synced {name} from env to credential store")
+            except Exception:
+                pass
+    for key, value in env_memory.items():
+        if value and not mem.get_memory(key):
+            try:
+                mem.set_memory(key, value)
+                logger.info(f"Synced {key} from env to memory store")
+            except Exception:
+                pass
 
     if mode == "telegram":
         from agent import main as telegram_main
