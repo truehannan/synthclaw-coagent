@@ -1190,15 +1190,9 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
         return {"items": [], "available": False, "total_pages": 0}
     try:
         import requests as req
-        params = {"limit": 30}
+        params = {"limit": 100}
         if search:
             params["search"] = search
-        # Composio uses cursor-based pagination
-        # For page > 1, we need to fetch sequentially (or cache cursors)
-        # Simple approach: use offset = (page-1) * limit if supported, else use page param
-        if page > 1:
-            params["offset"] = (page - 1) * 30
-        params["page"] = page
 
         # Fetch toolkits (apps) — not individual tools (23K+)
         resp = req.get(
@@ -1221,11 +1215,17 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
                     "logo": item.get("logo") or item.get("icon") or item.get("logo_url") or f"https://logos.composio.dev/api/{slug}",
                     "tags": item.get("tags") or item.get("categories") or [],
                 })
+            # Server-side pagination slice
+            page_size = 30
+            total = len(items)
+            start = (page - 1) * page_size
+            end = start + page_size
+            paged_items = items[start:end]
             return {
-                "items": items,
-                "total_pages": data.get("total_pages", 1),
-                "current_page": data.get("current_page", page),
-                "total_items": data.get("total_items", len(items)),
+                "items": paged_items,
+                "total_pages": max(1, (total + page_size - 1) // page_size),
+                "current_page": page,
+                "total_items": total,
                 "available": True,
             }
         # Fallback: try /tools endpoint with toolkit grouping
@@ -1251,11 +1251,7 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
-    """Initiate connection using Composio Session pattern (from TrustClaw source).
-    
-    Pattern: composio.create(userId, {}) → session.authorize(toolkit, {callbackUrl})
-    REST: POST /tool_router/session → POST /tool_router/session/{id}/authorize
-    """
+    """Connect a Composio toolkit. Creates user 'conclave' if needed."""
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         raise HTTPException(status_code=400, detail="Composio API key not configured")
@@ -1263,55 +1259,44 @@ async def composio_connect(toolkit: str, request: Request):
         import requests as req
         headers = {"x-api-key": composio_key, "Content-Type": "application/json"}
         base = "https://backend.composio.dev/api/v3"
-        body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
-        callback_url = body.get("callback_url", "")
 
-        # Step 1: Create session (user_id at top level per API error)
-        session_resp = req.post(
-            f"{base}/tool_router/session",
+        # Get ALL auth configs and find the one for this toolkit
+        auth_resp = req.get(f"{base}/auth_configs", headers=headers, timeout=10)
+        if auth_resp.status_code != 200:
+            return {"error": f"Failed to list auth configs: HTTP {auth_resp.status_code}"}
+
+        configs = auth_resp.json().get("items", [])
+        auth_config_id = ""
+        for ac in configs:
+            # Extract toolkit slug from the config
+            tk = ac.get("toolkit_slug", "")
+            if not tk:
+                tk_obj = ac.get("toolkit", "")
+                if isinstance(tk_obj, dict):
+                    tk = tk_obj.get("slug", "")
+                elif isinstance(tk_obj, str):
+                    tk = tk_obj
+            if tk.lower() == toolkit.lower():
+                auth_config_id = ac.get("id") or ac.get("nanoid", "")
+                break
+
+        if not auth_config_id:
+            return {"error": f"No auth config for '{toolkit}'. Visit composio.dev to enable this toolkit for your project."}
+
+        # Create connection link for user 'conclave'
+        link_resp = req.post(
+            f"{base}/connected_accounts/link",
             headers=headers,
-            json={
-                "user_id": "conclave",
-                "config": {
-                    "toolkits": {"enabled": [toolkit]},
-                    "manage_connections": {"enabled": True},
-                }
-            },
+            json={"auth_config_id": auth_config_id, "user_id": "conclave"},
             timeout=15,
         )
 
-        if session_resp.status_code not in (200, 201):
-            # Try with user_id in config
-            session_resp = req.post(
-                f"{base}/tool_router/session",
-                headers=headers,
-                json={"user_id": "conclave"},
-                timeout=15,
-            )
+        if link_resp.status_code in (200, 201):
+            data = link_resp.json()
+            url = data.get("redirect_url") or data.get("redirectUrl") or data.get("url", "")
+            return {"success": True, "redirectUrl": url}
 
-        if session_resp.status_code not in (200, 201):
-            return {"error": f"Session failed: HTTP {session_resp.status_code}", "detail": session_resp.text[:300]}
-
-        session_data = session_resp.json()
-        session_id = session_data.get("session_id") or session_data.get("id", "")
-
-        if not session_id:
-            return {"error": "No session ID returned", "detail": json.dumps(session_data)[:200]}
-
-        # Step 2: Authorize toolkit in session
-        auth_resp = req.post(
-            f"{base}/tool_router/session/{session_id}/authorize",
-            headers=headers,
-            json={"toolkit": toolkit, "callback_url": callback_url},
-            timeout=15,
-        )
-
-        if auth_resp.status_code in (200, 201):
-            data = auth_resp.json()
-            redirect_url = data.get("redirect_url") or data.get("redirectUrl") or data.get("url", "")
-            return {"success": True, "redirectUrl": redirect_url, "session_id": session_id}
-
-        return {"error": f"Authorize failed: HTTP {auth_resp.status_code}", "detail": auth_resp.text[:300]}
+        return {"error": f"Link failed: HTTP {link_resp.status_code}", "detail": link_resp.text[:300]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
