@@ -1325,6 +1325,7 @@ def composio_execute(tool_slug: str, args: str = "{}", connected_account_id: str
 
     try:
         body = {"arguments": json.loads(args) if isinstance(args, str) else args}
+        body["entity_id"] = "conclave"  # Always use single user
         if connected_account_id:
             body["connectedAccountId"] = connected_account_id
         headers = {"x-api-key": api_key, "Content-Type": "application/json"}
@@ -1417,7 +1418,9 @@ def composio_check_connection(app: str) -> dict:
         headers = {"x-api-key": api_key, "Content-Type": "application/json"}
         resp = requests.get(
             f"https://backend.composio.dev/api/v3.1/connectedAccounts",
-            headers=headers, timeout=15,
+            headers=headers,
+            params={"user_id": "conclave"},
+            timeout=15,
         )
         if resp.status_code != 200:
             return {"error": f"Composio API error: {resp.status_code}"}
@@ -1553,7 +1556,9 @@ def composio_list_connections() -> dict:
         headers = {"x-api-key": api_key, "Content-Type": "application/json"}
         resp = requests.get(
             f"https://backend.composio.dev/api/v3.1/connectedAccounts",
-            headers=headers, timeout=15,
+            headers=headers,
+            params={"user_id": "conclave"},
+            timeout=15,
         )
         if resp.status_code != 200:
             return {"error": f"Composio API error: {resp.status_code}"}

@@ -1160,7 +1160,7 @@ async def composio_connections():
         resp = req.get(
             "https://backend.composio.dev/api/v3/connected_accounts",
             headers={"x-api-key": composio_key},
-            params={"limit": 100},
+            params={"limit": 100, "user_id": "conclave"},
             timeout=10,
         )
         if resp.status_code == 200:
@@ -1265,7 +1265,7 @@ async def composio_connect(toolkit: str, request: Request):
             headers=headers,
             json={
                 "config": {
-                    "user_id": "default",
+                    "user_id": "conclave",
                     "toolkits": {"enabled": [toolkit]},
                     "manage_connections": {"enabled": True},
                 }
@@ -1278,7 +1278,7 @@ async def composio_connect(toolkit: str, request: Request):
             session_resp = req.post(
                 f"{base}/tool_router/session",
                 headers=headers,
-                json={"config": {"user_id": "default"}},
+                json={"config": {"user_id": "conclave"}},
                 timeout=15,
             )
 
