@@ -68,7 +68,7 @@ jobs:
         run: |
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
             ${{ env.SSH_USER }}@${{ secrets.HOST }} \
-            "mkdir -p ${{ env.REMOTE_DIR }}/frontend/dist"
+            "if [ -d /opt/synthclaw ] && [ ! -d /opt/conclave ]; then mv /opt/synthclaw /opt/conclave; fi && mkdir -p ${{ env.REMOTE_DIR }}/frontend/dist"
 
       - name: Upload Python agent files
         run: |
@@ -141,6 +141,8 @@ jobs:
           }
           NGINX
           rm -f /etc/nginx/sites-enabled/default 2>/dev/null
+          rm -f /etc/nginx/sites-enabled/synthclaw 2>/dev/null
+          rm -f /etc/nginx/sites-available/synthclaw 2>/dev/null
           ln -sf /etc/nginx/sites-available/conclave /etc/nginx/sites-enabled/conclave
           nginx -t && systemctl restart nginx
           SCRIPT
@@ -177,6 +179,10 @@ jobs:
           WantedBy=multi-user.target
           SVC
           systemctl daemon-reload
+          # Stop and remove old synthclaw service if exists
+          systemctl stop synthclaw 2>/dev/null || true
+          systemctl disable synthclaw 2>/dev/null || true
+          rm -f /etc/systemd/system/synthclaw.service 2>/dev/null
           systemctl enable conclave
           systemctl restart conclave
           SCRIPT
