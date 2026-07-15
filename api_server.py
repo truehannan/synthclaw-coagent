@@ -1190,9 +1190,15 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
         return {"items": [], "available": False, "total_pages": 0}
     try:
         import requests as req
-        params = {"page": page, "limit": 30}
+        params = {"limit": 30}
         if search:
             params["search"] = search
+        # Composio uses cursor-based pagination
+        # For page > 1, we need to fetch sequentially (or cache cursors)
+        # Simple approach: use offset = (page-1) * limit if supported, else use page param
+        if page > 1:
+            params["offset"] = (page - 1) * 30
+        params["page"] = page
 
         # Fetch toolkits (apps) — not individual tools (23K+)
         resp = req.get(
@@ -1204,14 +1210,15 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
         if resp.status_code == 200:
             data = resp.json()
             raw_items = data.get("items", data.get("toolkits", []))
-            # Normalize fields (API may use icon/logo_url/logo inconsistently)
+            # Normalize fields + use Composio logo CDN as fallback
             items = []
             for item in raw_items:
+                slug = item.get("slug") or item.get("name", "")
                 items.append({
-                    "slug": item.get("slug") or item.get("name", ""),
-                    "name": item.get("name") or item.get("display_name") or item.get("slug", ""),
+                    "slug": slug,
+                    "name": item.get("name") or item.get("display_name") or slug,
                     "description": item.get("description") or item.get("short_description") or "",
-                    "logo": item.get("logo") or item.get("icon") or item.get("logo_url") or item.get("image", ""),
+                    "logo": item.get("logo") or item.get("icon") or item.get("logo_url") or f"https://logos.composio.dev/api/{slug}",
                     "tags": item.get("tags") or item.get("categories") or [],
                 })
             return {
