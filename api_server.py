@@ -511,7 +511,7 @@ async def chat_run(msg: ChatMessage):
         try:
             while True:
                 try:
-                    event = await _asyncio.wait_for(event_queue.get(), timeout=120.0)
+                    event = await _asyncio.wait_for(event_queue.get(), timeout=300.0)
                 except _asyncio.TimeoutError:
                     yield f"data: {json.dumps({'type': 'error', 'message': 'Timeout waiting for agent response'})}\n\n"
                     break
@@ -1160,7 +1160,7 @@ async def composio_connections():
         resp = req.get(
             "https://backend.composio.dev/api/v3/connected_accounts",
             headers={"x-api-key": composio_key},
-            params={"limit": 100},
+            params={"limit": 100, "user_id": "conclave"},
             timeout=10,
         )
         if resp.status_code == 200:
@@ -1244,7 +1244,11 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
-    """Initiate connection using Composio Session/Tool Router pattern (same as TrustClaw)."""
+    """Initiate connection using Composio Session pattern (from TrustClaw source).
+    
+    Pattern: composio.create(userId, {}) → session.authorize(toolkit, {callbackUrl})
+    REST: POST /tool_router/session → POST /tool_router/session/{id}/authorize
+    """
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         raise HTTPException(status_code=400, detail="Composio API key not configured")
@@ -1255,34 +1259,52 @@ async def composio_connect(toolkit: str, request: Request):
         body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
         callback_url = body.get("callback_url", "")
 
-        # Step 1: Create a session for this user (official pattern from TrustClaw)
+        # Step 1: Create session (empty config, just user_id — same as TrustClaw)
         session_resp = req.post(
             f"{base}/tool_router/session",
             headers=headers,
-            json={"user_id": "default", "toolkits": [toolkit]},
-            timeout=10,
+            json={
+                "config": {
+                    "user_id": "conclave",
+                    "toolkits": {"enabled": [toolkit]},
+                    "manage_connections": {"enabled": True},
+                }
+            },
+            timeout=15,
         )
+
         if session_resp.status_code not in (200, 201):
-            return {"error": f"Session creation failed: HTTP {session_resp.status_code}", "detail": session_resp.text[:200]}
+            # Try simpler payload format
+            session_resp = req.post(
+                f"{base}/tool_router/session",
+                headers=headers,
+                json={"config": {"user_id": "conclave"}},
+                timeout=15,
+            )
+
+        if session_resp.status_code not in (200, 201):
+            return {"error": f"Session failed: HTTP {session_resp.status_code}", "detail": session_resp.text[:300]}
 
         session_data = session_resp.json()
-        session_id = session_data.get("id") or session_data.get("session_id", "")
-        if not session_id:
-            return {"error": "Session created but no ID returned"}
+        session_id = session_data.get("session_id") or session_data.get("id", "")
 
-        # Step 2: Authorize the toolkit within the session
+        if not session_id:
+            return {"error": "No session ID returned", "detail": json.dumps(session_data)[:200]}
+
+        # Step 2: Authorize toolkit in session
         auth_resp = req.post(
             f"{base}/tool_router/session/{session_id}/authorize",
             headers=headers,
             json={"toolkit": toolkit, "callback_url": callback_url},
             timeout=15,
         )
+
         if auth_resp.status_code in (200, 201):
             data = auth_resp.json()
             redirect_url = data.get("redirect_url") or data.get("redirectUrl") or data.get("url", "")
             return {"success": True, "redirectUrl": redirect_url, "session_id": session_id}
 
-        return {"error": f"Authorization failed: HTTP {auth_resp.status_code}", "detail": auth_resp.text[:300]}
+        return {"error": f"Authorize failed: HTTP {auth_resp.status_code}", "detail": auth_resp.text[:300]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
