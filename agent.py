@@ -218,7 +218,9 @@ def _resolve_client_and_model(selected_model: str) -> tuple[OpenAI, str, str]:
     base_url = _provider_base_url(base_provider)
     cache_key = (base_url, api_key)
     if cache_key not in CLIENT_CACHE:
-        CLIENT_CACHE[cache_key] = OpenAI(api_key=api_key, base_url=base_url)
+        # Cloudflare Workers AI can be slow — give it more time
+        timeout = 120.0 if provider == "Cloudflare" else 60.0
+        CLIENT_CACHE[cache_key] = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
 
     if provider == "OpenRouter":
         api_model = selected_model.split(":", 1)[1]

@@ -1244,13 +1244,7 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
-    """Initiate connection for a Composio toolkit via Connect Link.
-    
-    Steps:
-    1. GET /auth_configs?toolkit_slug=X to find the auth_config_id
-    2. POST /connected_accounts/link with auth_config_id + user_id
-    3. Return the redirect URL for user to authorize
-    """
+    """Initiate connection using Composio Session/Tool Router pattern (same as TrustClaw)."""
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         raise HTTPException(status_code=400, detail="Composio API key not configured")
@@ -1259,74 +1253,38 @@ async def composio_connect(toolkit: str, request: Request):
         headers = {"x-api-key": composio_key, "Content-Type": "application/json"}
         base = "https://backend.composio.dev/api/v3"
         body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+        callback_url = body.get("callback_url", "")
 
-        # Step 1: Find auth_config_id for this toolkit
-        # Try multiple filter params since API is inconsistent
-        auth_config_id = ""
-        for param_name in ["toolkit_slug", "toolkit", "toolkitSlug"]:
-            auth_resp = req.get(
-                f"{base}/auth_configs",
-                headers=headers,
-                params={param_name: toolkit},
-                timeout=10,
-            )
-            if auth_resp.status_code == 200:
-                configs = auth_resp.json().get("items", [])
-                # Find one that matches our toolkit
-                for ac in configs:
-                    # Check various ways the toolkit might be referenced
-                    tk_slug = ""
-                    tk_field = ac.get("toolkit_slug") or ac.get("toolkit") or ""
-                    if isinstance(tk_field, dict):
-                        tk_slug = tk_field.get("slug", "").lower()
-                    elif isinstance(tk_field, str):
-                        tk_slug = tk_field.lower()
-
-                    if tk_slug == toolkit.lower():
-                        auth_config_id = ac.get("id") or ac.get("nanoid", "")
-                        break
-                if auth_config_id:
-                    break
-
-        if not auth_config_id:
-            return {
-                "error": f"No auth config found for '{toolkit}'",
-                "detail": "This toolkit may need to be set up in the Composio dashboard first (composio.dev/apps).",
-            }
-
-        # Step 2: Create Connect Link
-        link_resp = req.post(
-            f"{base}/connected_accounts/link",
+        # Step 1: Create a session for this user (official pattern from TrustClaw)
+        session_resp = req.post(
+            f"{base}/tool_router/session",
             headers=headers,
-            json={
-                "auth_config_id": auth_config_id,
-                "user_id": body.get("user_id", "default"),
-                "callback_url": body.get("callback_url", ""),
-            },
+            json={"user_id": "default", "toolkits": [toolkit]},
+            timeout=10,
+        )
+        if session_resp.status_code not in (200, 201):
+            return {"error": f"Session creation failed: HTTP {session_resp.status_code}", "detail": session_resp.text[:200]}
+
+        session_data = session_resp.json()
+        session_id = session_data.get("id") or session_data.get("session_id", "")
+        if not session_id:
+            return {"error": "Session created but no ID returned"}
+
+        # Step 2: Authorize the toolkit within the session
+        auth_resp = req.post(
+            f"{base}/tool_router/session/{session_id}/authorize",
+            headers=headers,
+            json={"toolkit": toolkit, "callback_url": callback_url},
             timeout=15,
         )
+        if auth_resp.status_code in (200, 201):
+            data = auth_resp.json()
+            redirect_url = data.get("redirect_url") or data.get("redirectUrl") or data.get("url", "")
+            return {"success": True, "redirectUrl": redirect_url, "session_id": session_id}
 
-        if link_resp.status_code in (200, 201):
-            data = link_resp.json()
-            redirect_url = (
-                data.get("redirect_url") or
-                data.get("redirectUrl") or
-                data.get("url") or
-                ""
-            )
-            return {
-                "success": True,
-                "redirectUrl": redirect_url,
-                "connection_id": data.get("id") or data.get("connected_account_id", ""),
-            }
-
-        return {
-            "error": f"Link creation failed: HTTP {link_resp.status_code}",
-            "detail": link_resp.text[:300],
-        }
+        return {"error": f"Authorization failed: HTTP {auth_resp.status_code}", "detail": auth_resp.text[:300]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SERVER STARTUP

@@ -1682,14 +1682,22 @@ def install_skill(source: str, name: str = "") -> dict:
                 return {"error": f"Could not resolve skill: {source}. Use @user/skill format."}
 
         # Download and extract
-        resp = requests.get(zip_url, timeout=60)
+        resp = requests.get(zip_url, timeout=30, stream=True)
         if resp.status_code == 404 and "main.zip" in zip_url:
             # Try master branch as fallback
             zip_url = zip_url.replace("/main.zip", "/master.zip")
-            resp = requests.get(zip_url, timeout=60)
+            resp = requests.get(zip_url, timeout=30, stream=True)
         if resp.status_code != 200:
-            return {"error": f"Failed to download: HTTP {resp.status_code}. Check that the repo exists: {zip_url}"}
-        zip_content = resp.content
+            return {"error": f"Failed to download: HTTP {resp.status_code}. URL: {zip_url}"}
+        # Read content with size limit (50MB max)
+        chunks = []
+        total = 0
+        for chunk in resp.iter_content(chunk_size=65536):
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > 50 * 1024 * 1024:
+                return {"error": "Repository too large (>50MB). Try a smaller skill."}
+        zip_content = b"".join(chunks)
 
         with zipfile.ZipFile(io.BytesIO(zip_content)) as zf:
             # Extract to a temp dir, then move to skills dir
