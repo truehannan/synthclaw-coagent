@@ -1244,11 +1244,12 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
-    """Initiate connection for a Composio toolkit.
+    """Initiate connection for a Composio toolkit via Connect Link.
     
-    Uses POST /api/v3/connected_accounts directly with toolkit slug.
-    This is how the official Composio SDK works — no auth_config lookup needed
-    for Composio-managed OAuth apps.
+    Steps:
+    1. GET /auth_configs?toolkit_slug=X to find the auth_config_id
+    2. POST /connected_accounts/link with auth_config_id + user_id
+    3. Return the redirect URL for user to authorize
     """
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
@@ -1259,15 +1260,48 @@ async def composio_connect(toolkit: str, request: Request):
         base = "https://backend.composio.dev/api/v3"
         body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
 
-        # Direct approach: POST /connected_accounts with toolkit slug
-        # This uses Composio's managed OAuth for the toolkit
+        # Step 1: Find auth_config_id for this toolkit
+        # Try multiple filter params since API is inconsistent
+        auth_config_id = ""
+        for param_name in ["toolkit_slug", "toolkit", "toolkitSlug"]:
+            auth_resp = req.get(
+                f"{base}/auth_configs",
+                headers=headers,
+                params={param_name: toolkit},
+                timeout=10,
+            )
+            if auth_resp.status_code == 200:
+                configs = auth_resp.json().get("items", [])
+                # Find one that matches our toolkit
+                for ac in configs:
+                    # Check various ways the toolkit might be referenced
+                    tk_slug = ""
+                    tk_field = ac.get("toolkit_slug") or ac.get("toolkit") or ""
+                    if isinstance(tk_field, dict):
+                        tk_slug = tk_field.get("slug", "").lower()
+                    elif isinstance(tk_field, str):
+                        tk_slug = tk_field.lower()
+
+                    if tk_slug == toolkit.lower():
+                        auth_config_id = ac.get("id") or ac.get("nanoid", "")
+                        break
+                if auth_config_id:
+                    break
+
+        if not auth_config_id:
+            return {
+                "error": f"No auth config found for '{toolkit}'",
+                "detail": "This toolkit may need to be set up in the Composio dashboard first (composio.dev/apps).",
+            }
+
+        # Step 2: Create Connect Link
         link_resp = req.post(
-            f"{base}/connected_accounts",
+            f"{base}/connected_accounts/link",
             headers=headers,
             json={
-                "toolkit": toolkit,
+                "auth_config_id": auth_config_id,
                 "user_id": body.get("user_id", "default"),
-                "redirect_uri": body.get("callback_url", ""),
+                "callback_url": body.get("callback_url", ""),
             },
             timeout=15,
         )
@@ -1278,59 +1312,16 @@ async def composio_connect(toolkit: str, request: Request):
                 data.get("redirect_url") or
                 data.get("redirectUrl") or
                 data.get("url") or
-                data.get("connectionRequest", {}).get("redirectUrl") or
                 ""
             )
             return {
                 "success": True,
                 "redirectUrl": redirect_url,
-                "connection_id": data.get("id") or data.get("nanoid") or data.get("connected_account_id", ""),
+                "connection_id": data.get("id") or data.get("connected_account_id", ""),
             }
 
-        # If direct fails, try the link endpoint with auth_config discovery
-        # Get auth_configs filtered to this toolkit
-        auth_resp = req.get(
-            f"{base}/auth_configs",
-            headers=headers,
-            params={"toolkit": toolkit},
-            timeout=10,
-        )
-        auth_config_id = ""
-        if auth_resp.status_code == 200:
-            configs = auth_resp.json().get("items", [])
-            for ac in configs:
-                tk = ac.get("toolkit_slug") or ""
-                if isinstance(ac.get("toolkit"), dict):
-                    tk = ac["toolkit"].get("slug", "")
-                elif isinstance(ac.get("toolkit"), str):
-                    tk = ac["toolkit"]
-                if tk.lower() == toolkit.lower():
-                    auth_config_id = ac.get("id") or ac.get("nanoid", "")
-                    break
-
-        if auth_config_id:
-            link_resp2 = req.post(
-                f"{base}/connected_accounts/link",
-                headers=headers,
-                json={
-                    "auth_config_id": auth_config_id,
-                    "user_id": body.get("user_id", "default"),
-                    "callback_url": body.get("callback_url", ""),
-                },
-                timeout=15,
-            )
-            if link_resp2.status_code in (200, 201):
-                data = link_resp2.json()
-                redirect_url = data.get("redirect_url") or data.get("redirectUrl") or data.get("url", "")
-                return {
-                    "success": True,
-                    "redirectUrl": redirect_url,
-                    "connection_id": data.get("id") or data.get("connected_account_id", ""),
-                }
-
-        # Return the original error
         return {
-            "error": f"Connection failed: HTTP {link_resp.status_code}",
+            "error": f"Link creation failed: HTTP {link_resp.status_code}",
             "detail": link_resp.text[:300],
         }
     except Exception as e:
