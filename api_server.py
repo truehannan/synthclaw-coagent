@@ -1160,7 +1160,7 @@ async def composio_connections():
         resp = req.get(
             "https://backend.composio.dev/api/v3/connected_accounts",
             headers={"x-api-key": composio_key},
-            params={"limit": 100, "user_id": "conclave"},
+            params={"limit": 100, "user_id": "conclave", "entity_id": "conclave"},
             timeout=10,
         )
         if resp.status_code == 200:
@@ -1266,13 +1266,13 @@ async def composio_connect(toolkit: str, request: Request):
         body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
         callback_url = body.get("callback_url", "")
 
-        # Step 1: Create session (empty config, just user_id — same as TrustClaw)
+        # Step 1: Create session (user_id at top level per API error)
         session_resp = req.post(
             f"{base}/tool_router/session",
             headers=headers,
             json={
+                "user_id": "conclave",
                 "config": {
-                    "user_id": "conclave",
                     "toolkits": {"enabled": [toolkit]},
                     "manage_connections": {"enabled": True},
                 }
@@ -1281,11 +1281,11 @@ async def composio_connect(toolkit: str, request: Request):
         )
 
         if session_resp.status_code not in (200, 201):
-            # Try simpler payload format
+            # Try with user_id in config
             session_resp = req.post(
                 f"{base}/tool_router/session",
                 headers=headers,
-                json={"config": {"user_id": "conclave"}},
+                json={"user_id": "conclave"},
                 timeout=15,
             )
 

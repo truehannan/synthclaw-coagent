@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import { apis, composio } from "@/lib/api";
 import { Link2, Unplug, Globe, Zap, Search, ExternalLink, Loader2 } from "lucide-react";
 
@@ -21,11 +22,12 @@ interface ApiEntry {
 }
 
 export default function Integrations() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const currentPage = parseInt(searchParams.get("page") || "1");
   const [apiList, setApiList] = useState<ApiEntry[]>([]);
   const [composioAvailable, setComposioAvailable] = useState(false);
   const [tools, setTools] = useState<ComposioTool[]>([]);
   const [toolsSearch, setToolsSearch] = useState("");
-  const [toolsPage, setToolsPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [totalItems, setTotalItems] = useState(0);
   const [loadingTools, setLoadingTools] = useState(false);
@@ -35,13 +37,13 @@ export default function Integrations() {
   const loadedRef = useRef(false);
 
   useEffect(() => {
-    if (!loadedRef.current) {
-      loadedRef.current = true;
-      loadApis();
-      loadTools(1, "");
-      loadConnections();
-    }
+    loadApis();
+    loadConnections();
   }, []);
+
+  useEffect(() => {
+    loadTools(currentPage, toolsSearch);
+  }, [currentPage]);
 
   async function loadConnections() {
     try {
@@ -68,7 +70,6 @@ export default function Integrations() {
       setTools(res.items || []);
       setTotalPages(res.total_pages || 0);
       setTotalItems(res.total_items || 0);
-      setToolsPage(page);
     } catch {
       setComposioAvailable(false);
     } finally {
@@ -79,7 +80,14 @@ export default function Integrations() {
   function handleSearch(value: string) {
     setToolsSearch(value);
     if (searchTimeout.current) clearTimeout(searchTimeout.current);
-    searchTimeout.current = setTimeout(() => loadTools(1, value), 400);
+    searchTimeout.current = setTimeout(() => {
+      setSearchParams({ page: "1" });
+      loadTools(1, value);
+    }, 400);
+  }
+
+  function goToPage(page: number) {
+    setSearchParams({ page: String(page) });
   }
 
   async function handleConnect(toolkit: string) {
@@ -201,10 +209,10 @@ export default function Integrations() {
             {/* Pagination */}
             {totalPages > 1 && (
               <div className="flex items-center justify-center gap-2 mt-4 py-3">
-                <button onClick={() => loadTools(toolsPage - 1, toolsSearch)} disabled={toolsPage <= 1}
+                <button onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1}
                   className="rounded-sm border border-border px-3 py-1 text-[10px] text-muted hover:text-foreground disabled:opacity-30">Prev</button>
-                <span className="text-[10px] text-muted">Page {toolsPage} of {totalPages}</span>
-                <button onClick={() => loadTools(toolsPage + 1, toolsSearch)} disabled={toolsPage >= totalPages}
+                <span className="text-[10px] text-muted">Page {currentPage} of {totalPages}</span>
+                <button onClick={() => goToPage(currentPage + 1)} disabled={currentPage >= totalPages}
                   className="rounded-sm border border-border px-3 py-1 text-[10px] text-muted hover:text-foreground disabled:opacity-30">Next</button>
               </div>
             )}
