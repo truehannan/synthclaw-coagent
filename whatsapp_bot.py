@@ -1,5 +1,5 @@
 """
-SynthClaw-CoAgent — WhatsApp Bot Interface
+Conclave-CoAgent — WhatsApp Bot Interface
 Uses the Meta WhatsApp Cloud API with Flask webhooks.
 """
 import asyncio
@@ -454,7 +454,7 @@ def handle_command(phone: str, text: str) -> str | None:
 
     if cmd == "/help":
         return (
-            "SynthClaw-CoAgent — Commands\n\n"
+            "Conclave-CoAgent — Commands\n\n"
             "/start — Register as owner\n"
             "/help — This message\n"
             "/clear — Wipe conversation history\n"
@@ -647,7 +647,7 @@ def _process_message(phone: str, text: str):
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint."""
-    return jsonify({"status": "ok", "service": "synthclaw-whatsapp"}), 200
+    return jsonify({"status": "ok", "service": "conclave-whatsapp"}), 200
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

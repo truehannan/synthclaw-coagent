@@ -9,8 +9,8 @@ const CLAWHUB_API = "https://clawhub.ai/api/v1";
 export async function runImport(args) {
   if (!args[0] || args[0] !== "skill" || !args[1]) {
     console.log(chalk.bold("\n  Usage:"));
-    console.log(`    ${chalk.cyan("synthclaw import skill")} ${chalk.yellow("@owner/name")}`);
-    console.log(`    ${chalk.cyan("synthclaw import skill")} ${chalk.yellow("name")}`);
+    console.log(`    ${chalk.cyan("conclave import skill")} ${chalk.yellow("@owner/name")}`);
+    console.log(`    ${chalk.cyan("conclave import skill")} ${chalk.yellow("name")}`);
     console.log(chalk.dim("\n  Imports from ClawHub registry (clawhub.ai)\n"));
     return;
   }
@@ -34,7 +34,7 @@ export async function runImport(args) {
     if (!resp.ok) { spinner.fail(`API error: ${resp.status}`); return; }
     const data = await resp.json();
     const results = data.results || [];
-    if (!results.length) { spinner.fail(`Not found: ${skillRef}`); printInfo("Try: synthclaw search skill <keyword>"); return; }
+    if (!results.length) { spinner.fail(`Not found: ${skillRef}`); printInfo("Try: conclave search skill <keyword>"); return; }
 
     const skill = results[0];
     const slug = skill.slug;
@@ -53,7 +53,7 @@ export async function runImport(args) {
 export async function runSearch(args) {
   if (!args[0] || args[0] !== "skill" || !args[1]) {
     console.log(chalk.bold("\n  Usage:"));
-    console.log(`    ${chalk.cyan("synthclaw search skill")} ${chalk.yellow("<query>")}`);
+    console.log(`    ${chalk.cyan("conclave search skill")} ${chalk.yellow("<query>")}`);
     console.log(chalk.dim("\n  Searches ClawHub registry (clawhub.ai)\n"));
     return;
   }
@@ -74,6 +74,6 @@ export async function runSearch(args) {
       if (s.summary) console.log(chalk.dim(`    ${s.summary.slice(0, 80)}`));
       console.log("");
     }
-    console.log(chalk.dim("  Install: synthclaw import skill @owner/name\n"));
+    console.log(chalk.dim("  Install: conclave import skill @owner/name\n"));
   } catch (err) { spinner.fail(err.message); }
 }

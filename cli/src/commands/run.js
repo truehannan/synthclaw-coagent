@@ -5,8 +5,8 @@ export async function runRun(args) {
   const cmd = args.join(" ").trim();
 
   if (!cmd) {
-    console.log(chalk.bold("\n  Usage: ") + "synthclaw run <shell command>");
-    console.log(chalk.dim("  Example: synthclaw run ls -la /opt/agent\n"));
+    console.log(chalk.bold("\n  Usage: ") + "conclave run <shell command>");
+    console.log(chalk.dim("  Example: conclave run ls -la /opt/agent\n"));
     return;
   }
 

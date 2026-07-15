@@ -229,7 +229,7 @@ export default function SetupWizard() {
           <p className="mt-1 text-[10px] text-muted">
             {missingSteps.length > 0
               ? `${missingSteps.length} step${missingSteps.length > 1 ? "s" : ""} remaining`
-              : "Configure your SynthClaw agent"}
+              : "Configure your Conclave agent"}
           </p>
         </div>
 
@@ -289,7 +289,7 @@ export default function SetupWizard() {
           {step === "interface" && (
             <div className="space-y-4">
               <h2 className="text-sm font-bold">Interface</h2>
-              <p className="text-[10px] text-muted">How will you interact with SynthClaw?</p>
+              <p className="text-[10px] text-muted">How will you interact with Conclave?</p>
               <div className="space-y-2">
                 {[
                   { value: "cli", label: "CLI only", desc: "Terminal + web frontend" },

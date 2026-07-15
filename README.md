@@ -1,12 +1,12 @@
-<p align="center"><img src="public/icon.png" alt="SynthClaw" width="80"/></p>
+<p align="center"><img src="public/icon.png" alt="Conclave" width="80"/></p>
 
-<h1 align="center">SynthClaw: Agent Society</h1>
+<h1 align="center">Conclave: Agent Society</h1>
 <p align="center"><strong>Multi-agent AI system with 58 tools, 10 LLM providers, and a web + CLI interface.</strong></p>
 
 <p align="center"><img src="screenshot.png" alt="Dashboard" width="700"/></p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/stars/truehannan/synthclaw-coagent?style=flat&color=e85d04" />
+  <img src="https://img.shields.io/github/stars/truehannan/conclave-coagent?style=flat&color=e85d04" />
   <img src="https://img.shields.io/badge/tools-58-e85d04" />
   <img src="https://img.shields.io/badge/providers-10-e85d04" />
   <img src="https://img.shields.io/badge/python-3.9+-blue" />
@@ -18,10 +18,10 @@
 ## Quick Start (2 minutes)
 
 ```bash
-git clone https://github.com/truehannan/synthclaw-coagent.git
-cd synthclaw-coagent
+git clone https://github.com/truehannan/conclave-coagent.git
+cd conclave-coagent
 npm run setup
-synthclaw
+conclave
 ```
 
 That's it. The dashboard launches, detects it's unconfigured, and walks you through setup.
@@ -31,13 +31,13 @@ That's it. The dashboard launches, detects it's unconfigured, and walks you thro
 > node cli/dist/index.js
 > ```
 
-> **To update later**: `synthclaw update` (pulls latest), then `npm run setup` again.
+> **To update later**: `conclave update` (pulls latest), then `npm run setup` again.
 
 ---
 
 ## What Is This?
 
-SynthClaw is a **self-hosted AI agent** that runs on your machine or a $6 VPS. It has:
+Conclave is a **self-hosted AI agent** that runs on your machine or a $6 VPS. It has:
 
 - **Agent Society** — Multiple AI agents (Orchestrator, Researcher, Executor, Reviewer, Observer) collaborate on complex tasks
 - **58 Built-in Tools** — Shell, files, HTTP, search, code execution, services, scheduling, APIs
@@ -92,15 +92,15 @@ Simple requests are handled directly (no delegation overhead).
 ## CLI Commands
 
 ```
-synthclaw              # Launch TUI dashboard
-synthclaw deploy       # Deploy (localhost / remote IP / domain / path)
-synthclaw start        # Start agent service
-synthclaw stop         # Stop agent
-synthclaw status       # Check health
-synthclaw logs         # View logs
-synthclaw model <name> # Switch model
-synthclaw models       # List available models
-synthclaw update       # Pull latest + rebuild
+conclave              # Launch TUI dashboard
+conclave deploy       # Deploy (localhost / remote IP / domain / path)
+conclave start        # Start agent service
+conclave stop         # Stop agent
+conclave status       # Check health
+conclave logs         # View logs
+conclave model <name> # Switch model
+conclave models       # List available models
+conclave update       # Pull latest + rebuild
 ```
 
 **Inside the TUI:** Type `/` to see all commands with arrow-key navigation.
@@ -110,7 +110,7 @@ synthclaw update       # Pull latest + rebuild
 ## Deploy
 
 ```bash
-synthclaw deploy
+conclave deploy
 ```
 
 Options:

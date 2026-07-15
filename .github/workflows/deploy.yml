@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  REMOTE_DIR: /opt/synthclaw
+  REMOTE_DIR: /opt/conclave
   SSH_USER: root
 
 jobs:
@@ -37,7 +37,7 @@ jobs:
 
       - name: Test Python imports
         env:
-          SYNTHCLAW_BASE_DIR: .
+          CONCLAVE_BASE_DIR: .
         run: python -c "import config; import memory; import agents; print('All imports OK')"
 
       - name: Build CLI
@@ -88,7 +88,7 @@ jobs:
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
             ${{ env.SSH_USER }}@${{ secrets.HOST }} << 'SCRIPT'
           set -e
-          cd /opt/synthclaw
+          cd /opt/conclave
 
           # Ubuntu 24.04 uses python3.12 — need the specific venv package
           PYVER=$(python3 --version 2>&1 | grep -oP '\d+\.\d+')
@@ -114,11 +114,11 @@ jobs:
         run: |
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
             ${{ env.SSH_USER }}@${{ secrets.HOST }} << 'SCRIPT'
-          cat > /etc/nginx/sites-available/synthclaw << 'NGINX'
+          cat > /etc/nginx/sites-available/conclave << 'NGINX'
           server {
               listen 80 default_server;
               server_name _;
-              root /opt/synthclaw/frontend/dist;
+              root /opt/conclave/frontend/dist;
               index index.html;
 
               location / {
@@ -141,7 +141,7 @@ jobs:
           }
           NGINX
           rm -f /etc/nginx/sites-enabled/default 2>/dev/null
-          ln -sf /etc/nginx/sites-available/synthclaw /etc/nginx/sites-enabled/synthclaw
+          ln -sf /etc/nginx/sites-available/conclave /etc/nginx/sites-enabled/conclave
           nginx -t && systemctl restart nginx
           SCRIPT
 
@@ -150,35 +150,35 @@ jobs:
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
             ${{ env.SSH_USER }}@${{ secrets.HOST }} << 'SCRIPT'
           # Determine which python to use
-          if [ -f "/opt/synthclaw/venv/bin/python3" ]; then
-            PYTHON_BIN="/opt/synthclaw/venv/bin/python3"
+          if [ -f "/opt/conclave/venv/bin/python3" ]; then
+            PYTHON_BIN="/opt/conclave/venv/bin/python3"
           else
             PYTHON_BIN="/usr/bin/python3"
           fi
 
-          cat > /etc/systemd/system/synthclaw.service << SVC
+          cat > /etc/systemd/system/conclave.service << SVC
           [Unit]
-          Description=SynthClaw Agent Society
+          Description=Conclave Agent Society
           After=network.target
 
           [Service]
           Type=simple
           User=root
-          WorkingDirectory=/opt/synthclaw
-          ExecStart=$PYTHON_BIN /opt/synthclaw/main.py
+          WorkingDirectory=/opt/conclave
+          ExecStart=$PYTHON_BIN /opt/conclave/main.py
           Restart=always
           RestartSec=5
-          Environment=SYNTHCLAW_BASE_DIR=/opt/synthclaw
-          Environment=SYNTHCLAW_API_PORT=8000
-          Environment=SYNTHCLAW_API_HOST=0.0.0.0
+          Environment=CONCLAVE_BASE_DIR=/opt/conclave
+          Environment=CONCLAVE_API_PORT=8000
+          Environment=CONCLAVE_API_HOST=0.0.0.0
           Environment=INTERFACE_MODE=cli
 
           [Install]
           WantedBy=multi-user.target
           SVC
           systemctl daemon-reload
-          systemctl enable synthclaw
-          systemctl restart synthclaw
+          systemctl enable conclave
+          systemctl restart conclave
           SCRIPT
 
       - name: Wait for startup
@@ -201,7 +201,7 @@ jobs:
           echo "⚠ API health check failed — checking logs..."
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
             ${{ env.SSH_USER }}@${{ secrets.HOST }} \
-            "journalctl -u synthclaw -n 20 --no-pager" || true
+            "journalctl -u conclave -n 20 --no-pager" || true
           echo ""
           echo "Note: nginx may still serve frontend at http://${{ secrets.HOST }}"
           echo "API may need .env configuration (OPENAI_API_KEY etc)"

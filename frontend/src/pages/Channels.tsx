@@ -82,7 +82,7 @@ export default function Channels() {
   return (
     <div className="p-6">
       <h1 className="text-lg font-bold">[+] Channels</h1>
-      <p className="mb-6 text-xs text-muted">Connect messaging platforms to SynthClaw</p>
+      <p className="mb-6 text-xs text-muted">Connect messaging platforms to Conclave</p>
 
       {/* Current mode */}
       <div className="mb-6 rounded-sm border border-primary/20 bg-primary-dim px-4 py-2 text-xs">
@@ -170,7 +170,7 @@ export default function Channels() {
 
       <p className="mt-4 text-[9px] text-muted">
         After saving, restart the service for channel changes to take effect.
-        Use the Dashboard "Run Command" to run: <code className="text-primary">systemctl restart synthclaw</code>
+        Use the Dashboard "Run Command" to run: <code className="text-primary">systemctl restart conclave</code>
       </p>
     </div>
   );

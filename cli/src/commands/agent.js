@@ -6,9 +6,9 @@ export async function runAgent(args) {
   const task = args.join(" ").trim();
 
   if (!task) {
-    console.log(chalk.bold("\n  Usage: ") + "synthclaw agent <task to execute>");
+    console.log(chalk.bold("\n  Usage: ") + "conclave agent <task to execute>");
     console.log(
-      chalk.dim('  Example: synthclaw agent "deploy a node server on port 3000"\n')
+      chalk.dim('  Example: conclave agent "deploy a node server on port 3000"\n')
     );
     return;
   }
@@ -18,7 +18,7 @@ export async function runAgent(args) {
   const model = config.get("default_model");
 
   if (!apiKey) {
-    printError("No API key configured. Run: synthclaw setup");
+    printError("No API key configured. Run: conclave setup");
     return;
   }
 
@@ -40,7 +40,7 @@ To use a tool, output JSON: {"tool": "run_command", "args": {"command": "..."}}`
   const messages = [
     {
       role: "system",
-      content: `You are SynthClaw agent in autonomous mode. Execute the task step by step.
+      content: `You are Conclave agent in autonomous mode. Execute the task step by step.
 For each step that requires server action, output a JSON block:
 {"tool": "run_command", "args": {"command": "shell command here"}}
 

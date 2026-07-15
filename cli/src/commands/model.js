@@ -23,8 +23,8 @@ export async function runModel(args) {
     // Show current model
     const current = config.get("default_model");
     console.log(chalk.bold("\n  Current model: ") + chalk.cyan(current));
-    console.log(chalk.dim("\n  Use: synthclaw model <name>  to switch"));
-    console.log(chalk.dim("  Use: synthclaw models        to list all\n"));
+    console.log(chalk.dim("\n  Use: conclave model <name>  to switch"));
+    console.log(chalk.dim("  Use: conclave models        to list all\n"));
     return;
   }
 

@@ -22,7 +22,7 @@ export async function runPing() {
           printSuccess(`Agent is alive on ${host}`);
         } else {
           console.log(chalk.yellow("⚠ ") + `Server reachable but agent is ${chalk.red("not running")}`);
-          console.log(chalk.dim("  Run: synthclaw start"));
+          console.log(chalk.dim("  Run: conclave start"));
         }
       } catch {
         console.log(chalk.yellow("⚠ ") + "Server reachable but couldn't check agent status");
@@ -66,7 +66,7 @@ export async function runPing() {
       printSuccess("Agent is alive (local)");
     } else {
       printError("Agent is not running.");
-      console.log(chalk.dim("  Run: synthclaw start"));
+      console.log(chalk.dim("  Run: conclave start"));
     }
   }
 }

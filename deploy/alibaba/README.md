@@ -145,33 +145,7 @@ Changing providers does not require backend architectural changes.
 
 # Deployment Flow
 
-```
-Browser
 
-↓
-
-React
-
-↓
-
-FastAPI
-
-↓
-
-Agent Society
-
-↓
-
-Selected AI Provider
-
-↓
-
-Response
-
-↓
-
-Browser
-```
 
 The CLI follows the same execution path and communicates with the deployed backend.
 
@@ -202,48 +176,3 @@ Health endpoint
 GET /health
 ```
 
-Example response
-
-```json
-{
-    "service": "SynthClaw CoAgent",
-    "status": "healthy",
-    "provider": "Qwen",
-    "deployment": "Alibaba Cloud Simple Application Server"
-}
-```
-
----
-
-# Verification
-
-The deployment can be verified through:
-
-- Alibaba Cloud Simple Application Server console
-- Running instance status
-- Public frontend
-- Health endpoint
-- CLI communication with deployed backend
-- GitHub deployment workflow
-
----
-
-# Repository
-
-Main project
-
-```
-https://github.com/truehannan/synthclaw-coagent
-```
-
-Deployment documentation
-
-```
-deploy/alibaba/
-```
-
----
-
-# Notes
-
-SynthClaw CoAgent is designed with a deployment-agnostic architecture. While this deployment uses Alibaba Cloud Simple Application Server for the Qwen Cloud Hackathon, the collaborative Agent Society runtime remains portable across different cloud providers without requiring architectural changes.

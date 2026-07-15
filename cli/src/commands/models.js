@@ -167,7 +167,7 @@ export async function runModels() {
   }
 
   console.log(
-    chalk.dim("  Switch: synthclaw model <name>")
+    chalk.dim("  Switch: conclave model <name>")
   );
   console.log("");
 }

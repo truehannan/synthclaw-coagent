@@ -30,6 +30,7 @@ export default function Integrations() {
   const [totalItems, setTotalItems] = useState(0);
   const [loadingTools, setLoadingTools] = useState(false);
   const [connecting, setConnecting] = useState("");
+  const [connectedSlugs, setConnectedSlugs] = useState<Set<string>>(new Set());
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedRef = useRef(false);
 
@@ -38,8 +39,22 @@ export default function Integrations() {
       loadedRef.current = true;
       loadApis();
       loadTools(1, "");
+      loadConnections();
     }
   }, []);
+
+  async function loadConnections() {
+    try {
+      const res = await composio.connections();
+      const slugs = new Set<string>();
+      for (const c of (res.connections || [])) {
+        if (c.slug) slugs.add(c.slug.toLowerCase());
+        if (c.app) slugs.add(c.app.toLowerCase());
+      }
+      setConnectedSlugs(slugs);
+      setComposioAvailable(res.available !== false);
+    } catch {}
+  }
 
   async function loadApis() {
     try { const res = await apis.list(); setApiList(res.apis || []); } catch {}
@@ -73,10 +88,14 @@ export default function Integrations() {
       const res = await composio.connect(toolkit);
       if (res.redirectUrl) {
         window.open(res.redirectUrl, "_blank");
+        // Poll for connection completion after redirect
+        setTimeout(() => loadConnections(), 5000);
+        setTimeout(() => loadConnections(), 15000);
       } else if (res.error) {
         alert(`Connection failed: ${res.error}\n${res.detail || ""}`);
       } else {
-        alert("Connection initiated but no redirect URL returned. Check Composio dashboard.");
+        // Might have connected directly (API key auth)
+        loadConnections();
       }
     } catch (err: any) {
       alert(`Error: ${err.message}`);
@@ -137,14 +156,18 @@ export default function Integrations() {
                 const slug = tool.slug || "";
                 const desc = tool.description || "";
                 const tags: string[] = tool.tags || [];
+                const isConnected = connectedSlugs.has(slug.toLowerCase()) || connectedSlugs.has(name.toLowerCase());
                 return (
-                <div key={slug} className="rounded-sm border border-border bg-card p-3 hover:border-muted transition-colors">
+                <div key={slug} className={`rounded-sm border bg-card p-3 transition-colors ${isConnected ? "border-success/30" : "border-border hover:border-muted"}`}>
                   <div className="flex items-start gap-2">
                     {logo && (
                       <img src={logo} alt="" className="h-5 w-5 rounded-sm flex-shrink-0 mt-0.5" onError={e => (e.currentTarget.style.display = "none")} />
                     )}
                     <div className="flex-1 min-w-0">
-                      <p className="text-[10px] font-semibold text-foreground truncate">{name}</p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-[10px] font-semibold text-foreground truncate">{name}</p>
+                        {isConnected && <span className="rounded-full bg-success/15 px-1.5 py-0.5 text-[8px] text-success font-medium">Connected</span>}
+                      </div>
                       <p className="text-[9px] text-muted mt-0.5 line-clamp-2">{desc}</p>
                     </div>
                   </div>
@@ -157,14 +180,18 @@ export default function Integrations() {
                   )}
                   <div className="mt-2 flex items-center justify-between">
                     <span className="text-[8px] text-muted font-mono truncate max-w-[120px]">{slug}</span>
-                    <button onClick={() => handleConnect(slug)}
-                      disabled={connecting === slug}
-                      className="flex items-center gap-1 rounded-sm bg-primary/10 px-2 py-0.5 text-[9px] text-primary hover:bg-primary/20 disabled:opacity-50">
-                      {connecting === slug
-                        ? <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                        : <ExternalLink className="h-2.5 w-2.5" />}
-                      Connect
-                    </button>
+                    {isConnected ? (
+                      <span className="text-[9px] text-success font-medium">Active</span>
+                    ) : (
+                      <button onClick={() => handleConnect(slug)}
+                        disabled={connecting === slug}
+                        className="flex items-center gap-1 rounded-sm bg-primary/10 px-2 py-0.5 text-[9px] text-primary hover:bg-primary/20 disabled:opacity-50">
+                        {connecting === slug
+                          ? <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                          : <ExternalLink className="h-2.5 w-2.5" />}
+                        Connect
+                      </button>
+                    )}
                   </div>
                 </div>
                 );

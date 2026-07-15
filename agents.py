@@ -1,5 +1,5 @@
 """
-SynthClaw Agent Society -- Multi-Agent Orchestration System
+Conclave Agent Society -- Multi-Agent Orchestration System
 
 Architecture:
 - Single LLM, multiple personas (cost-efficient)
@@ -175,7 +175,7 @@ registry = AgentRegistry()
 # ══════════════════════════════════════════════════════════════════════════════
 
 ORCHESTRATOR_PROMPT = """\
-You are the Orchestrator of SynthClaw Agent Society.
+You are the Orchestrator of Conclave Agent Society.
 
 For SIMPLE requests (greetings, questions, quick tasks):
 - Handle directly using tools. No delegation.

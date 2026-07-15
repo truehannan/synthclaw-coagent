@@ -34,7 +34,7 @@ export default function Signup() {
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
           <Mascot className="mx-auto mb-4" />
-          <h1 className="text-2xl font-bold text-primary">[+] SynthClaw</h1>
+          <h1 className="text-2xl font-bold text-primary">[+] Conclave</h1>
           <p className="mt-2 text-xs text-muted">First time setup — create your password</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">

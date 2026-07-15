@@ -1,5 +1,5 @@
 """
-SynthClaw API Server — REST API for the frontend chat interface.
+Conclave API Server — REST API for the frontend chat interface.
 
 Provides endpoints for:
 - Chat (streaming via SSE)
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # ── App Setup ─────────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="SynthClaw API",
+    title="Conclave API",
     version="1.0.0",
     docs_url="/api/docs",
     redoc_url=None,
@@ -56,7 +56,7 @@ mem.init_db()
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
-API_TOKEN = os.getenv("SYNTHCLAW_API_TOKEN", "")
+API_TOKEN = os.getenv("CONCLAVE_API_TOKEN", "")
 # If no token set, generate one on first run and save it
 if not API_TOKEN:
     token_file = cfg.BASE_DIR / ".api_token"
@@ -392,7 +392,7 @@ async def chat_send(msg: ChatMessage):
 
         # Build messages for LLM
         system_prompt = (
-            "You are SynthClaw, a personal AI agent running on the user's server. "
+            "You are Conclave, a personal AI agent running on the user's server. "
             "Be helpful, concise, and direct. You have access to tools but in this "
             "web interface you respond conversationally."
         )
@@ -1151,14 +1151,33 @@ async def list_apis():
 
 @app.get("/api/composio/connections", dependencies=[Depends(verify_token)])
 async def composio_connections():
-    """List Composio connections."""
+    """List Composio connected accounts (fetched live from Composio API)."""
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         return {"connections": [], "available": False}
     try:
-        from tools import composio_list_connections
-        result = composio_list_connections({})
-        return json.loads(result) if isinstance(result, str) else {"connections": []}
+        import requests as req
+        resp = req.get(
+            "https://backend.composio.dev/api/v3/connected_accounts",
+            headers={"x-api-key": composio_key},
+            params={"limit": 100},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            items = data.get("items", data.get("connected_accounts", []))
+            connections = []
+            for item in items:
+                toolkit = item.get("toolkit", {})
+                connections.append({
+                    "id": item.get("id") or item.get("nanoid", ""),
+                    "app": toolkit.get("name") or toolkit.get("slug", "") if isinstance(toolkit, dict) else str(toolkit),
+                    "slug": toolkit.get("slug", "") if isinstance(toolkit, dict) else str(toolkit),
+                    "status": item.get("status", "unknown"),
+                    "user_id": item.get("user_id", ""),
+                })
+            return {"connections": connections, "available": True}
+        return {"connections": [], "available": True}
     except Exception:
         return {"connections": [], "available": True}
 

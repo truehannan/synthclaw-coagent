@@ -15,7 +15,7 @@ export async function runDeploy(args) {
 
   console.log("");
   console.log("  " + RD("╭─── Deployment Mode ────────────────────────────╮"));
-  console.log("  " + RD("│") + "  Where should SynthClaw run?                   " + RD("│"));
+  console.log("  " + RD("│") + "  Where should Conclave run?                   " + RD("│"));
   console.log("  " + RD("╰───────────────────────────────────────────────╯"));
   console.log("");
 
@@ -77,7 +77,7 @@ async function deployLocalhost(root) {
     const s3 = ora("Generating .env...").start();
     try {
       let envContent = generateEnvContent();
-      envContent += `\nSYNTHCLAW_API_PORT=8000\nSYNTHCLAW_API_HOST=127.0.0.1\nSYNTHCLAW_BASE_DIR=${root}\n`;
+      envContent += `\nCONCLAVE_API_PORT=8000\nCONCLAVE_API_HOST=127.0.0.1\nCONCLAVE_BASE_DIR=${root}\n`;
       writeFileSync(envPath, envContent);
       s3.succeed(".env created");
     } catch { s3.fail(".env write failed"); }
@@ -208,7 +208,7 @@ async function deployRemote(root) {
   const s2 = ora("Writing .env...").start();
   try {
     let envContent = generateEnvContent();
-    envContent += `\nSYNTHCLAW_API_PORT=8000\nSYNTHCLAW_API_HOST=0.0.0.0\nSYNTHCLAW_BASE_DIR=${baseDir}\n`;
+    envContent += `\nCONCLAVE_API_PORT=8000\nCONCLAVE_API_HOST=0.0.0.0\nCONCLAVE_BASE_DIR=${baseDir}\n`;
     const b64 = Buffer.from(envContent).toString("base64");
     execSync(`ssh ${user}@${host} 'echo "${b64}" | base64 -d > ${baseDir}/.env && chmod 600 ${baseDir}/.env'`, { encoding: "utf-8", timeout: 10000 });
     s2.succeed(".env configured");
@@ -228,11 +228,11 @@ async function deployRemote(root) {
   // Create systemd service and start
   const s4 = ora("Creating systemd service...").start();
   try {
-    const service = `[Unit]\nDescription=SynthClaw Agent\nAfter=network.target\n\n[Service]\nType=simple\nUser=${user}\nWorkingDirectory=${baseDir}\nExecStart=/usr/bin/python3 ${baseDir}/main.py\nRestart=always\nRestartSec=5\nEnvironment=SYNTHCLAW_BASE_DIR=${baseDir}\n\n[Install]\nWantedBy=multi-user.target\n`;
+    const service = `[Unit]\nDescription=Conclave Agent\nAfter=network.target\n\n[Service]\nType=simple\nUser=${user}\nWorkingDirectory=${baseDir}\nExecStart=/usr/bin/python3 ${baseDir}/main.py\nRestart=always\nRestartSec=5\nEnvironment=CONCLAVE_BASE_DIR=${baseDir}\n\n[Install]\nWantedBy=multi-user.target\n`;
     const svcB64 = Buffer.from(service).toString("base64");
-    execSync(`ssh ${user}@${host} 'echo "${svcB64}" | base64 -d > /etc/systemd/system/synthclaw.service && systemctl daemon-reload && systemctl enable synthclaw && systemctl restart synthclaw'`, { encoding: "utf-8", timeout: 15000 });
+    execSync(`ssh ${user}@${host} 'echo "${svcB64}" | base64 -d > /etc/systemd/system/conclave.service && systemctl daemon-reload && systemctl enable conclave && systemctl restart conclave'`, { encoding: "utf-8", timeout: 15000 });
     await new Promise(r => setTimeout(r, 2000));
-    const status = execSync(`ssh ${user}@${host} 'systemctl is-active synthclaw 2>/dev/null || echo inactive'`, { encoding: "utf-8", timeout: 5000 }).trim();
+    const status = execSync(`ssh ${user}@${host} 'systemctl is-active conclave 2>/dev/null || echo inactive'`, { encoding: "utf-8", timeout: 5000 }).trim();
     if (status === "active") { s4.succeed("Agent service running!"); }
     else { s4.warn("Service status: " + status); }
   } catch (err) {
@@ -250,6 +250,6 @@ async function deployRemote(root) {
   printSuccess(`Health: http://${host}:8000/api/system/health`);
   console.log("");
   printInfo("API token: " + baseDir + "/.api_token");
-  printInfo("Logs: ssh " + user + "@" + host + " 'journalctl -u synthclaw -f'");
+  printInfo("Logs: ssh " + user + "@" + host + " 'journalctl -u conclave -f'");
   console.log("");
 }

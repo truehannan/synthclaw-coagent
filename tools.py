@@ -1596,60 +1596,46 @@ def composio_list_connections() -> dict:
 # ── Skill management tools ─────────────────────────────────────────────────────
 
 def install_skill(source: str, name: str = "") -> dict:
-    """Install a skill from ClawHub or other sources.
-    source formats (priority order):
-      - @user/skill — ClawHub package (primary, fetched from clawhub.ai)
-      - clawhub:@user/skill — explicit ClawHub prefix
-      - github:owner/repo — GitHub repository
+    """Install a skill from GitHub or URL.
+    source formats:
+      - @user/skill — GitHub repo (primary)
+      - github:owner/repo — explicit GitHub prefix
       - https://url.zip — direct URL
     The source is recorded in skill_sources (D1/local) for auto-reinstall.
+    Looks for SKILL.md as the main instruction file.
     """
     import zipfile
     import io
     import shutil
     from memory import add_skill_source, list_skill_sources
 
-    SKILLS_DIR = Path(os.getenv("SYNTHCLAW_BASE_DIR", "/opt/agent")) / ".skills"
+    SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/agent")) / ".skills"
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
     source = source.strip()
-    source_type = "clawhub"
+    source_type = "github"
     source_uri = source
     zip_url = None
     skill_name = ""
 
     try:
-        # ── ClawHub as PRIMARY source ─────────────────────────────────────
-        # Accepts: @user/skill, clawhub:@user/skill, user/skill (if contains /)
-        is_clawhub = (
+        # ── GitHub as PRIMARY source ─────────────────────────────────────
+        # Accepts: @user/skill, clawhub:@user/skill, github:user/skill, user/skill
+        is_github = (
             source.startswith("@") or
             source.startswith("clawhub:") or
-            ("/" in source and not source.startswith("http") and not source.startswith("github:"))
+            source.startswith("github:") or
+            ("/" in source and not source.startswith("http"))
         )
 
-        if is_clawhub:
-            source_type = "clawhub"
+        if is_github:
+            source_type = "github"
             ref = source.replace("clawhub:", "").lstrip("@").strip()
             source_uri = f"@{ref}"
             skill_name = name or ref.split("/")[-1]
 
-            # Try ClawHub API first
-            clawhub_url = f"https://clawhub.ai/api/packages/{ref}/download"
-            try:
-                resp = requests.get(clawhub_url, timeout=20, allow_redirects=True)
-                if resp.status_code == 200 and len(resp.content) > 100:
-                    zip_url = "__clawhub_direct__"
-                    # Content is already downloaded
-                    clawhub_content = resp.content
-                elif resp.status_code == 302 or resp.status_code == 301:
-                    # Redirect to actual download URL
-                    zip_url = resp.headers.get("Location", "")
-                else:
-                    # ClawHub unavailable — fall back to GitHub
-                    zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
-            except Exception:
-                # ClawHub down — fall back to GitHub
-                zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
+            # Install directly from GitHub (clawhub.ai is deprecated)
+            zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
 
         elif source.startswith("github:"):
             source_type = "github"
@@ -1664,44 +1650,33 @@ def install_skill(source: str, name: str = "") -> dict:
             skill_name = name or source.split("/")[-1].replace(".zip", "")
 
         else:
-            # Bare word — search ClawHub first, then GitHub
-            source_type = "clawhub"
-            source_uri = f"@synthclaw/{source}"
+            # Bare word — search GitHub for matching skill repo
+            source_type = "github"
+            source_uri = source
             skill_name = name or source
-            # Try clawhub.ai search
-            clawhub_url = f"https://clawhub.ai/api/packages/synthclaw/{source}/download"
+            # Search GitHub for skill repos
+            search_url = f"https://api.github.com/search/repositories?q={source}+skill+in:name&sort=stars&per_page=1"
             try:
-                resp = requests.get(clawhub_url, timeout=15, allow_redirects=True)
-                if resp.status_code == 200 and len(resp.content) > 100:
-                    zip_url = "__clawhub_direct__"
-                    clawhub_content = resp.content
-                else:
-                    # Fall back to GitHub search
-                    search_url = f"https://api.github.com/search/repositories?q={source}+skill+in:name&sort=stars&per_page=1"
-                    gh_resp = requests.get(search_url, timeout=15)
-                    if gh_resp.status_code == 200:
-                        items = gh_resp.json().get("items", [])
-                        if items:
-                            repo = items[0]
-                            source_type = "github"
-                            source_uri = f"github:{repo['full_name']}"
-                            zip_url = f"https://github.com/{repo['full_name']}/archive/refs/heads/{repo.get('default_branch', 'main')}.zip"
-                            skill_name = name or repo["name"]
-                        else:
-                            return {"error": f"No skill found matching: {source}. Try @user/skill format."}
+                gh_resp = requests.get(search_url, timeout=15)
+                if gh_resp.status_code == 200:
+                    items = gh_resp.json().get("items", [])
+                    if items:
+                        repo = items[0]
+                        source_uri = f"github:{repo['full_name']}"
+                        zip_url = f"https://github.com/{repo['full_name']}/archive/refs/heads/{repo.get('default_branch', 'main')}.zip"
+                        skill_name = name or repo["name"]
                     else:
-                        return {"error": f"Search failed. Use @user/skill format for ClawHub packages."}
+                        return {"error": f"No skill found matching: {source}. Try @user/skill format (GitHub repo)."}
+                else:
+                    return {"error": f"GitHub search failed. Use @user/skill format."}
             except Exception:
                 return {"error": f"Could not resolve skill: {source}. Use @user/skill format."}
 
         # Download and extract
-        if zip_url == "__clawhub_direct__":
-            zip_content = clawhub_content
-        else:
-            resp = requests.get(zip_url, timeout=60)
-            if resp.status_code != 200:
-                return {"error": f"Failed to download: HTTP {resp.status_code}"}
-            zip_content = resp.content
+        resp = requests.get(zip_url, timeout=60)
+        if resp.status_code != 200:
+            return {"error": f"Failed to download: HTTP {resp.status_code}. Check that the repo exists: {zip_url}"}
+        zip_content = resp.content
 
         with zipfile.ZipFile(io.BytesIO(zip_content)) as zf:
             # Extract to a temp dir, then move to skills dir
@@ -1754,7 +1729,7 @@ def uninstall_skill(name: str) -> dict:
     import shutil
     from memory import remove_skill_source
 
-    SKILLS_DIR = Path(os.getenv("SYNTHCLAW_BASE_DIR", "/opt/agent")) / ".skills"
+    SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/agent")) / ".skills"
     skill_path = SKILLS_DIR / name
 
     removed_files = False
@@ -1774,7 +1749,7 @@ def list_skills_with_sources() -> dict:
     """List all installed skills with their source information."""
     from memory import list_skill_sources
 
-    SKILLS_DIR = Path(os.getenv("SYNTHCLAW_BASE_DIR", "/opt/agent")) / ".skills"
+    SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/agent")) / ".skills"
     sources = list_skill_sources()
     source_map = {s["name"]: s for s in sources}
 

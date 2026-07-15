@@ -6,7 +6,7 @@ import { config, getProjectRoot, printSuccess, printInfo } from "../utils.js";
 
 export async function runStatus() {
   const root = getProjectRoot();
-  console.log(chalk.bold("\n  SynthClaw Agent Status\n"));
+  console.log(chalk.bold("\n  Conclave Agent Status\n"));
 
   let running = false;
   let runMode = "unknown";
@@ -70,8 +70,8 @@ export async function runStatus() {
   // Check if venv exists
   const venvDir = join(root, "venv");
   const envFile = join(root, ".env");
-  console.log(chalk.dim("  Venv:       ") + (existsSync(venvDir) ? chalk.green("✓") : chalk.red("✗ (run synthclaw setup)")));
-  console.log(chalk.dim("  .env:       ") + (existsSync(envFile) ? chalk.green("✓") : chalk.red("✗ (run synthclaw setup)")));
+  console.log(chalk.dim("  Venv:       ") + (existsSync(venvDir) ? chalk.green("✓") : chalk.red("✗ (run conclave setup)")));
+  console.log(chalk.dim("  .env:       ") + (existsSync(envFile) ? chalk.green("✓") : chalk.red("✗ (run conclave setup)")));
 
   console.log("");
 }

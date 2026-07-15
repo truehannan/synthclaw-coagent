@@ -128,7 +128,7 @@ async function main() {
         const { config: sc } = await import("./utils.js");
         const active = sc.get("active_session") || "default";
         console.log("  " + chalk.green("●") + " " + active + chalk.dim(" (active)"));
-        console.log(chalk.dim("\n  Usage: synthclaw session <id> — switch session"));
+        console.log(chalk.dim("\n  Usage: conclave session <id> — switch session"));
         console.log(chalk.dim("  Sessions are managed in the web frontend.\n"));
       }
       break;
@@ -157,12 +157,12 @@ async function main() {
 
     case "--version":
     case "-v":
-      console.log("synthclaw agent-society v3.0.0");
+      console.log("conclave agent-society v3.0.0");
       break;
 
     default:
       console.log(chalk.red(`Unknown command: ${command}`));
-      console.log(`Run ${chalk.cyan("synthclaw help")} to see available commands.\n`);
+      console.log(`Run ${chalk.cyan("conclave help")} to see available commands.\n`);
       process.exit(1);
   }
 }
@@ -171,7 +171,7 @@ function showHelp() {
   const c = chalk.cyan;
   const d = chalk.dim;
   console.log(chalk.bold("USAGE"));
-  console.log(`  ${c("synthclaw")} ${chalk.yellow("[command]")} [options]\n`);
+  console.log(`  ${c("conclave")} ${chalk.yellow("[command]")} [options]\n`);
   console.log(d("  No command = launch interactive dashboard (setup + chat + AI)\n"));
 
   console.log(chalk.bold("MAIN"));
@@ -204,9 +204,9 @@ function showHelp() {
   console.log("");
 
   console.log(d("Examples:"));
-  console.log(d("  synthclaw                     # Launch dashboard"));
-  console.log(d("  synthclaw start               # Start service or dashboard"));
-  console.log(d('  synthclaw agent "deploy nginx" # Autonomous task'));
+  console.log(d("  conclave                     # Launch dashboard"));
+  console.log(d("  conclave start               # Start service or dashboard"));
+  console.log(d('  conclave agent "deploy nginx" # Autonomous task'));
   console.log("");
 }
 
