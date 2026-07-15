@@ -87,8 +87,8 @@ def _smart_truncate(text: str, limit: int = 3000) -> str:
 # ── Tool implementations ─────────────────────────────────────────────────────
 
 # Venv paths — all Python/pip operations must use these
-_VENV_PYTHON = "/opt/agent/venv/bin/python"
-_VENV_PIP    = "/opt/agent/venv/bin/pip"
+_VENV_PYTHON = "/opt/conclave/venv/bin/python"
+_VENV_PIP    = "/opt/conclave/venv/bin/pip"
 
 
 def _fix_pip_path(command: str) -> str:
@@ -742,7 +742,7 @@ def run_python(code: str, timeout: int = 30) -> dict:
             script = Path(tmpdir) / "snippet.py"
             script.write_text(code)
             r = subprocess.run(
-                ["/opt/agent/venv/bin/python", str(script)],
+                ["/opt/conclave/venv/bin/python", str(script)],
                 capture_output=True, text=True, timeout=timeout, cwd=tmpdir,
             )
             return {
@@ -1614,7 +1614,7 @@ def install_skill(source: str, name: str = "") -> dict:
     import shutil
     from memory import add_skill_source, list_skill_sources
 
-    SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/agent")) / ".skills"
+    SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/conclave")) / ".skills"
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
     source = source.strip()
@@ -1782,7 +1782,7 @@ def uninstall_skill(name: str) -> dict:
     import shutil
     from memory import remove_skill_source
 
-    SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/agent")) / ".skills"
+    SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/conclave")) / ".skills"
     skill_path = SKILLS_DIR / name
 
     removed_files = False
@@ -1802,7 +1802,7 @@ def list_skills_with_sources() -> dict:
     """List all installed skills with their source information."""
     from memory import list_skill_sources
 
-    SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/agent")) / ".skills"
+    SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/conclave")) / ".skills"
     sources = list_skill_sources()
     source_map = {s["name"]: s for s in sources}
 
@@ -1826,6 +1826,24 @@ def list_skills_with_sources() -> dict:
                     "name": d.name,
                     "description": desc,
                     "source_type": source_info.get("source_type", "unknown"),
+                    "source_uri": source_info.get("source_uri", "local"),
+                    "auto_update": source_info.get("auto_update", False),
+                })
+            elif d.is_file() and d.suffix == ".md":
+                # Skills installed as single .md files (new format)
+                skill_name = d.stem
+                source_info = source_map.get(skill_name, {})
+                content = d.read_text(encoding="utf-8", errors="ignore")
+                desc = ""
+                for line in content.split("\n"):
+                    line = line.strip().lstrip("#").strip()
+                    if line and not line.startswith("---"):
+                        desc = line[:100]
+                        break
+                skills.append({
+                    "name": skill_name,
+                    "description": desc,
+                    "source_type": source_info.get("source_type", "github"),
                     "source_uri": source_info.get("source_uri", "local"),
                     "auto_update": source_info.get("auto_update", False),
                 })
@@ -1877,7 +1895,7 @@ TOOL_REGISTRY = {
     },
     "write_file": {
         "fn": write_file,
-        "description": "Write content to a file. Path is relative to /opt/agent/workspace/ unless absolute.",
+        "description": "Write content to a file. Path is relative to /opt/conclave/workspace/ unless absolute.",
         "params": {"path": "str", "content": "str"},
     },
     "read_file": {

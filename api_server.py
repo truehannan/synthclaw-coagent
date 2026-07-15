@@ -1251,7 +1251,7 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
-    """Connect a Composio toolkit. Creates user 'conclave' if needed."""
+    """Connect a Composio toolkit. Auto-creates auth config if needed."""
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         raise HTTPException(status_code=400, detail="Composio API key not configured")
@@ -1260,37 +1260,41 @@ async def composio_connect(toolkit: str, request: Request):
         headers = {"x-api-key": composio_key, "Content-Type": "application/json"}
         base = "https://backend.composio.dev/api/v3"
 
-        # Get ALL auth configs and find the one for this toolkit
+        # Step 1: Find existing auth config for this toolkit
         auth_resp = req.get(f"{base}/auth_configs", headers=headers, timeout=10)
-        if auth_resp.status_code != 200:
-            return {"error": f"Failed to list auth configs: HTTP {auth_resp.status_code}"}
-
-        configs = auth_resp.json().get("items", [])
         auth_config_id = ""
-        for ac in configs:
-            # Extract toolkit slug from the config
-            tk = ac.get("toolkit_slug", "")
-            if not tk:
-                tk_obj = ac.get("toolkit", "")
-                if isinstance(tk_obj, dict):
-                    tk = tk_obj.get("slug", "")
-                elif isinstance(tk_obj, str):
-                    tk = tk_obj
-            if tk.lower() == toolkit.lower():
-                auth_config_id = ac.get("id") or ac.get("nanoid", "")
-                break
+        if auth_resp.status_code == 200:
+            for ac in auth_resp.json().get("items", []):
+                tk = ac.get("toolkit_slug") or ""
+                if not tk:
+                    tk_obj = ac.get("toolkit", "")
+                    tk = tk_obj.get("slug", "") if isinstance(tk_obj, dict) else str(tk_obj)
+                if tk.lower() == toolkit.lower():
+                    auth_config_id = ac.get("id") or ac.get("nanoid", "")
+                    break
+
+        # Step 2: If no auth config exists, create one (Composio managed OAuth)
+        if not auth_config_id:
+            create_resp = req.post(
+                f"{base}/auth_configs",
+                headers=headers,
+                json={"toolkit": toolkit, "use_composio_auth": True},
+                timeout=10,
+            )
+            if create_resp.status_code in (200, 201):
+                data = create_resp.json()
+                auth_config_id = data.get("id") or data.get("nanoid", "")
 
         if not auth_config_id:
-            return {"error": f"No auth config for '{toolkit}'. Visit composio.dev to enable this toolkit for your project."}
+            return {"error": f"Could not create auth config for '{toolkit}'. Try enabling it at composio.dev/dashboard."}
 
-        # Create connection link for user 'conclave'
+        # Step 3: Create connection link
         link_resp = req.post(
             f"{base}/connected_accounts/link",
             headers=headers,
             json={"auth_config_id": auth_config_id, "user_id": "conclave"},
             timeout=15,
         )
-
         if link_resp.status_code in (200, 201):
             data = link_resp.json()
             url = data.get("redirect_url") or data.get("redirectUrl") or data.get("url", "")
