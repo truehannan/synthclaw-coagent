@@ -1634,112 +1634,139 @@ def install_skill(source: str, name: str = "") -> dict:
             source_uri = f"@{ref}"
             skill_name = name or ref.split("/")[-1]
 
-            # Get the actual default branch from GitHub API (main, master, etc.)
-            try:
-                gh_api = requests.get(f"https://api.github.com/repos/{ref}", timeout=10)
-                if gh_api.status_code == 200:
-                    default_branch = gh_api.json().get("default_branch", "main")
-                    zip_url = f"https://github.com/{ref}/archive/refs/heads/{default_branch}.zip"
-                else:
-                    # Try common branch names
-                    zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
-            except Exception:
-                zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
+            # Fetch SKILL.md directly from the repo (no zip download needed)
+            # Try common locations: root, docs/, src/, .github/
+            skill_content = ""
+            for path_candidate in ["SKILL.md", "skill.md", "docs/SKILL.md", "src/SKILL.md"]:
+                raw_url = f"https://raw.githubusercontent.com/{ref}/HEAD/{path_candidate}"
+                try:
+                    resp = requests.get(raw_url, timeout=10)
+                    if resp.status_code == 200 and len(resp.text) > 10:
+                        skill_content = resp.text
+                        break
+                except Exception:
+                    continue
+
+            # If no SKILL.md, try README.md as fallback
+            if not skill_content:
+                for fallback in ["README.md", "readme.md"]:
+                    raw_url = f"https://raw.githubusercontent.com/{ref}/HEAD/{fallback}"
+                    try:
+                        resp = requests.get(raw_url, timeout=10)
+                        if resp.status_code == 200:
+                            skill_content = resp.text
+                            break
+                    except Exception:
+                        continue
+
+            if not skill_content:
+                return {"error": f"No SKILL.md or README.md found in {ref}. Check the repo exists."}
+
+            # Store skill content locally
+            SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/conclave")) / ".skills"
+            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+            skill_file = SKILLS_DIR / f"{skill_name}.md"
+            skill_file.write_text(skill_content, encoding="utf-8")
+
+            # Record in skill sources for reinstall
+            from memory import add_skill_source
+            add_skill_source(skill_name, source_type, source_uri)
+
+            return {
+                "success": True,
+                "name": skill_name,
+                "source": source_uri,
+                "path": str(skill_file),
+                "size": len(skill_content),
+            }
 
         elif source.startswith("github:"):
+            # Redirect to is_github handler (already covered above but explicit prefix)
             source_type = "github"
+            ref = source.replace("github:", "").strip()
             source_uri = source
-            ref = source.replace("github:", "")
-            zip_url = f"https://github.com/{ref}/archive/refs/heads/main.zip"
             skill_name = name or ref.split("/")[-1]
+            # Same logic — fetch SKILL.md
+            skill_content = ""
+            for path_candidate in ["SKILL.md", "skill.md", "docs/SKILL.md", "README.md"]:
+                raw_url = f"https://raw.githubusercontent.com/{ref}/HEAD/{path_candidate}"
+                try:
+                    resp = requests.get(raw_url, timeout=10)
+                    if resp.status_code == 200 and len(resp.text) > 10:
+                        skill_content = resp.text
+                        break
+                except Exception:
+                    continue
+            if not skill_content:
+                return {"error": f"No SKILL.md found in {ref}"}
+            SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/conclave")) / ".skills"
+            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+            (SKILLS_DIR / f"{skill_name}.md").write_text(skill_content, encoding="utf-8")
+            from memory import add_skill_source
+            add_skill_source(skill_name, source_type, source_uri)
+            return {"success": True, "name": skill_name, "source": source_uri}
 
         elif source.startswith("http"):
+            # Direct URL — fetch the content directly (assume it's a markdown file or zip)
             source_type = "url"
-            zip_url = source
-            skill_name = name or source.split("/")[-1].replace(".zip", "")
+            skill_name = name or source.split("/")[-1].replace(".md", "").replace(".zip", "")
+            try:
+                resp = requests.get(source, timeout=15)
+                if resp.status_code != 200:
+                    return {"error": f"HTTP {resp.status_code} fetching {source}"}
+                skill_content = resp.text
+            except Exception as e:
+                return {"error": f"Failed to fetch: {e}"}
+            SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/conclave")) / ".skills"
+            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+            (SKILLS_DIR / f"{skill_name}.md").write_text(skill_content, encoding="utf-8")
+            from memory import add_skill_source
+            add_skill_source(skill_name, source_type, source)
+            return {"success": True, "name": skill_name, "source": source}
 
         else:
             # Bare word — search GitHub for matching skill repo
             source_type = "github"
-            source_uri = source
             skill_name = name or source
-            # Search GitHub for skill repos
             search_url = f"https://api.github.com/search/repositories?q={source}+skill+in:name&sort=stars&per_page=1"
             try:
-                gh_resp = requests.get(search_url, timeout=15)
+                gh_resp = requests.get(search_url, timeout=10)
                 if gh_resp.status_code == 200:
                     items = gh_resp.json().get("items", [])
                     if items:
                         repo = items[0]
-                        source_uri = f"github:{repo['full_name']}"
-                        zip_url = f"https://github.com/{repo['full_name']}/archive/refs/heads/{repo.get('default_branch', 'main')}.zip"
+                        ref = repo["full_name"]
+                        source_uri = f"@{ref}"
                         skill_name = name or repo["name"]
                     else:
-                        return {"error": f"No skill found matching: {source}. Try @user/skill format (GitHub repo)."}
+                        return {"error": f"No skill found matching: {source}. Try @user/skill format."}
                 else:
                     return {"error": f"GitHub search failed. Use @user/skill format."}
             except Exception:
                 return {"error": f"Could not resolve skill: {source}. Use @user/skill format."}
 
-        # Download and extract
-        resp = requests.get(zip_url, timeout=30, stream=True)
-        if resp.status_code == 404 and "main.zip" in zip_url:
-            # Try master branch as fallback
-            zip_url = zip_url.replace("/main.zip", "/master.zip")
-            resp = requests.get(zip_url, timeout=30, stream=True)
-        if resp.status_code != 200:
-            return {"error": f"Failed to download: HTTP {resp.status_code}. URL: {zip_url}"}
-        # Read content with size limit (50MB max)
-        chunks = []
-        total = 0
-        for chunk in resp.iter_content(chunk_size=65536):
-            chunks.append(chunk)
-            total += len(chunk)
-            if total > 50 * 1024 * 1024:
-                return {"error": "Repository too large (>50MB). Try a smaller skill."}
-        zip_content = b"".join(chunks)
+            # Fetch SKILL.md from found repo
+            skill_content = ""
+            for path_candidate in ["SKILL.md", "skill.md", "README.md"]:
+                raw_url = f"https://raw.githubusercontent.com/{ref}/HEAD/{path_candidate}"
+                try:
+                    resp = requests.get(raw_url, timeout=10)
+                    if resp.status_code == 200 and len(resp.text) > 10:
+                        skill_content = resp.text
+                        break
+                except Exception:
+                    continue
+            if not skill_content:
+                return {"error": f"No SKILL.md found in {ref}"}
+            SKILLS_DIR = Path(os.getenv("CONCLAVE_BASE_DIR", "/opt/conclave")) / ".skills"
+            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+            (SKILLS_DIR / f"{skill_name}.md").write_text(skill_content, encoding="utf-8")
+            from memory import add_skill_source
+            add_skill_source(skill_name, source_type, source_uri)
+            return {"success": True, "name": skill_name, "source": source_uri}
 
-        with zipfile.ZipFile(io.BytesIO(zip_content)) as zf:
-            # Extract to a temp dir, then move to skills dir
-            names = zf.namelist()
-            # Most GitHub zips have a top-level folder like "repo-main/"
-            top_dirs = set()
-            for n in names:
-                parts = n.split("/")
-                if len(parts) > 1:
-                    top_dirs.add(parts[0])
-
-            dest = SKILLS_DIR / skill_name
-            if dest.exists():
-                shutil.rmtree(dest)
-
-            if len(top_dirs) == 1:
-                # Single top-level dir — extract its contents directly
-                top_dir = list(top_dirs)[0]
-                dest.mkdir(parents=True, exist_ok=True)
-                for member in zf.namelist():
-                    if member.startswith(top_dir + "/") and not member.endswith("/"):
-                        rel_path = member[len(top_dir) + 1:]
-                        if rel_path:
-                            target = dest / rel_path
-                            target.parent.mkdir(parents=True, exist_ok=True)
-                            with zf.open(member) as src, open(target, "wb") as dst:
-                                dst.write(src.read())
-            else:
-                zf.extractall(dest)
-
-        # Register source in DB
-        add_skill_source(skill_name, source_type, source_uri)
-
-        return {
-            "success": True,
-            "name": skill_name,
-            "source": source_uri,
-            "path": str(dest),
-            "files": len(list(dest.rglob("*"))),
-        }
-
-    except zipfile.BadZipFile:
+    except Exception as e:
+        return {"error": f"Install failed: {e}"}
         return {"error": "Downloaded file is not a valid zip archive"}
     except Exception as e:
         return {"error": str(e)}
