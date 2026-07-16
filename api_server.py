@@ -1251,11 +1251,10 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
-    """Connect a Composio toolkit.
+    """Connect a Composio toolkit via v3 API.
     
-    Tries multiple v3 approaches:
-    1. POST /connected_accounts with integration_id=toolkit (managed auth)
-    2. If fails, POST /auth_configs to create one, then /connected_accounts/link
+    1. Create auth_config with managed auth (if needed)
+    2. Use /connected_accounts/link with auth_config_id
     """
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
@@ -1263,46 +1262,58 @@ async def composio_connect(toolkit: str, request: Request):
     try:
         import requests as req
         headers = {"x-api-key": composio_key, "Content-Type": "application/json"}
+        base = "https://backend.composio.dev/api/v3"
 
-        # Approach 1: Direct v2 endpoint (still works for managed auth)
-        resp = req.post(
-            "https://backend.composio.dev/api/v2/connectedAccounts",
+        # Step 1: Find existing auth_config for this toolkit
+        auth_config_id = ""
+        list_resp = req.get(f"{base}/auth_configs", headers=headers, timeout=10)
+        if list_resp.status_code == 200:
+            for ac in list_resp.json().get("items", []):
+                tk = ac.get("toolkit_slug") or ""
+                if not tk:
+                    tk_obj = ac.get("toolkit", "")
+                    tk = tk_obj.get("slug", "") if isinstance(tk_obj, dict) else str(tk_obj) if tk_obj else ""
+                if tk.lower() == toolkit.lower():
+                    auth_config_id = ac.get("id") or ac.get("nanoid", "")
+                    break
+
+        # Step 2: Create auth_config if not found (v3 format from official docs)
+        if not auth_config_id:
+            create_resp = req.post(
+                f"{base}/auth_configs",
+                headers=headers,
+                json={
+                    "toolkit": {"slug": toolkit},
+                    "auth_config": {
+                        "type": "use_composio_managed_auth",
+                        "credentials": {},
+                        "restrict_to_following_tools": [],
+                    },
+                },
+                timeout=10,
+            )
+            if create_resp.status_code in (200, 201):
+                data = create_resp.json()
+                auth_config_id = data.get("id") or data.get("nanoid", "")
+            else:
+                return {"error": f"Auth config creation failed: HTTP {create_resp.status_code}", "detail": create_resp.text[:300]}
+
+        if not auth_config_id:
+            return {"error": f"Could not get auth_config for '{toolkit}'"}
+
+        # Step 3: Create connection link
+        link_resp = req.post(
+            f"{base}/connected_accounts/link",
             headers=headers,
-            json={
-                "integrationId": toolkit,
-                "userUuid": "conclave",
-                "data": {},
-                "redirectUri": "",
-            },
+            json={"auth_config_id": auth_config_id, "user_id": "conclave"},
             timeout=15,
         )
-        if resp.status_code in (200, 201):
-            data = resp.json()
-            url = data.get("redirectUrl") or data.get("redirect_url") or data.get("connectionStatus", "")
-            if url and url.startswith("http"):
-                return {"success": True, "redirectUrl": url}
-            # Might be already connected
-            return {"success": True, "redirectUrl": url, "status": data.get("status", "initiated")}
-
-        # Approach 2: v1 endpoint (older but might still work)
-        resp2 = req.post(
-            "https://backend.composio.dev/api/v1/connectedAccounts",
-            headers=headers,
-            json={
-                "integrationId": toolkit,
-                "userUuid": "conclave",
-                "data": {},
-                "redirectUri": "",
-            },
-            timeout=15,
-        )
-        if resp2.status_code in (200, 201):
-            data = resp2.json()
-            url = data.get("redirectUrl") or data.get("redirect_url", "")
+        if link_resp.status_code in (200, 201):
+            data = link_resp.json()
+            url = data.get("redirect_url") or data.get("redirectUrl") or data.get("url", "")
             return {"success": True, "redirectUrl": url}
 
-        # Both failed — return the v2 error (most informative)
-        return {"error": f"Connection failed (v2: {resp.status_code}, v1: {resp2.status_code})", "detail": resp.text[:300]}
+        return {"error": f"Link failed: HTTP {link_resp.status_code}", "detail": link_resp.text[:300]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
