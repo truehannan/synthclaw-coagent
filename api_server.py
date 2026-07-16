@@ -1298,10 +1298,11 @@ async def composio_connect(toolkit: str, request: Request):
         auth_config_id = ""
         if create_resp.status_code in (200, 201):
             data = create_resp.json()
-            auth_config_id = data.get("id") or data.get("nanoid") or data.get("auth_config_id", "")
-            # Try nested
-            if not auth_config_id and isinstance(data.get("data"), dict):
-                auth_config_id = data["data"].get("id") or data["data"].get("nanoid", "")
+            # Response: {"toolkit": {...}, "auth_config": {"id": "ac_xxx", ...}}
+            if isinstance(data.get("auth_config"), dict):
+                auth_config_id = data["auth_config"].get("id") or data["auth_config"].get("nanoid", "")
+            if not auth_config_id:
+                auth_config_id = data.get("id") or data.get("nanoid") or data.get("auth_config_id", "")
         elif create_resp.status_code == 409:
             # Already exists — list and find it
             list_resp = req.get(f"{base}/auth_configs", headers=headers, timeout=10)
