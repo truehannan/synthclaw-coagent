@@ -1251,66 +1251,58 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
-    """Connect a Composio toolkit using the official Python SDK.
+    """Connect a Composio toolkit.
     
-    Flow:
-    1. Find or create an integration for the toolkit (with Composio managed auth)
-    2. Initiate connection for user 'conclave'
-    3. Return redirect URL for OAuth
+    Tries multiple v3 approaches:
+    1. POST /connected_accounts with integration_id=toolkit (managed auth)
+    2. If fails, POST /auth_configs to create one, then /connected_accounts/link
     """
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         raise HTTPException(status_code=400, detail="Composio API key not configured")
     try:
-        from composio import Composio
+        import requests as req
+        headers = {"x-api-key": composio_key, "Content-Type": "application/json"}
 
-        client = Composio(api_key=composio_key)
-
-        # Step 1: Find existing integration for this toolkit
-        integration_id = ""
-        try:
-            integrations = client.integrations.get(app_name=toolkit)
-            if integrations and isinstance(integrations, list) and len(integrations) > 0:
-                integration_id = integrations[0].id
-        except Exception:
-            pass
-
-        # Step 2: If no integration exists, create one with Composio managed auth
-        if not integration_id:
-            try:
-                integration = client.integrations.create(
-                    app_id=toolkit,
-                    name=f"conclave-{toolkit}",
-                    use_composio_auth=True,
-                )
-                integration_id = integration.id
-            except Exception as e:
-                return {"error": f"Failed to create integration for '{toolkit}': {str(e)}"}
-
-        if not integration_id:
-            return {"error": f"Could not find or create integration for '{toolkit}'"}
-
-        # Step 3: Initiate connection for user 'conclave'
-        connection = client.connected_accounts.initiate(
-            integration_id=integration_id,
-            entity_id="conclave",
-            redirect_url="",
+        # Approach 1: Direct v2 endpoint (still works for managed auth)
+        resp = req.post(
+            "https://backend.composio.dev/api/v2/connectedAccounts",
+            headers=headers,
+            json={
+                "integrationId": toolkit,
+                "userUuid": "conclave",
+                "data": {},
+                "redirectUri": "",
+            },
+            timeout=15,
         )
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            url = data.get("redirectUrl") or data.get("redirect_url") or data.get("connectionStatus", "")
+            if url and url.startswith("http"):
+                return {"success": True, "redirectUrl": url}
+            # Might be already connected
+            return {"success": True, "redirectUrl": url, "status": data.get("status", "initiated")}
 
-        redirect_url = getattr(connection, "redirectUrl", "") or getattr(connection, "redirect_url", "")
-        if not redirect_url:
-            # Try accessing as dict
-            if hasattr(connection, "model_dump"):
-                data = connection.model_dump()
-                redirect_url = data.get("redirectUrl", data.get("redirect_url", data.get("connectionStatus", "")))
-            elif hasattr(connection, "__dict__"):
-                redirect_url = connection.__dict__.get("redirectUrl", "")
+        # Approach 2: v1 endpoint (older but might still work)
+        resp2 = req.post(
+            "https://backend.composio.dev/api/v1/connectedAccounts",
+            headers=headers,
+            json={
+                "integrationId": toolkit,
+                "userUuid": "conclave",
+                "data": {},
+                "redirectUri": "",
+            },
+            timeout=15,
+        )
+        if resp2.status_code in (200, 201):
+            data = resp2.json()
+            url = data.get("redirectUrl") or data.get("redirect_url", "")
+            return {"success": True, "redirectUrl": url}
 
-        if redirect_url:
-            return {"success": True, "redirectUrl": redirect_url}
-        return {"error": "Connection initiated but no redirect URL returned", "detail": str(connection)}
-    except ImportError:
-        raise HTTPException(status_code=500, detail="composio-core not installed. Run: pip install composio-core")
+        # Both failed — return the v2 error (most informative)
+        return {"error": f"Connection failed (v2: {resp.status_code}, v1: {resp2.status_code})", "detail": resp.text[:300]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
