@@ -467,12 +467,18 @@ async def chat_run(msg: ChatMessage):
         """Callback passed to run_agent — intercepts intermediate messages."""
         if not text:
             return
-        # Detect event type from text patterns
+        # Parse text content to detect what's happening
         if text.startswith("🔄") or text.startswith("📋"):
             await event_queue.put({"type": "progress", "content": text})
-        elif text.startswith("  ──•"):
-            # Agent delegation step
+        elif text.startswith("  ──•") or text.startswith("  ──"):
+            # Agent delegation step — extract agent role and task
             await event_queue.put({"type": "agent_step", "content": text})
+        elif "composio" in text.lower() and ("connect" in text.lower() or "check" in text.lower()):
+            await event_queue.put({"type": "tool_call", "tool": "composio", "content": text})
+        elif any(x in text.lower() for x in ["running", "executing", "searching", "fetching"]):
+            await event_queue.put({"type": "tool_call", "tool": "system", "content": text})
+        elif text.startswith("❌") or text.startswith("✗"):
+            await event_queue.put({"type": "error", "message": text})
         else:
             await event_queue.put({"type": "text", "content": text})
 
