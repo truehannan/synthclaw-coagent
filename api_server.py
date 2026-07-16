@@ -822,13 +822,18 @@ async def delete_credential(name: str):
 
 @app.get("/api/skills", dependencies=[Depends(verify_token)])
 async def list_skills():
-    """List installed skills."""
+    """List installed skills from file system + DB sources."""
     try:
         from tools import list_skills_with_sources
-        result = list_skills_with_sources({})
-        return json.loads(result) if isinstance(result, str) else result
-    except Exception:
-        return {"skills": [], "sources": []}
+        result = list_skills_with_sources()
+        return result if isinstance(result, dict) else json.loads(result) if isinstance(result, str) else {"skills": []}
+    except Exception as e:
+        # Fallback: list from skill_sources DB table directly
+        try:
+            sources = mem.list_skill_sources() if hasattr(mem, 'list_skill_sources') else []
+            return {"skills": [{"name": s["name"], "source": s.get("source_uri", ""), "source_type": s.get("source_type", "")} for s in sources]}
+        except Exception:
+            return {"skills": []}
 
 
 @app.post("/api/skills/install", dependencies=[Depends(verify_token)])
@@ -1251,57 +1256,72 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
-    """Connect a Composio toolkit via v3 API.
-    
-    1. Create auth_config with managed auth (if needed)
-    2. Use /connected_accounts/link with auth_config_id
-    """
+    """Connect a Composio toolkit. Uses new SDK on server (Python 3.10+)."""
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         raise HTTPException(status_code=400, detail="Composio API key not configured")
     try:
+        # Try new SDK first (Python 3.10+, composio>=1.0)
+        try:
+            from composio import Composio
+            client = Composio(api_key=composio_key)
+            # New SDK has create() + authorize()
+            if hasattr(client, 'create'):
+                session = client.create("conclave", {})
+                conn = session.authorize(toolkit, callback_url="")
+                url = getattr(conn, 'redirect_url', '') or getattr(conn, 'redirectUrl', '')
+                if url:
+                    return {"success": True, "redirectUrl": url}
+        except (ImportError, AttributeError, TypeError):
+            pass
+
+        # Fallback: direct v3 REST API
         import requests as req
         headers = {"x-api-key": composio_key, "Content-Type": "application/json"}
         base = "https://backend.composio.dev/api/v3"
 
-        # Step 1: Find existing auth_config for this toolkit
-        auth_config_id = ""
-        list_resp = req.get(f"{base}/auth_configs", headers=headers, timeout=10)
-        if list_resp.status_code == 200:
-            for ac in list_resp.json().get("items", []):
-                tk = ac.get("toolkit_slug") or ""
-                if not tk:
-                    tk_obj = ac.get("toolkit", "")
-                    tk = tk_obj.get("slug", "") if isinstance(tk_obj, dict) else str(tk_obj) if tk_obj else ""
-                if tk.lower() == toolkit.lower():
-                    auth_config_id = ac.get("id") or ac.get("nanoid", "")
-                    break
-
-        # Step 2: Create auth_config if not found (v3 format from official docs)
-        if not auth_config_id:
-            create_resp = req.post(
-                f"{base}/auth_configs",
-                headers=headers,
-                json={
-                    "toolkit": {"slug": toolkit},
-                    "auth_config": {
-                        "type": "use_composio_managed_auth",
-                        "credentials": {},
-                        "restrict_to_following_tools": [],
-                    },
+        # Create auth_config with correct v3 payload
+        create_resp = req.post(
+            f"{base}/auth_configs",
+            headers=headers,
+            json={
+                "toolkit": {"slug": toolkit},
+                "auth_config": {
+                    "type": "use_composio_managed_auth",
+                    "credentials": {},
+                    "restrict_to_following_tools": [],
                 },
-                timeout=10,
-            )
-            if create_resp.status_code in (200, 201):
-                data = create_resp.json()
-                auth_config_id = data.get("id") or data.get("nanoid", "")
-            else:
-                return {"error": f"Auth config creation failed: HTTP {create_resp.status_code}", "detail": create_resp.text[:300]}
+            },
+            timeout=10,
+        )
+        
+        auth_config_id = ""
+        if create_resp.status_code in (200, 201):
+            data = create_resp.json()
+            auth_config_id = data.get("id") or data.get("nanoid") or data.get("auth_config_id", "")
+            # Try nested
+            if not auth_config_id and isinstance(data.get("data"), dict):
+                auth_config_id = data["data"].get("id") or data["data"].get("nanoid", "")
+        elif create_resp.status_code == 409:
+            # Already exists — list and find it
+            list_resp = req.get(f"{base}/auth_configs", headers=headers, timeout=10)
+            if list_resp.status_code == 200:
+                for ac in list_resp.json().get("items", []):
+                    tk = ac.get("toolkit_slug") or ""
+                    if not tk:
+                        tk_obj = ac.get("toolkit", "")
+                        tk = tk_obj.get("slug", "") if isinstance(tk_obj, dict) else str(tk_obj) if tk_obj else ""
+                    if tk.lower() == toolkit.lower():
+                        auth_config_id = ac.get("id") or ac.get("nanoid", "")
+                        break
 
         if not auth_config_id:
-            return {"error": f"Could not get auth_config for '{toolkit}'"}
+            return {
+                "error": f"Could not get auth_config for '{toolkit}'",
+                "detail": f"Create response ({create_resp.status_code}): {create_resp.text[:200]}",
+            }
 
-        # Step 3: Create connection link
+        # Create link
         link_resp = req.post(
             f"{base}/connected_accounts/link",
             headers=headers,
