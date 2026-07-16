@@ -9,4 +9,4 @@ python-dotenv>=1.0.0
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.0.0
-composio-core
+composio>=0.16.0
