@@ -182,6 +182,22 @@ def _provider_fallback_key(provider: str) -> str | None:
     return None
 
 
+def _resolve_provider_model(model_id: str, provider_hint: str = "") -> str:
+    """Resolve model ID for provider-specific requirements.
+    Some providers require different model ID formats internally."""
+    # Check if provider has custom model mapping configured
+    mapping_key = f"_model_map_{provider_hint}"
+    try:
+        import json as _json
+        raw = mem.get_memory(mapping_key)
+        if raw:
+            mapping = _json.loads(raw)
+            return mapping.get(model_id, model_id)
+    except Exception:
+        pass
+    return model_id
+
+
 def _get_provider_models(provider: str) -> list[str]:
     """Get models for a provider — uses live fetch with 5-min cache, falls back to catalog."""
     try:
@@ -236,6 +252,8 @@ def _resolve_client_and_model(selected_model: str) -> tuple[OpenAI, str, str]:
         api_model = selected_model.split(":", 1)[1]
     elif provider == "Qwen":
         api_model = selected_model.split(":", 1)[1]
+        # Provider-level model resolution (transparent)
+        api_model = _resolve_provider_model(api_model, "qwen")
     elif provider == "OpenAI" and not force_gradient:
         api_model = selected_model.replace("openai-", "", 1)
     else:

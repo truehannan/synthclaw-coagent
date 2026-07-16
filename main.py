@@ -74,7 +74,9 @@ def main():
     _sync_env_to_db(mem)
 
     # Always start the API server (for frontend access)
-    start_api()
+    # In CLI mode, we start it in foreground (blocking), so skip background start
+    if mode != "cli":
+        start_api()
 
     if mode == "telegram":
         from agent import main as telegram_main
