@@ -31,10 +31,19 @@ const AGENT_COLORS: Record<string, string> = {
 // ── Components ───────────────────────────────────────────────────────────────
 
 export function ThinkingIndicator({ content }: { content?: string }) {
+  const [collapsed, setCollapsed] = useState(true);
+  const text = content || "Processing...";
+  const isLong = text.length > 100;
+
   return (
-    <div className="flex items-center gap-2 text-xs text-muted animate-fade-in py-2">
-      <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-      <span>{content || "Thinking..."}</span>
+    <div className="animate-fade-in py-1">
+      <div className="flex items-center gap-2 text-xs text-muted cursor-pointer" onClick={() => isLong && setCollapsed(!collapsed)}>
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary flex-shrink-0" />
+        <span className={`${isLong && collapsed ? "line-clamp-2" : ""}`}>{isLong && collapsed ? text.slice(0, 100) + "..." : text}</span>
+        {isLong && (
+          <span className="text-[8px] text-muted/60 flex-shrink-0">{collapsed ? "▸" : "▾"}</span>
+        )}
+      </div>
     </div>
   );
 }

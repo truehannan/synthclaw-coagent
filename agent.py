@@ -313,7 +313,7 @@ OPERATIONAL DIRECTIVES:
 7. returncode≠0 = FAILED. Diagnose and fix before continuing.
 8. Creds → store_cred. Facts → remember. Schedules → set_reminder.
 9. Registered APIs → api_call(api="name", path="/endpoint").
-10. Composio apps → composio_check_connection first, then composio_discover, then composio_execute.
+10. Composio apps → composio_check_connection first. If NOT connected, tell user: "Please connect [app] in the Integrations page first." Do NOT try to initiate connections yourself — the user must do it from the web UI. If connected → composio_discover to find tool slugs → composio_execute to run.
 11. If a tool you need isn't listed, describe what you need and it will be provided.
 
 SYSTEM CONTEXT:
