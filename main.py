@@ -43,9 +43,17 @@ def _sync_env_to_db(mem):
         "OPENAI_API_KEY": cfg.OPENAI_API_KEY,
         "COMPOSIO_API_KEY": cfg.COMPOSIO_API_KEY,
         "GOOGLE_SEARCH_API_KEY": cfg.GOOGLE_SEARCH_API_KEY,
+        "CF_API_TOKEN": cfg.CF_API_TOKEN,
+        "TELEGRAM_TOKEN": cfg.TELEGRAM_TOKEN,
     }
     env_memory = {
         "cf_account_id": cfg.CF_ACCOUNT_ID,
+        "cf_d1_database_id": cfg.CF_D1_DATABASE_ID,
+        "config_interface_mode": cfg.INTERFACE_MODE,
+        "config_storage_mode": cfg.STORAGE_MODE,
+        "config_max_rpm": str(cfg.MAX_RPM) if cfg.MAX_RPM else "",
+        "config_max_tool_iterations": str(cfg.MAX_TOOL_ITERATIONS),
+        "default_model": cfg.DEFAULT_MODEL,
     }
     for name, value in env_creds.items():
         if value and not mem.get_credential(name):

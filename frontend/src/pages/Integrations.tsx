@@ -33,6 +33,8 @@ export default function Integrations() {
   const [loadingTools, setLoadingTools] = useState(false);
   const [connecting, setConnecting] = useState("");
   const [connectedSlugs, setConnectedSlugs] = useState<Set<string>>(new Set());
+  const [connectionMap, setConnectionMap] = useState<Map<string, string>>(new Map()); // slug -> connection_id
+  const [disconnecting, setDisconnecting] = useState("");
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedRef = useRef(false);
 
@@ -49,11 +51,20 @@ export default function Integrations() {
     try {
       const res = await composio.connections();
       const slugs = new Set<string>();
+      const idMap = new Map<string, string>();
       for (const c of (res.connections || [])) {
-        if (c.slug) slugs.add(c.slug.toLowerCase());
-        if (c.app) slugs.add(c.app.toLowerCase());
+        const key = (c.slug || c.app || "").toLowerCase();
+        if (key) {
+          slugs.add(key);
+          if (c.id) idMap.set(key, c.id);
+        }
+        if (c.app && c.app.toLowerCase() !== key) {
+          slugs.add(c.app.toLowerCase());
+          if (c.id) idMap.set(c.app.toLowerCase(), c.id);
+        }
       }
       setConnectedSlugs(slugs);
+      setConnectionMap(idMap);
       setComposioAvailable(res.available !== false);
     } catch {}
   }
@@ -109,6 +120,23 @@ export default function Integrations() {
       alert(`Error: ${err.message}`);
     }
     setConnecting("");
+  }
+
+  async function handleDisconnect(slug: string) {
+    const connectionId = connectionMap.get(slug.toLowerCase());
+    if (!connectionId) {
+      alert("Cannot find connection ID for this integration.");
+      return;
+    }
+    if (!confirm(`Disconnect ${slug}? This will revoke access on Composio.`)) return;
+    setDisconnecting(slug);
+    try {
+      await composio.disconnect(connectionId);
+      loadConnections();
+    } catch (err: any) {
+      alert(`Error: ${err.message}`);
+    }
+    setDisconnecting("");
   }
 
   return (
@@ -189,7 +217,14 @@ export default function Integrations() {
                   <div className="mt-2 flex items-center justify-between">
                     <span className="text-[8px] text-muted font-mono truncate max-w-[120px]">{slug}</span>
                     {isConnected ? (
-                      <span className="text-[9px] text-success font-medium">Active</span>
+                      <button onClick={() => handleDisconnect(slug)}
+                        disabled={disconnecting === slug}
+                        className="flex items-center gap-1 rounded-sm bg-danger/10 px-2 py-0.5 text-[9px] text-danger hover:bg-danger/20 disabled:opacity-50">
+                        {disconnecting === slug
+                          ? <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                          : <Unplug className="h-2.5 w-2.5" />}
+                        Disconnect
+                      </button>
                     ) : (
                       <button onClick={() => handleConnect(slug)}
                         disabled={connecting === slug}

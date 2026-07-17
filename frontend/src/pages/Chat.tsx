@@ -233,8 +233,9 @@ export default function Chat() {
   function handleNewChat() { navigate("/chat"); setItems([]); setLiveEvents([]); }
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex flex-1 flex-col min-h-0">
+    <div className="flex h-full">
+      {/* Main chat area */}
+      <div className="flex flex-1 flex-col min-h-0 min-w-0">
         {/* Top bar */}
         <div className="flex items-center justify-between border-b border-border bg-card px-4 py-2">
           <div className="flex items-center gap-2">
@@ -412,60 +413,105 @@ export default function Chat() {
         </div>
       </div>
 
-      {/* Agent Society Panel — bottom split when active */}
+      {/* Agent Society — Right Sidebar with Thread-Style */}
       {showSociety && (
-        <div className="border-t border-border bg-card" style={{ height: "40vh", minHeight: "200px" }}>
-          <div className="flex h-full flex-col">
-            {/* Panel header */}
-            <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-              <div className="flex items-center gap-3">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">Agent Society</span>
-                {societyData?.agents?.active > 0 && (
-                  <span className="flex items-center gap-1 text-[9px] text-success">
-                    <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
-                    {societyData.agents.active} active
-                  </span>
-                )}
+        <div className="w-72 border-l border-border bg-card flex flex-col h-full overflow-hidden flex-shrink-0">
+          {/* Sidebar header */}
+          <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
+            <div className="flex items-center gap-2">
+              <Brain className="h-3.5 w-3.5 text-primary" />
+              <span className="text-[10px] font-bold uppercase tracking-wider text-foreground">Agents</span>
+            </div>
+            <button onClick={() => setShowSociety(false)} className="text-[9px] text-muted hover:text-foreground rounded-sm border border-border px-1.5 py-0.5">x</button>
+          </div>
+
+          {/* Status bar */}
+          {societyData?.agents && (
+            <div className="px-3 py-1.5 border-b border-border bg-background/50">
+              <div className="flex items-center gap-3 text-[8px] text-muted">
+                <span className="flex items-center gap-1">
+                  <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
+                  {societyData.agents.active || 0} active
+                </span>
+                <span>{societyData.agents.total || 0} total</span>
               </div>
-              <button onClick={() => setShowSociety(false)} className="text-[10px] text-muted hover:text-foreground">Close</button>
             </div>
-            {/* Panel content */}
-            <div className="flex-1 overflow-y-auto p-3">
-              {societyData?.active?.length > 0 ? (
-                <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
-                  {societyData.active.map((a: any, i: number) => {
-                    const colorMap: Record<string, string> = { orchestrator: "#ef4444", researcher: "#3b82f6", executor: "#10b981", reviewer: "#f59e0b", observer: "#8b5cf6" };
-                    const color = colorMap[a.role?.toLowerCase()] || "#6b7280";
-                    return (
-                      <div key={i} className="rounded-sm border border-border p-3 relative overflow-hidden">
-                        <div className="absolute inset-0 opacity-5" style={{ background: color }} />
-                        <div className="relative flex items-center gap-2 mb-1">
-                          <span className="h-2.5 w-2.5 rounded-full animate-pulse" style={{ background: color }} />
-                          <span className="text-[11px] font-bold capitalize" style={{ color }}>{a.name || a.role}</span>
-                          <span className="ml-auto text-[8px] text-muted">{a.elapsed ? `${a.elapsed}s` : ""}</span>
+          )}
+
+          {/* Thread-style agent list */}
+          <div className="flex-1 overflow-y-auto px-2 py-2">
+            {societyData?.active?.length > 0 ? (
+              <div className="relative">
+                {/* Main thread line */}
+                <div className="absolute left-[9px] top-2 bottom-2 w-px bg-border" />
+
+                {societyData.active.map((a: any, i: number) => {
+                  const colorMap: Record<string, string> = {
+                    orchestrator: "#ef4444", researcher: "#3b82f6", executor: "#10b981",
+                    reviewer: "#f59e0b", observer: "#8b5cf6", planner: "#ec4899", coder: "#14b8a6",
+                  };
+                  const color = colorMap[a.role?.toLowerCase()] || "#6b7280";
+                  const hasChildren = a.subtasks?.length > 0 || a.children?.length > 0;
+
+                  return (
+                    <div key={i} className="relative mb-0.5">
+                      {/* Thread node */}
+                      <div className="flex items-start gap-2 pl-0 py-1.5">
+                        {/* Branch dot */}
+                        <div className="relative flex-shrink-0 mt-0.5 z-10">
+                          <div className="h-[18px] w-[18px] rounded-full border-2 flex items-center justify-center bg-card"
+                            style={{ borderColor: color }}>
+                            <div className="h-1.5 w-1.5 rounded-full" style={{ background: color, opacity: a.status === "executing" ? 1 : 0.5 }} />
+                          </div>
                         </div>
-                        <p className="text-[9px] text-muted truncate">{a.task || a.status || "idle"}</p>
-                        {a.status && (
-                          <span className={`inline-block mt-1 rounded-full px-1.5 py-0.5 text-[8px] font-medium ${
-                            a.status === "executing" ? "bg-success/10 text-success" :
-                            a.status === "thinking" ? "bg-blue-500/10 text-blue-400" :
-                            "bg-muted/10 text-muted"
-                          }`}>{a.status}</span>
-                        )}
+                        {/* Agent info */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1">
+                            <span className="text-[9px] font-bold capitalize truncate" style={{ color }}>
+                              {a.name || a.role}
+                            </span>
+                            <span className={`rounded-full px-1 py-px text-[7px] font-medium leading-none ${
+                              a.status === "executing" ? "bg-success/15 text-success" :
+                              a.status === "thinking" ? "bg-blue-400/15 text-blue-400" :
+                              a.status === "waiting" ? "bg-amber-400/15 text-amber-400" :
+                              "bg-muted/10 text-muted"
+                            }`}>{a.status || "idle"}</span>
+                          </div>
+                          <p className="text-[8px] text-muted mt-0.5 line-clamp-2">{a.task || "Awaiting"}</p>
+                          {a.elapsed && <span className="text-[7px] text-muted/50">{a.elapsed}s</span>}
+                        </div>
                       </div>
-                    );
-                  })}
+
+                      {/* Sub-tasks / children branch */}
+                      {(a.subtasks || a.children || []).map((child: any, ci: number) => (
+                        <div key={ci} className="relative ml-4 pl-3 py-0.5 border-l" style={{ borderColor: `${color}40` }}>
+                          <div className="absolute left-0 top-[8px] w-2 h-px" style={{ background: color, opacity: 0.4 }} />
+                          <div className="flex items-center gap-1.5">
+                            <div className="h-1 w-1 rounded-full flex-shrink-0" style={{ background: color, opacity: 0.6 }} />
+                            <span className="text-[8px] text-muted truncate">{child.task || child.name || child}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex h-full items-center justify-center">
+                <div className="text-center py-8">
+                  <Brain className="h-6 w-6 text-muted/20 mx-auto mb-2" />
+                  <p className="text-[9px] text-muted font-medium">No active agents</p>
+                  <p className="text-[8px] text-muted/50 mt-1 max-w-[160px] mx-auto">
+                    Thread view shows agents when processing tasks
+                  </p>
                 </div>
-              ) : (
-                <div className="flex h-full items-center justify-center">
-                  <div className="text-center">
-                    <Brain className="h-8 w-8 text-muted/30 mx-auto mb-2" />
-                    <p className="text-[10px] text-muted">No active agents</p>
-                    <p className="text-[9px] text-muted mt-1">Agents appear here when processing complex tasks</p>
-                  </div>
-                </div>
-              )}
-            </div>
+              </div>
+            )}
+          </div>
+
+          {/* Sidebar footer */}
+          <div className="border-t border-border px-3 py-1.5">
+            <p className="text-[7px] text-muted/40 text-center">Real-time orchestration</p>
           </div>
         </div>
       )}

@@ -1432,11 +1432,20 @@ def composio_check_connection(app: str) -> dict:
 
         # Filter accounts for this app
         app_lower = app.lower()
-        matching = [
-            a for a in accounts
-            if (a.get("appName", "") or "").lower() == app_lower or
-               (a.get("app_name", "") or "").lower() == app_lower
-        ]
+        matching = []
+        for a in accounts:
+            # v3 API returns toolkit info in different ways
+            tk = a.get("appName", "") or a.get("app_name", "")
+            if not tk:
+                tk_obj = a.get("toolkit", "")
+                if isinstance(tk_obj, dict):
+                    tk = tk_obj.get("slug", "") or tk_obj.get("name", "")
+                elif isinstance(tk_obj, str):
+                    tk = tk_obj
+            if not tk:
+                tk = a.get("toolkit_slug", "")
+            if tk.lower() == app_lower:
+                matching.append(a)
 
         # Load labels from memory
         all_mem = get_all_memory()
@@ -1522,8 +1531,18 @@ def composio_list_connections() -> dict:
         connections = []
         for acc in accounts[:50]:
             acc_id = acc.get("id", acc.get("connectedAccountId", ""))
+            # Extract app name from v3 nested toolkit object
+            app_name = acc.get("appName", "") or acc.get("app_name", "")
+            if not app_name:
+                tk_obj = acc.get("toolkit", "")
+                if isinstance(tk_obj, dict):
+                    app_name = tk_obj.get("slug", "") or tk_obj.get("name", "")
+                elif isinstance(tk_obj, str):
+                    app_name = tk_obj
+            if not app_name:
+                app_name = acc.get("toolkit_slug", "") or "?"
             connections.append({
-                "app": acc.get("appName", acc.get("app_name", "?")),
+                "app": app_name,
                 "label": label_map.get(acc_id, "default"),
                 "id": acc_id,
                 "status": acc.get("status", "active"),

@@ -300,6 +300,12 @@ async def setup_status(request: Request):
     # Composio
     has_composio = bool(cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY"))
 
+    # Search API
+    search_provider = mem.get_memory("config_search_provider") or ""
+    has_search = bool(search_provider and (
+        mem.get_credential(f"{search_provider.upper()}_API_KEY")
+    ))
+
     # Overall: configured means provider + model are set (minimum viable)
     configured = has_provider and has_model
 
@@ -313,6 +319,8 @@ async def setup_status(request: Request):
         "has_d1": has_d1,
         "interface_mode": interface_mode,
         "has_composio": has_composio,
+        "has_search": has_search,
+        "search_provider": search_provider,
     }
 
 
@@ -940,13 +948,14 @@ async def system_config():
         "base_dir": str(cfg.BASE_DIR),
         "has_composio": bool(cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY")),
         "has_d1": bool(cfg.CF_D1_DATABASE_ID and cfg.CF_API_TOKEN) or bool(mem.get_memory("cf_d1_database_id")),
+        "search_provider": mem.get_memory("config_search_provider") or "",
     }
 
 
 @app.post("/api/system/config", dependencies=[Depends(verify_token)])
 async def update_system_config(item: ConfigUpdateItem):
     """Update a configuration value."""
-    allowed_keys = {"default_model", "max_tool_iterations", "max_history_messages", "max_rpm", "interface_mode", "storage_mode"}
+    allowed_keys = {"default_model", "max_tool_iterations", "max_history_messages", "max_rpm", "interface_mode", "storage_mode", "search_provider"}
     if item.key not in allowed_keys:
         raise HTTPException(status_code=400, detail=f"Cannot update key: {item.key}")
     mem.set_memory(f"config_{item.key}", item.value)
@@ -1180,10 +1189,20 @@ async def composio_connections():
             connections = []
             for item in items:
                 toolkit = item.get("toolkit", {})
+                # Handle different shapes: dict, string, or missing
+                if isinstance(toolkit, dict):
+                    app_name = toolkit.get("name") or toolkit.get("slug", "")
+                    app_slug = toolkit.get("slug", "")
+                elif isinstance(toolkit, str):
+                    app_name = toolkit
+                    app_slug = toolkit
+                else:
+                    app_name = item.get("appName", "") or item.get("app_name", "") or item.get("toolkit_slug", "") or "?"
+                    app_slug = app_name
                 connections.append({
                     "id": item.get("id") or item.get("nanoid", ""),
-                    "app": toolkit.get("name") or toolkit.get("slug", "") if isinstance(toolkit, dict) else str(toolkit),
-                    "slug": toolkit.get("slug", "") if isinstance(toolkit, dict) else str(toolkit),
+                    "app": app_name,
+                    "slug": app_slug,
                     "status": item.get("status", "unknown"),
                     "user_id": item.get("user_id", ""),
                 })
@@ -1191,6 +1210,39 @@ async def composio_connections():
         return {"connections": [], "available": True}
     except Exception:
         return {"connections": [], "available": True}
+
+
+@app.delete("/api/composio/disconnect/{connection_id}", dependencies=[Depends(verify_token)])
+async def composio_disconnect(connection_id: str):
+    """Disconnect (delete) a Composio connected account by ID."""
+    composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
+    if not composio_key:
+        return JSONResponse(status_code=400, content={"error": "Composio not configured"})
+    try:
+        import requests as req
+        # Delete the connected account from Composio
+        resp = req.delete(
+            f"https://backend.composio.dev/api/v3/connected_accounts/{connection_id}",
+            headers={"x-api-key": composio_key},
+            timeout=15,
+        )
+        if resp.status_code in (200, 204):
+            # Also remove local label if stored
+            all_mem = mem.get_all_memory()
+            for k, v in all_mem.items():
+                if k.startswith("composio_account:") and v == connection_id:
+                    mem.delete_memory(k)
+                    break
+            return {"success": True, "message": f"Disconnected {connection_id}"}
+        elif resp.status_code == 404:
+            return JSONResponse(status_code=404, content={"error": "Connection not found on Composio"})
+        else:
+            return JSONResponse(
+                status_code=resp.status_code,
+                content={"error": f"Composio API error: {resp.status_code} - {resp.text[:200]}"}
+            )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.get("/api/composio/tools", dependencies=[Depends(verify_token)])

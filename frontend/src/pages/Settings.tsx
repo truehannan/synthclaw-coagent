@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { system, auth, clearToken } from "@/lib/api";
-import { KeyRound, Check, RotateCcw, AlertTriangle, Wand2 } from "lucide-react";
+import { system, auth, credentials, memory, models, providers as providersApi, clearToken, getToken } from "@/lib/api";
+import { KeyRound, Check, RotateCcw, AlertTriangle, Wand2, Save, Edit3 } from "lucide-react";
 
 export default function Settings() {
   const [cfg, setCfg] = useState<any>(null);
@@ -18,10 +18,72 @@ export default function Settings() {
   const [resetConfirm, setResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
 
+  // Editable setup config
+  const [setupValues, setSetupValues] = useState<Record<string, string>>({});
+  const [editingField, setEditingField] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [savingField, setSavingField] = useState("");
+  const [saveSuccess, setSaveSuccess] = useState("");
+
   useEffect(() => {
     system.config().then(setCfg).catch(() => {});
     system.logs(30).then((r) => setLogs(r.logs || [])).catch(() => {});
+    loadSetupValues();
   }, []);
+
+  async function loadSetupValues() {
+    try {
+      const token = getToken();
+      const [configRes, statusRes, credsRes] = await Promise.all([
+        system.config(),
+        fetch("/api/setup/status", { headers: { "X-API-Token": token } }).then(r => r.json()).catch(() => ({})),
+        credentials.list(),
+      ]);
+      const values: Record<string, string> = {};
+      values["Interface Mode"] = configRes?.interface_mode || "cli";
+      values["Storage Mode"] = configRes?.storage_mode || "local";
+      values["Default Model"] = configRes?.default_model || "";
+      values["Max RPM"] = String(configRes?.max_rpm ?? "0");
+      values["Max Tool Iterations"] = String(configRes?.max_tool_iterations ?? "10");
+      values["Search Provider"] = configRes?.search_provider || "(not set)";
+      values["Provider"] = statusRes?.provider_name || "(not set)";
+      values["Composio"] = statusRes?.has_composio ? "Configured" : "Not configured";
+      values["D1 Storage"] = statusRes?.has_d1 ? "Connected" : "Not connected";
+      setSetupValues(values);
+    } catch {}
+  }
+
+  async function saveSetupField(label: string, value: string) {
+    setSavingField(label);
+    const token = getToken();
+    try {
+      const keyMap: Record<string, string> = {
+        "Interface Mode": "interface_mode",
+        "Storage Mode": "storage_mode",
+        "Default Model": "default_model",
+        "Max RPM": "max_rpm",
+        "Max Tool Iterations": "max_tool_iterations",
+        "Search Provider": "search_provider",
+      };
+      const configKey = keyMap[label];
+      if (configKey) {
+        if (configKey === "default_model") {
+          await models.switch(value);
+        } else {
+          await fetch("/api/system/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-API-Token": token },
+            body: JSON.stringify({ key: configKey, value }),
+          });
+        }
+        setSetupValues(prev => ({ ...prev, [label]: value }));
+        setSaveSuccess(label);
+        setTimeout(() => setSaveSuccess(""), 2000);
+      }
+    } catch {}
+    setSavingField("");
+    setEditingField(null);
+  }
 
   async function handleChangePassword(e: React.FormEvent) {
     e.preventDefault();
@@ -162,6 +224,55 @@ export default function Settings() {
           Re-run wizard: keeps data, lets you reconfigure storage/provider/model.
           Factory reset: deletes database, credentials, and auth — starts fresh.
         </p>
+      </div>
+
+      {/* Editable Setup Values */}
+      <div className="mb-6 rounded-sm border border-border bg-card p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Edit3 className="h-3.5 w-3.5 text-primary" />
+          <p className="text-xs font-semibold text-muted">Setup Configuration</p>
+        </div>
+        <p className="text-[9px] text-muted mb-3">All values from setup wizard. Click a value to edit.</p>
+        <div className="space-y-2">
+          {Object.entries(setupValues).map(([label, value]) => {
+            const editable = ["Interface Mode", "Storage Mode", "Default Model", "Max RPM", "Max Tool Iterations", "Search Provider"].includes(label);
+            const isEditing = editingField === label;
+            return (
+              <div key={label} className="flex items-center justify-between border-b border-border/30 pb-1.5 gap-2">
+                <span className="text-[10px] text-muted flex-shrink-0">{label}</span>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  {isEditing ? (
+                    <>
+                      <input
+                        value={editValue}
+                        onChange={e => setEditValue(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter") saveSetupField(label, editValue); if (e.key === "Escape") setEditingField(null); }}
+                        autoFocus
+                        className="w-36 rounded-sm border border-primary bg-background px-2 py-0.5 text-[10px] outline-none"
+                      />
+                      <button onClick={() => saveSetupField(label, editValue)} disabled={savingField === label}
+                        className="text-primary hover:text-primary-hover">
+                        <Save className="h-3 w-3" />
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span className={`text-[10px] font-medium truncate max-w-[180px] ${saveSuccess === label ? "text-success" : "text-foreground"}`}>
+                        {saveSuccess === label ? "Saved!" : value || "(empty)"}
+                      </span>
+                      {editable && (
+                        <button onClick={() => { setEditingField(label); setEditValue(value === "(not set)" ? "" : value); }}
+                          className="text-muted hover:text-primary flex-shrink-0">
+                          <Edit3 className="h-2.5 w-2.5" />
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* Config */}
