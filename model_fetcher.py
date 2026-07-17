@@ -86,7 +86,7 @@ PROVIDER_ENDPOINTS = {
         "prefix": "openrouter:",
     },
     "Qwen": {
-        "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
+        "url": "",  # resolved at runtime from DB/config
         "key_env": "QWEN_API_KEY",
         "prefix": "qwen:",
     },
@@ -193,12 +193,29 @@ def fetch_provider_models(provider: str, force: bool = False) -> list[str]:
 
     api_key = _get_api_key(provider)
     prefix = endpoint["prefix"]
+    url = endpoint["url"]
+
+    # Resolve URL from DB if empty (provider-specific override)
+    if not url and provider == "Qwen":
+        try:
+            from memory import get_memory
+            url = get_memory("qwen_api_base") or ""
+            if url:
+                url = url.rstrip("/") + "/models"
+        except Exception:
+            pass
+        if not url:
+            import config as cfg
+            url = cfg.QWEN_API_BASE.rstrip("/") + "/models"
+
+    if not url:
+        return []
 
     try:
         if provider == "Google":
             raw_models = _fetch_google_models(api_key)
         else:
-            raw_models = _fetch_openai_format(endpoint["url"], api_key)
+            raw_models = _fetch_openai_format(url, api_key)
 
         if not raw_models:
             return _get_cache(provider)  # Return stale cache if fetch returned nothing

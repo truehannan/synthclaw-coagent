@@ -154,7 +154,7 @@ def _provider_base_url(provider: str) -> str:
         "NVIDIA": cfg.NVIDIA_API_BASE,
         "HuggingFace": cfg.HUGGINGFACE_API_BASE,
         "Google": cfg.GOOGLE_AI_API_BASE,
-        "Qwen": cfg.QWEN_API_BASE,
+        "Qwen": mem.get_memory("qwen_api_base") or cfg.QWEN_API_BASE,
         "Cloudflare": "",  # needs account_id, handled separately
     }
     return _map.get(provider, cfg.OPENAI_API_BASE or "https://inference.do-ai.run/v1")
@@ -167,7 +167,7 @@ def _resolve_model_routing(model: str) -> tuple:
     Unprefixed models go to DigitalOcean/default.
     """
     _prefix_map = {
-        "qwen:": ("Qwen", cfg.QWEN_API_BASE),
+        "qwen:": ("Qwen", mem.get_memory("qwen_api_base") or cfg.QWEN_API_BASE),
         "google:": ("Google", cfg.GOOGLE_AI_API_BASE),
         "nvidia:": ("NVIDIA", cfg.NVIDIA_API_BASE),
         "hf:": ("HuggingFace", cfg.HUGGINGFACE_API_BASE),

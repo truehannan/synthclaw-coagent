@@ -166,7 +166,9 @@ def _provider_base_url(provider: str) -> str:
     if provider == "Google":
         return cfg.GOOGLE_AI_API_BASE
     if provider == "Qwen":
-        return cfg.QWEN_API_BASE
+        # Check DB for custom base URL override first
+        custom_base = mem.get_memory("qwen_api_base")
+        return custom_base or cfg.QWEN_API_BASE
     if provider == "Cloudflare":
         # Cloudflare needs account_id in URL — check DB first, then env
         account_id = mem.get_memory("cf_account_id") or cfg.CF_ACCOUNT_ID or ""
