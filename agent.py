@@ -640,10 +640,22 @@ def _finalize_user_text(text: str) -> tuple[str, bool]:
     # Strip any leaked tool-call patterns that the model output as plain text
     lines = t.split("\n")
     clean_lines = []
-    tool_patterns = ("exec_code(", "run_command(", "run_python(", "api_call(", "register_api(")
+    tool_patterns = (
+        "exec_code(", "run_command(", "run_python(", "api_call(", "register_api(",
+        "composio_check_connection(", "composio_execute(", "composio_discover(",
+        "composio_connect(", "composio_list_connections(",
+        "google_search(", "web_search(", "remember(", "store_cred(", "get_cred(",
+        "send_media(", "generate_image(", "ask_user(", "set_reminder(",
+        "read_file(", "write_file(", "list_dir(", "install_package(",
+    )
     for line in lines:
-        if any(p in line for p in tool_patterns):
-            continue  # drop entire line
+        stripped = line.strip()
+        # Drop lines that look like bare function calls
+        if any(p in stripped for p in tool_patterns):
+            continue
+        # Drop lines that are just function_name(...) pattern
+        if re.match(r'^[a-z_]+\(.*\)\s*$', stripped):
+            continue
         clean_lines.append(line)
     t = "\n".join(clean_lines)
     raw_json = _is_probably_raw_json(t)
