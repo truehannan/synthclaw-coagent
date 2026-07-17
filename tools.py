@@ -1486,17 +1486,6 @@ def composio_connect(app: str, label: str = "default") -> dict:
         "app": app,
         "message": f"Please connect {app} from the Integrations page in the web UI. The agent cannot initiate OAuth connections directly.",
     }
-                return {
-                    "success": True,
-                    "app": app,
-                    "label": label,
-                    "oauth_url": url,
-                    "account_id": account_id,
-                    "instruction": f"Send this OAuth link to the user to authorize their {label} {app} account: {url}",
-                }
-            return {
-                "success": True,
-                "app": app,
 def composio_list_connections() -> dict:
     """List all connected Composio app accounts with their labels.
     Shows which apps are authorized and ready to use."""
