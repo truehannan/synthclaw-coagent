@@ -1465,31 +1465,13 @@ def composio_check_connection(app: str) -> dict:
                 "note": "App is connected. Use composio_execute with the tool slug.",
             }
         else:
-            # Not connected — initiate connection to get OAuth URL
-            try:
-                connect_resp = requests.post(
-                    f"https://backend.composio.dev/api/v3/connected_accounts",
-                    headers=headers,
-                    json={"integrationId": app_lower, "redirectUri": "https://backend.composio.dev/"},
-                    timeout=15,
-                )
-                if connect_resp.status_code in (200, 201):
-                    connect_data = connect_resp.json()
-                    url = connect_data.get("redirectUrl", connect_data.get("connectionUrl", connect_data.get("url", "")))
-                    return {
-                        "connected": False,
-                        "app": app,
-                        "action_required": "User must authorize via OAuth",
-                        "oauth_url": url,
-                        "instruction": f"Send this link to the user: {url}\nAfter they authorize, the app will be connected.",
-                    }
-                return {
-                    "connected": False,
-                    "app": app,
-                    "error": f"Could not initiate connection: {connect_resp.status_code}",
-                }
-            except Exception as ce:
-                return {"connected": False, "app": app, "error": str(ce)}
+            # Not connected — tell user to connect via web UI
+            return {
+                "connected": False,
+                "app": app,
+                "message": f"{app} is not connected. Please connect it from the Integrations page in the web UI.",
+                "action_required": "user_connect_integration",
+            }
     except Exception as e:
         return {"error": str(e)}
 
@@ -1498,51 +1480,12 @@ def composio_connect(app: str, label: str = "default") -> dict:
     """Connect a new account for an app via OAuth. Supports multiple accounts with labels.
     app: app name (e.g. 'gmail', 'slack', 'github')
     label: label for this account (e.g. 'work', 'personal', 'company')
-    Returns: OAuth URL for user to authorize, or success if no OAuth needed."""
-    from config import COMPOSIO_API_KEY
-    from memory import get_credential, set_memory
-    api_key = get_credential("COMPOSIO_API_KEY") or COMPOSIO_API_KEY
-    if not api_key:
-        return {"error": "Composio not configured. Store COMPOSIO_API_KEY first."}
-
-    try:
-        headers = {"x-api-key": api_key, "Content-Type": "application/json"}
-        resp = requests.post(
-            f"https://backend.composio.dev/api/v3/connected_accounts",
-            headers=headers,
-            json={"integrationId": app.lower(), "redirectUri": "https://backend.composio.dev/"},
-            timeout=15,
-        )
-        if resp.status_code in (200, 201):
-            data = resp.json()
-            url = data.get("redirectUrl", data.get("connectionUrl", data.get("url", "")))
-            account_id = data.get("id", data.get("connectedAccountId", ""))
-
-            # Store label → account mapping in memory
-            if account_id and label:
-                set_memory(f"composio_account:{label}", account_id)
-
-            if url:
-                return {
-                    "success": True,
-                    "app": app,
-                    "label": label,
-                    "oauth_url": url,
-                    "account_id": account_id,
-                    "instruction": f"Send this OAuth link to the user to authorize their {label} {app} account: {url}",
-                }
-            return {
-                "success": True,
-                "app": app,
-                "label": label,
-                "account_id": account_id,
-                "note": f"{app} connected as '{label}' (no OAuth required).",
-            }
-        return {"error": f"Connection failed: {resp.status_code}", "details": resp.text[:300]}
-    except Exception as e:
-        return {"error": str(e)}
-
-
+    Returns: instruction to connect via web UI."""
+    return {
+        "action_required": "user_connect_integration",
+        "app": app,
+        "message": f"Please connect {app} from the Integrations page in the web UI. The agent cannot initiate OAuth connections directly.",
+    }
 def composio_list_connections() -> dict:
     """List all connected Composio app accounts with their labels.
     Shows which apps are authorized and ready to use."""

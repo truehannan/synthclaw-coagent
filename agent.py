@@ -166,7 +166,8 @@ def _provider_base_url(provider: str) -> str:
     if provider == "Google":
         return cfg.GOOGLE_AI_API_BASE
     if provider == "Qwen":
-        # Check DB for custom base URL override first
+        # NOTE: Reads base URL from DB first, then env (QWEN_API_BASE)
+        # To change endpoint, update qwen_api_base in memory or QWEN_API_BASE in .env
         custom_base = mem.get_memory("qwen_api_base")
         return custom_base or cfg.QWEN_API_BASE
     if provider == "Cloudflare":
@@ -186,8 +187,10 @@ def _provider_fallback_key(provider: str) -> str | None:
 
 def _resolve_provider_model(model_id: str, provider_hint: str = "") -> str:
     """Resolve model ID for provider-specific requirements.
-    Some providers require different model ID formats internally."""
-    # Built-in model name resolution for compatibility
+    Some providers require different model ID formats internally.
+    # NOTE: _builtin_map — maps friendly names to actual provider model IDs
+    # To change model mapping, update this dict or store in DB as _model_map_{provider}
+    """
     _builtin_map = {
         "qwen": {
             "qwen3-235b-a22b": "qwen.qwen3-235b-a22b-instruct-2507-v1:0",
