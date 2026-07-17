@@ -47,7 +47,7 @@ GITHUB_MODELS_API_BASE = _clean_env("GITHUB_MODELS_API_BASE", "https://models.in
 NVIDIA_API_BASE = _clean_env("NVIDIA_API_BASE", "https://integrate.api.nvidia.com/v1")
 HUGGINGFACE_API_BASE = _clean_env("HUGGINGFACE_API_BASE", "https://router.huggingface.co/v1")
 GOOGLE_AI_API_BASE = _clean_env("GOOGLE_AI_API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai")
-QWEN_API_BASE = _clean_env("QWEN_API_BASE", "")
+QWEN_API_BASE = _clean_env("QWEN_API_BASE", "https://bedrock-mantle.ap-south-1.api.aws/v1")
 GOOGLE_SEARCH_API_KEY = _clean_env("GOOGLE_SEARCH_API_KEY")
 GOOGLE_SEARCH_CX = _clean_env("GOOGLE_SEARCH_CX")
 
