@@ -51,22 +51,16 @@ QWEN_API_BASE = _clean_env("QWEN_API_BASE", "https://bedrock-mantle.ap-south-1.a
 GOOGLE_SEARCH_API_KEY = _clean_env("GOOGLE_SEARCH_API_KEY")
 GOOGLE_SEARCH_CX = _clean_env("GOOGLE_SEARCH_CX")
 
-DEFAULT_MODEL = "qwen:qwen-plus"
+DEFAULT_MODEL = "qwen:qwen3-235b-a22b"
 MODEL_CATALOG = {
     "Qwen": [
-        "qwen:qwen-max",
-        "qwen:qwen-plus",
-        "qwen:qwen-turbo",
         "qwen:qwen3-235b-a22b",
         "qwen:qwen3-32b",
-        "qwen:qwen3-30b-a3b",
-        "qwen:qwen3-14b",
-        "qwen:qwen3-8b",
-        "qwen:qwen3-4b",
-        "qwen:qwen-coder-plus",
-        "qwen:qwen-long",
-        "qwen:qwen-vl-max",
-        "qwen:qwen-vl-plus",
+        "qwen:qwen3-next-80b-a3b",
+        "qwen:qwen3-coder-480b-a35b",
+        "qwen:qwen3-coder-30b-a3b",
+        "qwen:qwen3-coder-next",
+        "qwen:qwen3-vl-235b-a22b",
     ],
     "DigitalOcean": [
         "llama3.3-70b-instruct",

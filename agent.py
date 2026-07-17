@@ -187,14 +187,29 @@ def _provider_fallback_key(provider: str) -> str | None:
 def _resolve_provider_model(model_id: str, provider_hint: str = "") -> str:
     """Resolve model ID for provider-specific requirements.
     Some providers require different model ID formats internally."""
-    # Check if provider has custom model mapping configured
-    mapping_key = f"_model_map_{provider_hint}"
+    # Built-in model name resolution for compatibility
+    _builtin_map = {
+        "qwen": {
+            "qwen3-235b-a22b": "qwen.qwen3-235b-a22b-instruct-2507-v1:0",
+            "qwen3-32b": "qwen.qwen3-32b-v1:0",
+            "qwen3-next-80b-a3b": "qwen.qwen3-next-80b-a3b-v1:0",
+            "qwen3-coder-480b-a35b": "qwen.qwen3-coder-480b-a35b-instruct-v1:0",
+            "qwen3-coder-30b-a3b": "qwen.qwen3-coder-30b-a3b-instruct-v1:0",
+            "qwen3-coder-next": "qwen.qwen3-coder-next-v1:0",
+            "qwen3-vl-235b-a22b": "qwen.qwen3-vl-235b-a22b-v1:0",
+        },
+    }
+    mapping = _builtin_map.get(provider_hint, {})
+    if model_id in mapping:
+        return mapping[model_id]
+
+    # Check DB for custom override mapping
     try:
         import json as _json
-        raw = mem.get_memory(mapping_key)
+        raw = mem.get_memory(f"_model_map_{provider_hint}")
         if raw:
-            mapping = _json.loads(raw)
-            return mapping.get(model_id, model_id)
+            custom = _json.loads(raw)
+            return custom.get(model_id, model_id)
     except Exception:
         pass
     return model_id
