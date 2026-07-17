@@ -32,8 +32,12 @@ export default function SessionSidebar() {
     load();
   }
 
-  // Deselect all sessions if on /chat (new chat)
+  // Get session ID from current URL path
   const isNewChat = location.pathname === "/chat";
+  const urlSessionId = location.pathname.startsWith("/chat/") ? location.pathname.replace("/chat/", "") : "";
+
+  // Reload list when location changes (session created/switched)
+  useEffect(() => { load(); }, [location.pathname]);
 
   return (
     <div className="border-t border-border px-2 py-2">
@@ -44,16 +48,14 @@ export default function SessionSidebar() {
         {list.map((s) => (
           <div key={s.id}
             className={`group flex items-center gap-1.5 rounded-sm px-2 py-1.5 text-[10px] cursor-pointer ${
-              !isNewChat && s.id === active ? "bg-primary-dim text-primary" : "text-muted hover:bg-card-hover hover:text-foreground"
+              !isNewChat && (urlSessionId === s.id || (!urlSessionId && s.id === active)) ? "bg-primary-dim text-primary" : "text-muted hover:bg-card-hover hover:text-foreground"
             }`}
             onClick={() => switchTo(s.id)}>
             <span className="flex-1 truncate">{s.name}</span>
-            {s.id !== active && (
-              <button onClick={(e) => { e.stopPropagation(); remove(s.id); }}
-                className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger">
-                <Trash2 className="h-2.5 w-2.5" />
-              </button>
-            )}
+            <button onClick={(e) => { e.stopPropagation(); remove(s.id); }}
+              className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger">
+              <Trash2 className="h-2.5 w-2.5" />
+            </button>
           </div>
         ))}
         {list.length === 0 && (

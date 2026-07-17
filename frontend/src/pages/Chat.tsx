@@ -55,9 +55,13 @@ export default function Chat() {
 
   useEffect(() => {
     if (sessionId) {
-      sessions.switch(sessionId).then(() => loadHistory()).catch(() => loadHistory());
+      // Switch backend to this session, then load its history
+      sessions.switch(sessionId).then(() => {
+        loadHistory();
+      }).catch(() => loadHistory());
     } else {
-      loadHistory();
+      // New chat — clear items, don't load history
+      setItems([]);
     }
     models.current().then(r => setCurrentModel(r.model)).catch(() => {});
     return () => {
