@@ -1417,7 +1417,7 @@ def composio_check_connection(app: str) -> dict:
     try:
         headers = {"x-api-key": api_key, "Content-Type": "application/json"}
         resp = requests.get(
-            f"https://backend.composio.dev/api/v3.1/connectedAccounts",
+            f"https://backend.composio.dev/api/v3/connected_accounts",
             headers=headers,
             params={"user_id": "conclave"},
             timeout=15,
@@ -1468,7 +1468,7 @@ def composio_check_connection(app: str) -> dict:
             # Not connected — initiate connection to get OAuth URL
             try:
                 connect_resp = requests.post(
-                    f"https://backend.composio.dev/api/v3.1/connectedAccounts",
+                    f"https://backend.composio.dev/api/v3/connected_accounts",
                     headers=headers,
                     json={"integrationId": app_lower, "redirectUri": "https://backend.composio.dev/"},
                     timeout=15,
@@ -1508,7 +1508,7 @@ def composio_connect(app: str, label: str = "default") -> dict:
     try:
         headers = {"x-api-key": api_key, "Content-Type": "application/json"}
         resp = requests.post(
-            f"https://backend.composio.dev/api/v3.1/connectedAccounts",
+            f"https://backend.composio.dev/api/v3/connected_accounts",
             headers=headers,
             json={"integrationId": app.lower(), "redirectUri": "https://backend.composio.dev/"},
             timeout=15,
@@ -1555,7 +1555,7 @@ def composio_list_connections() -> dict:
     try:
         headers = {"x-api-key": api_key, "Content-Type": "application/json"}
         resp = requests.get(
-            f"https://backend.composio.dev/api/v3.1/connectedAccounts",
+            f"https://backend.composio.dev/api/v3/connected_accounts",
             headers=headers,
             params={"user_id": "conclave"},
             timeout=15,

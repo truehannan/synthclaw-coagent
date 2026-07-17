@@ -225,6 +225,9 @@ def fetch_provider_models(provider: str, force: bool = False) -> list[str]:
             # Don't double-prefix
             models = []
             for m in raw_models:
+                # Filter: only include models relevant to this provider
+                if provider == "Qwen" and "qwen" not in m.lower():
+                    continue
                 if m.startswith(prefix):
                     models.append(m)
                 else:
