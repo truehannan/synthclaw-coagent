@@ -1437,75 +1437,21 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
-    """Connect a Composio toolkit. Handles both OAuth (managed) and API key auth types."""
+    """Connect a Composio toolkit. Creates a Composio Connect Link session and returns the redirect URL.
+    Composio's hosted page handles all auth types (OAuth, API key, bearer, etc.)."""
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         raise HTTPException(status_code=400, detail="Composio API key not configured")
-
-    # Check if request body has user-provided credentials (for API key auth)
-    body = {}
-    try:
-        body = await request.json()
-    except Exception:
-        pass
-    user_api_key = body.get("api_key", "")
 
     try:
         import requests as req
         headers = {"x-api-key": composio_key, "Content-Type": "application/json"}
         base = "https://backend.composio.dev/api/v3"
 
-        # If user provided an API key, use custom auth flow
-        if user_api_key:
-            # Create auth_config with user's API key
-            create_resp = req.post(
-                f"{base}/auth_configs",
-                headers=headers,
-                json={
-                    "toolkit": {"slug": toolkit},
-                    "auth_config": {
-                        "type": "custom_auth",
-                        "credentials": {"api_key": user_api_key},
-                        "restrict_to_following_tools": [],
-                    },
-                },
-                timeout=10,
-            )
-            auth_config_id = ""
-            if create_resp.status_code in (200, 201):
-                data = create_resp.json()
-                if isinstance(data.get("auth_config"), dict):
-                    auth_config_id = data["auth_config"].get("id") or data["auth_config"].get("nanoid", "")
-                if not auth_config_id:
-                    auth_config_id = data.get("id") or data.get("nanoid") or data.get("auth_config_id", "")
-            elif create_resp.status_code == 409:
-                # Already exists — list and find it
-                list_resp = req.get(f"{base}/auth_configs", headers=headers, timeout=10)
-                if list_resp.status_code == 200:
-                    for ac in list_resp.json().get("items", []):
-                        tk = ac.get("toolkit_slug") or ""
-                        if not tk:
-                            tk_obj = ac.get("toolkit", "")
-                            tk = tk_obj.get("slug", "") if isinstance(tk_obj, dict) else str(tk_obj) if tk_obj else ""
-                        if tk.lower() == toolkit.lower():
-                            auth_config_id = ac.get("id") or ac.get("nanoid", "")
-                            break
+        # Step 1: Get or create auth_config for this toolkit
+        auth_config_id = ""
 
-            if not auth_config_id:
-                return {"error": f"Failed to create auth config for '{toolkit}'", "detail": create_resp.text[:200]}
-
-            # Create connected account with user's credentials
-            link_resp = req.post(
-                f"{base}/connected_accounts/link",
-                headers=headers,
-                json={"auth_config_id": auth_config_id, "user_id": "conclave"},
-                timeout=15,
-            )
-            if link_resp.status_code in (200, 201):
-                return {"success": True, "message": f"Connected {toolkit} with API key"}
-            return {"error": f"Link failed: HTTP {link_resp.status_code}", "detail": link_resp.text[:300]}
-
-        # Standard OAuth flow — try Composio managed auth
+        # Try managed auth first
         create_resp = req.post(
             f"{base}/auth_configs",
             headers=headers,
@@ -1519,8 +1465,7 @@ async def composio_connect(toolkit: str, request: Request):
             },
             timeout=10,
         )
-        
-        auth_config_id = ""
+
         if create_resp.status_code in (200, 201):
             data = create_resp.json()
             if isinstance(data.get("auth_config"), dict):
@@ -1528,8 +1473,8 @@ async def composio_connect(toolkit: str, request: Request):
             if not auth_config_id:
                 auth_config_id = data.get("id") or data.get("nanoid") or data.get("auth_config_id", "")
         elif create_resp.status_code == 409:
-            # Already exists — list and find it
-            list_resp = req.get(f"{base}/auth_configs", headers=headers, timeout=10)
+            # Already exists — find existing auth_config
+            list_resp = req.get(f"{base}/auth_configs", headers=headers, params={"toolkit_slug": toolkit}, timeout=10)
             if list_resp.status_code == 200:
                 for ac in list_resp.json().get("items", []):
                     tk = ac.get("toolkit_slug") or ""
@@ -1540,24 +1485,40 @@ async def composio_connect(toolkit: str, request: Request):
                         auth_config_id = ac.get("id") or ac.get("nanoid", "")
                         break
         elif create_resp.status_code == 400:
-            # Check if this is a "no managed auth" error — requires API key
-            err_text = create_resp.text
-            if "DefaultAuthConfigNotFound" in err_text or "managed credentials" in err_text.lower() or "306" in err_text:
-                return {
-                    "auth_type": "api_key",
-                    "requires_key": True,
-                    "toolkit": toolkit,
-                    "message": f"{toolkit} requires your own API key (Composio doesn't provide OAuth for this app).",
-                }
-            return {"error": f"Could not get auth_config for '{toolkit}'", "detail": err_text[:300]}
+            # No managed auth — try creating without specifying type (Composio picks the right one)
+            # This happens for API key / bearer / basic auth apps
+            create_resp2 = req.post(
+                f"{base}/auth_configs",
+                headers=headers,
+                json={"toolkit": {"slug": toolkit}},
+                timeout=10,
+            )
+            if create_resp2.status_code in (200, 201):
+                data = create_resp2.json()
+                if isinstance(data.get("auth_config"), dict):
+                    auth_config_id = data["auth_config"].get("id") or data["auth_config"].get("nanoid", "")
+                if not auth_config_id:
+                    auth_config_id = data.get("id") or data.get("nanoid") or data.get("auth_config_id", "")
+            elif create_resp2.status_code == 409:
+                # Already exists — find it
+                list_resp = req.get(f"{base}/auth_configs", headers=headers, params={"toolkit_slug": toolkit}, timeout=10)
+                if list_resp.status_code == 200:
+                    for ac in list_resp.json().get("items", []):
+                        tk = ac.get("toolkit_slug") or ""
+                        if not tk:
+                            tk_obj = ac.get("toolkit", "")
+                            tk = tk_obj.get("slug", "") if isinstance(tk_obj, dict) else str(tk_obj) if tk_obj else ""
+                        if tk.lower() == toolkit.lower():
+                            auth_config_id = ac.get("id") or ac.get("nanoid", "")
+                            break
 
         if not auth_config_id:
             return {
-                "error": f"Could not get auth_config for '{toolkit}'",
-                "detail": f"Create response ({create_resp.status_code}): {create_resp.text[:200]}",
+                "error": f"Could not set up auth for '{toolkit}'",
+                "detail": f"Composio response: {create_resp.text[:200]}",
             }
 
-        # Create link (OAuth redirect)
+        # Step 2: Create the connect link — Composio's hosted page handles credential collection
         link_resp = req.post(
             f"{base}/connected_accounts/link",
             headers=headers,
@@ -1567,7 +1528,10 @@ async def composio_connect(toolkit: str, request: Request):
         if link_resp.status_code in (200, 201):
             data = link_resp.json()
             url = data.get("redirect_url") or data.get("redirectUrl") or data.get("url", "")
-            return {"success": True, "redirectUrl": url}
+            if url:
+                return {"success": True, "redirectUrl": url}
+            # Some non-redirect auth types connect immediately
+            return {"success": True, "message": f"Connected {toolkit}"}
 
         return {"error": f"Link failed: HTTP {link_resp.status_code}", "detail": link_resp.text[:300]}
     except Exception as e:

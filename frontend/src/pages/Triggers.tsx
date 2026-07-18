@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { composio } from "@/lib/api";
-import { Zap, Trash2, Plus, Loader2, RefreshCw, Search } from "lucide-react";
+import { Zap, Square, Loader2, RefreshCw } from "lucide-react";
 
 interface Trigger {
   id: string;
@@ -15,14 +15,7 @@ export default function Triggers() {
   const [triggers, setTriggers] = useState<Trigger[]>([]);
   const [loading, setLoading] = useState(true);
   const [available, setAvailable] = useState(false);
-  const [deleting, setDeleting] = useState("");
-
-  // Create form
-  const [showCreate, setShowCreate] = useState(false);
-  const [newSlug, setNewSlug] = useState("");
-  const [newConfig, setNewConfig] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState("");
+  const [stopping, setStopping] = useState("");
 
   useEffect(() => { load(); }, []);
 
@@ -38,41 +31,16 @@ export default function Triggers() {
     setLoading(false);
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm("Delete this trigger? It will stop listening for events.")) return;
-    setDeleting(id);
+  async function handleStop(id: string) {
+    if (!confirm("Stop this trigger? It will no longer listen for events.")) return;
+    setStopping(id);
     try {
       await composio.triggers.del(id);
       load();
     } catch (err: any) {
       alert(`Error: ${err.message}`);
     }
-    setDeleting("");
-  }
-
-  async function handleCreate() {
-    if (!newSlug.trim()) { setCreateError("Trigger slug is required"); return; }
-    setCreating(true);
-    setCreateError("");
-    try {
-      let config = undefined;
-      if (newConfig.trim()) {
-        try { config = JSON.parse(newConfig); }
-        catch { setCreateError("Invalid JSON in config"); setCreating(false); return; }
-      }
-      const res = await composio.triggers.create(newSlug.trim().toUpperCase(), config);
-      if (res.success) {
-        setNewSlug("");
-        setNewConfig("");
-        setShowCreate(false);
-        load();
-      } else {
-        setCreateError(res.error || "Failed to create trigger");
-      }
-    } catch (err: any) {
-      setCreateError(err.message || "Failed");
-    }
-    setCreating(false);
+    setStopping("");
   }
 
   if (!available && !loading) {
@@ -97,54 +65,14 @@ export default function Triggers() {
           <div>
             <h1 className="text-sm font-bold">[+] Triggers</h1>
             <p className="text-[9px] text-muted">
-              Automations that listen for events (new email, new commit, etc.) and fire actions
+              Active automations listening for events. Ask the agent to create or edit triggers.
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <button onClick={load} className="rounded-sm border border-border p-1.5 text-muted hover:text-foreground hover:border-primary">
-              <RefreshCw className="h-3.5 w-3.5" />
-            </button>
-            <button onClick={() => setShowCreate(!showCreate)}
-              className="flex items-center gap-1.5 rounded-sm bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover">
-              <Plus className="h-3.5 w-3.5" /> New Trigger
-            </button>
-          </div>
+          <button onClick={load} className="rounded-sm border border-border p-1.5 text-muted hover:text-foreground hover:border-primary">
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
         </div>
       </div>
-
-      {/* Create form */}
-      {showCreate && (
-        <div className="border-b border-border bg-card/50 px-4 py-4">
-          <div className="max-w-lg space-y-3">
-            <p className="text-[10px] text-muted">
-              Create a trigger by providing its slug (e.g. GMAIL_NEW_EMAIL, GITHUB_PUSH_EVENT, SLACK_NEW_MESSAGE).
-              Use the agent to discover available triggers: ask "what triggers are available for gmail?"
-            </p>
-            <div>
-              <label className="text-[9px] text-muted block mb-1">Trigger Slug *</label>
-              <input value={newSlug} onChange={e => setNewSlug(e.target.value)}
-                placeholder="GMAIL_NEW_EMAIL"
-                className="w-full rounded-sm border border-border bg-background px-3 py-2 text-xs outline-none focus:border-primary font-mono uppercase" />
-            </div>
-            <div>
-              <label className="text-[9px] text-muted block mb-1">Config (optional JSON)</label>
-              <textarea value={newConfig} onChange={e => setNewConfig(e.target.value)}
-                placeholder='{"filter": "from:important@example.com"}'
-                rows={3}
-                className="w-full resize-none rounded-sm border border-border bg-background px-3 py-2 text-xs outline-none focus:border-primary font-mono" />
-            </div>
-            {createError && <p className="text-[10px] text-danger">{createError}</p>}
-            <div className="flex gap-2">
-              <button onClick={() => { setShowCreate(false); setCreateError(""); }}
-                className="rounded-sm border border-border px-4 py-2 text-xs text-muted hover:text-foreground">Cancel</button>
-              <button onClick={handleCreate} disabled={creating || !newSlug.trim()}
-                className="rounded-sm bg-primary px-4 py-2 text-xs font-semibold text-white hover:bg-primary-hover disabled:opacity-50">
-                {creating ? "Creating..." : "Create Trigger"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Triggers list */}
       <div className="flex-1 overflow-y-auto p-4">
@@ -157,9 +85,8 @@ export default function Triggers() {
             <div className="text-center py-12">
               <Zap className="h-8 w-8 text-muted/30 mx-auto mb-3" />
               <p className="text-xs text-muted font-medium">No triggers active</p>
-              <p className="text-[9px] text-muted/60 mt-1 max-w-[250px] mx-auto">
-                Create a trigger to start listening for events from your connected apps.
-                Or ask the agent: "create a trigger for new emails"
+              <p className="text-[9px] text-muted/60 mt-1 max-w-[280px] mx-auto">
+                Ask the agent to create triggers for you. Try: "Create a trigger that notifies me on new emails" or "Set up automation for GitHub push events"
               </p>
             </div>
           </div>
@@ -191,10 +118,12 @@ export default function Triggers() {
                       </pre>
                     )}
                   </div>
-                  <button onClick={() => handleDelete(t.id)}
-                    disabled={deleting === t.id}
-                    className="rounded-sm border border-border p-1.5 text-muted hover:text-danger hover:border-danger flex-shrink-0">
-                    {deleting === t.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  <button onClick={() => handleStop(t.id)}
+                    disabled={stopping === t.id}
+                    title="Stop trigger"
+                    className="flex items-center gap-1 rounded-sm border border-border px-2 py-1.5 text-[9px] text-muted hover:text-danger hover:border-danger flex-shrink-0">
+                    {stopping === t.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-3 w-3" />}
+                    <span>Stop</span>
                   </button>
                 </div>
               </div>
