@@ -49,7 +49,7 @@ export default function Chat() {
   const [skillsSearch, setSkillsSearch] = useState("");
 
   // Society panel
-  const [showSociety, setShowSociety] = useState(false);
+  const [showSociety, setShowSociety] = useState(true);
   const [societyData, setSocietyData] = useState<any>(null);
   const societyPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -64,6 +64,13 @@ export default function Chat() {
       setItems([]);
     }
     models.current().then(r => setCurrentModel(r.model)).catch(() => {});
+    // Society sidebar is open by default — start polling
+    society.status().then(setSocietyData).catch(() => {});
+    if (!societyPollRef.current) {
+      societyPollRef.current = setInterval(async () => {
+        try { setSocietyData(await society.status()); } catch {}
+      }, 2000);
+    }
     return () => {
       if (societyPollRef.current) { clearInterval(societyPollRef.current); societyPollRef.current = null; }
     };

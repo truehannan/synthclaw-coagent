@@ -26,6 +26,7 @@ export default function Integrations() {
   const currentPage = parseInt(searchParams.get("page") || "1");
   const [apiList, setApiList] = useState<ApiEntry[]>([]);
   const [composioAvailable, setComposioAvailable] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [tools, setTools] = useState<ComposioTool[]>([]);
   const [toolsSearch, setToolsSearch] = useState("");
   const [totalPages, setTotalPages] = useState(0);
@@ -37,9 +38,6 @@ export default function Integrations() {
   const [nativeApps, setNativeApps] = useState<any[]>([]);
   const [disconnecting, setDisconnecting] = useState("");
   const [nativeSlugs, setNativeSlugs] = useState<Set<string>>(new Set());
-  const [apiKeyModal, setApiKeyModal] = useState<{ toolkit: string; message: string } | null>(null);
-  const [apiKeyInput, setApiKeyInput] = useState("");
-  const [apiKeySaving, setApiKeySaving] = useState(false);
   const [filter, setFilter] = useState<"all" | "connected">("all");
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedRef = useRef(false);
@@ -77,6 +75,7 @@ export default function Integrations() {
       setNativeApps(res.native_apps || []);
       setComposioAvailable(res.available !== false);
     } catch {}
+    setInitialLoading(false);
   }
 
   async function loadApis() {
@@ -111,37 +110,26 @@ export default function Integrations() {
     setSearchParams({ page: String(page) });
   }
 
-  async function handleConnect(toolkit: string, apiKey?: string) {
+  async function handleConnect(toolkit: string) {
     setConnecting(toolkit);
     try {
-      const res = await composio.connect(toolkit, apiKey);
-      if (res.requires_key) {
-        // This toolkit needs user's own API key
-        setApiKeyModal({ toolkit, message: res.message || `${toolkit} requires your API key.` });
-        setApiKeyInput("");
-      } else if (res.redirectUrl) {
+      const res = await composio.connect(toolkit);
+      if (res.redirectUrl) {
         window.open(res.redirectUrl, "_blank");
         // Poll for connection completion after redirect
         setTimeout(() => loadConnections(), 5000);
         setTimeout(() => loadConnections(), 15000);
+        setTimeout(() => loadConnections(), 30000);
       } else if (res.error) {
         alert(`Connection failed: ${res.error}\n${res.detail || ""}`);
       } else {
-        // Connected directly (API key auth or no-auth)
-        setApiKeyModal(null);
+        // Connected directly (no-auth tools)
         loadConnections();
       }
     } catch (err: any) {
       alert(`Error: ${err.message}`);
     }
     setConnecting("");
-  }
-
-  async function handleApiKeyConnect() {
-    if (!apiKeyModal || !apiKeyInput.trim()) return;
-    setApiKeySaving(true);
-    await handleConnect(apiKeyModal.toolkit, apiKeyInput.trim());
-    setApiKeySaving(false);
   }
 
   async function handleDisconnect(slug: string) {
@@ -167,13 +155,32 @@ export default function Integrations() {
       <div className="border-b border-border bg-card px-4 py-3">
         <h1 className="text-sm font-bold">[+] Integrations</h1>
         <p className="text-[9px] text-muted">
-          {composioAvailable
-            ? `${totalItems} tools available — connect apps for your agent`
+          {initialLoading
+            ? "Loading integrations..."
+            : composioAvailable
+            ? `${totalItems} apps available — connect apps for your agent`
             : "Configure COMPOSIO_API_KEY in setup to enable 1000+ integrations"}
         </p>
       </div>
 
-      {composioAvailable ? (
+      {initialLoading ? (
+        <div className="flex-1 overflow-y-auto p-4">
+          <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 12 }).map((_, i) => (
+              <div key={i} className="rounded-sm border border-border bg-card p-3 animate-pulse">
+                <div className="flex items-start gap-2">
+                  <div className="h-5 w-5 rounded-sm bg-muted/20" />
+                  <div className="flex-1 space-y-1.5">
+                    <div className="h-3 w-24 rounded bg-muted/20" />
+                    <div className="h-2 w-full rounded bg-muted/10" />
+                    <div className="h-2 w-3/4 rounded bg-muted/10" />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : composioAvailable ? (
         <div className="flex-1 overflow-hidden flex flex-col">
           {/* Search + Filter */}
           <div className="px-4 py-3 border-b border-border">
@@ -337,37 +344,6 @@ export default function Integrations() {
         </div>
       )}
 
-      {/* API Key Modal — shown when toolkit requires user API key */}
-      {apiKeyModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-sm rounded-sm border border-border bg-card p-5 shadow-lg mx-4">
-            <h3 className="text-sm font-bold text-foreground mb-1">API Key Required</h3>
-            <p className="text-[10px] text-muted mb-3">{apiKeyModal.message}</p>
-            <div className="space-y-3">
-              <input
-                type="password"
-                value={apiKeyInput}
-                onChange={e => setApiKeyInput(e.target.value)}
-                placeholder={`${apiKeyModal.toolkit} API Key`}
-                autoFocus
-                onKeyDown={e => e.key === "Enter" && handleApiKeyConnect()}
-                className="w-full rounded-sm border border-border bg-background px-3 py-2 text-xs outline-none focus:border-primary"
-              />
-              <div className="flex gap-2">
-                <button onClick={() => { setApiKeyModal(null); setApiKeyInput(""); }}
-                  className="rounded-sm border border-border px-4 py-2 text-xs text-muted hover:text-foreground">Cancel</button>
-                <button onClick={handleApiKeyConnect} disabled={!apiKeyInput.trim() || apiKeySaving}
-                  className="flex-1 rounded-sm bg-primary px-4 py-2 text-xs font-semibold text-white hover:bg-primary-hover disabled:opacity-50">
-                  {apiKeySaving ? "Connecting..." : "Connect with Key"}
-                </button>
-              </div>
-              <p className="text-[8px] text-muted">
-                This app doesn't support OAuth. Provide your own API key to connect.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

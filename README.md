@@ -107,6 +107,41 @@ conclave update       # Pull latest + rebuild
 
 ---
 
+## Docker
+
+```bash
+docker pull ghcr.io/truehannan/conclave:latest
+
+docker run -d \
+  --name conclave \
+  -p 8000:8000 \
+  -v conclave-data:/opt/conclave \
+  -e INTERFACE_MODE=cli \
+  ghcr.io/truehannan/conclave:latest
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/truehannan/conclave.git
+cd conclave
+docker build -t conclave .
+docker run -d --name conclave -p 8000:8000 -v conclave-data:/opt/conclave conclave
+```
+
+Open `http://localhost:8000` to access the web UI. The setup wizard guides you through provider configuration.
+
+**Environment variables:**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INTERFACE_MODE` | `cli` | `cli`, `telegram`, `whatsapp`, `all` |
+| `CONCLAVE_API_PORT` | `8000` | API server port |
+| `OPENAI_API_KEY` | — | DigitalOcean/OpenAI key |
+| `COMPOSIO_API_KEY` | — | Composio key (1000+ integrations) |
+| `TELEGRAM_TOKEN` | — | Telegram bot token |
+
+---
+
 ## Deploy
 
 ```bash
