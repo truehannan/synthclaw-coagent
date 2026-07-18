@@ -1442,8 +1442,8 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
     """Connect a Composio toolkit. Uses auth_config + Connect Link.
-    Works for OAuth apps (Gmail, GitHub, Slack, etc.)
-    Non-OAuth apps may need setup from the Composio dashboard first."""
+    OAuth: creates managed auth_config → link → redirect to consent
+    Non-OAuth: finds existing auth_config → link → redirect to credential input page"""
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         raise HTTPException(status_code=400, detail="Composio API key not configured")
@@ -1454,9 +1454,9 @@ async def composio_connect(toolkit: str, request: Request):
 
         auth_config_id = ""
 
-        # Try creating auth_config with managed auth (works for OAuth apps)
+        # Strategy 1: Try creating with managed auth (works for OAuth apps)
         create_resp = req.post(
-            "https://backend.composio.dev/api/v3/auth_configs",
+            "https://backend.composio.dev/api/v3.1/auth_configs",
             headers=headers,
             json={
                 "toolkit": {"slug": toolkit},
@@ -1476,40 +1476,33 @@ async def composio_connect(toolkit: str, request: Request):
             if not auth_config_id:
                 auth_config_id = data.get("id") or data.get("nanoid") or data.get("auth_config_id", "")
         elif create_resp.status_code == 409:
-            # Already exists — find it
+            # Already exists — find it via list
+            pass  # Fall through to list below
+        # 400 = non-OAuth app, no managed auth — fall through to list
+
+        # Strategy 2: List existing auth_configs for this toolkit (works for ALL apps)
+        if not auth_config_id:
             list_resp = req.get(
-                "https://backend.composio.dev/api/v3/auth_configs",
+                "https://backend.composio.dev/api/v3.1/auth_configs",
                 headers=headers,
-                params={"toolkit_slug": toolkit},
-                timeout=10,
-            )
-            if list_resp.status_code == 200:
-                for ac in list_resp.json().get("items", []):
-                    tk = ac.get("toolkit_slug") or ""
-                    if not tk:
-                        tk_obj = ac.get("toolkit", "")
-                        tk = tk_obj.get("slug", "") if isinstance(tk_obj, dict) else str(tk_obj) if tk_obj else ""
-                    if tk.lower() == toolkit.lower():
-                        auth_config_id = ac.get("id") or ac.get("nanoid", "")
-                        break
-        elif create_resp.status_code == 400:
-            # Non-OAuth app — no managed auth available
-            # Try to find an existing auth_config (may have been created from dashboard)
-            list_resp = req.get(
-                "https://backend.composio.dev/api/v3/auth_configs",
-                headers=headers,
-                params={"toolkit_slug": toolkit},
+                params={"toolkit_slug": toolkit, "limit": 10},
                 timeout=10,
             )
             if list_resp.status_code == 200:
                 items = list_resp.json().get("items", [])
-                if items:
+                # Pick the first enabled auth_config
+                for ac in items:
+                    if ac.get("status", "ENABLED") == "ENABLED":
+                        auth_config_id = ac.get("id") or ac.get("nanoid", "")
+                        break
+                # If none enabled, use first available
+                if not auth_config_id and items:
                     auth_config_id = items[0].get("id") or items[0].get("nanoid", "")
 
         if not auth_config_id:
             return {
-                "error": f"Could not get auth_config for '{toolkit}'",
-                "detail": "This app doesn't have Composio managed auth. Set it up from the Composio dashboard (https://dashboard.composio.dev) first, then try again.",
+                "error": f"No auth config found for '{toolkit}'",
+                "detail": "Create one from the Composio dashboard: https://dashboard.composio.dev → Auth Configs → Create for this toolkit.",
             }
 
         # Create Connect Link — redirects user to Composio's hosted auth page
