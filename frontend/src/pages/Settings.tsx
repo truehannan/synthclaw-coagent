@@ -45,7 +45,6 @@ export default function Settings() {
       values["Default Model"] = configRes?.default_model || "";
       values["Max RPM"] = String(configRes?.max_rpm ?? "0");
       values["Max Tool Iterations"] = String(configRes?.max_tool_iterations ?? "10");
-      values["Search Provider"] = configRes?.search_provider || "(not set)";
       values["Provider"] = statusRes?.provider_name || "(not set)";
       values["Composio"] = statusRes?.has_composio ? "Configured" : "Not configured";
       values["D1 Storage"] = statusRes?.has_d1 ? "Connected" : "Not connected";
@@ -63,7 +62,6 @@ export default function Settings() {
         "Default Model": "default_model",
         "Max RPM": "max_rpm",
         "Max Tool Iterations": "max_tool_iterations",
-        "Search Provider": "search_provider",
       };
       const configKey = keyMap[label];
       if (configKey) {
@@ -235,7 +233,7 @@ export default function Settings() {
         <p className="text-[9px] text-muted mb-3">All values from setup wizard. Click a value to edit.</p>
         <div className="space-y-2">
           {Object.entries(setupValues).map(([label, value]) => {
-            const editable = ["Interface Mode", "Storage Mode", "Default Model", "Max RPM", "Max Tool Iterations", "Search Provider"].includes(label);
+            const editable = ["Interface Mode", "Storage Mode", "Default Model", "Max RPM", "Max Tool Iterations"].includes(label);
             const isEditing = editingField === label;
             return (
               <div key={label} className="flex items-center justify-between border-b border-border/30 pb-1.5 gap-2">

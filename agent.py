@@ -353,6 +353,8 @@ OPERATIONAL DIRECTIVES:
 9. Registered APIs → api_call(api="name", path="/endpoint").
 10. Composio apps → composio_check_connection first. If NOT connected, tell user: "Please connect [app] in the Integrations page first." Do NOT try to initiate connections yourself — the user must do it from the web UI. If connected → composio_discover to find tool slugs → composio_execute to run.
 11. If a tool you need isn't listed, describe what you need and it will be provided.
+12. When Composio is configured: PREFER composio_execute for search (composio_search), code execution (codeinterpreter), file ops (filetool), and shell (shelltool) over native tools — they produce richer output. Fallback to native tools (web_search, exec_code, run_command) only if Composio is unavailable.
+13. Triggers/Automations: when user says "add automation", "create trigger", "when X happens do Y" → use composio_discover_triggers(app) to find trigger slugs → composio_create_trigger(slug, config) to activate. Show what you're creating. Use composio_list_triggers to show active automations, composio_delete_trigger to remove.
 
 SYSTEM CONTEXT:
 - You are infrastructure software, not a consumer chatbot.
@@ -1649,6 +1651,36 @@ async def run_agent(
             if regular_calls:
                 _loop = asyncio.get_running_loop()
                 _task_set(chat_id, status="running", phase="running_tools", step=global_step, attempt=attempt_step)
+
+                # Emit special events for Composio trigger/search/code-exec tools
+                if send_fn:
+                    for tname, targs in regular_calls:
+                        try:
+                            if tname == "composio_create_trigger":
+                                slug = targs.get("trigger_slug", "trigger")
+                                await send_fn(f"🔄 Creating trigger: {slug}")
+                            elif tname == "composio_delete_trigger":
+                                tid = targs.get("trigger_id", "")
+                                await send_fn(f"🗑️ Deleting trigger: {tid}")
+                            elif tname == "composio_list_triggers":
+                                await send_fn("📋 Listing active triggers...")
+                            elif tname == "composio_discover_triggers":
+                                app = targs.get("app", "")
+                                await send_fn(f"🔍 Discovering triggers for: {app}")
+                            elif tname == "composio_execute":
+                                slug = targs.get("tool_slug", "tool")
+                                await send_fn(f"⚡ Executing: {slug}")
+                            elif tname == "composio_discover":
+                                app = targs.get("app", "")
+                                await send_fn(f"🔍 Discovering tools for: {app}")
+                            elif tname in ("web_search", "google_search"):
+                                q = targs.get("query", "")[:60]
+                                await send_fn(f"🔍 Searching: {q}")
+                            elif tname == "run_command":
+                                cmd = targs.get("command", "")[:60]
+                                await send_fn(f"⚙️ Running: {cmd}")
+                        except Exception:
+                            pass
 
                 async def _run_tool_parallel(idx, tname, targs):
                     logger.info(f"Tool call [{iteration+1}][{idx}]: {tname}({targs})")

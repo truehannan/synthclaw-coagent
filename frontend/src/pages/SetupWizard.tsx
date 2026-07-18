@@ -2,9 +2,9 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { providers as providersApi, models as modelsApi, getToken } from "@/lib/api";
 import Mascot from "@/components/Mascot";
-import { Check, Loader2, Database, Monitor, Bot, Cpu, Gauge, Puzzle, Search } from "lucide-react";
+import { Check, Loader2, Database, Monitor, Bot, Cpu, Gauge, Puzzle } from "lucide-react";
 
-type Step = "storage" | "checking" | "interface" | "provider" | "model" | "limits" | "search" | "composio";
+type Step = "storage" | "checking" | "interface" | "provider" | "model" | "limits" | "composio";
 
 const VISIBLE_STEPS: { key: Step; label: string; icon: any }[] = [
   { key: "storage", label: "Storage", icon: Database },
@@ -12,7 +12,6 @@ const VISIBLE_STEPS: { key: Step; label: string; icon: any }[] = [
   { key: "provider", label: "Provider", icon: Bot },
   { key: "model", label: "Model", icon: Cpu },
   { key: "limits", label: "Limits", icon: Gauge },
-  { key: "search", label: "Search", icon: Search },
   { key: "composio", label: "Composio", icon: Puzzle },
 ];
 
@@ -29,8 +28,6 @@ interface DbConfig {
   storage_mode?: string;
   has_d1?: boolean;
   has_composio?: boolean;
-  has_search?: boolean;
-  search_provider?: string;
   max_rpm?: string;
   max_tool_iterations?: string;
 }
@@ -67,9 +64,6 @@ export default function SetupWizard() {
   const [maxIterations, setMaxIterations] = useState("10");
   // Composio
   const [composioKey, setComposioKey] = useState("");
-  // Search API
-  const [searchProvider, setSearchProvider] = useState("");
-  const [searchApiKey, setSearchApiKey] = useState("");
 
 
   // After storage is selected, check the DB and determine which steps are missing
@@ -120,7 +114,6 @@ export default function SetupWizard() {
       if (!cfg.has_model && !cfg.default_model) missing.push("model");
       // Limits always have defaults, but include if max_rpm is not set
       if (!cfg.max_rpm && cfg.max_rpm !== "0") missing.push("limits");
-      if (!cfg.has_search && !cfg.search_provider) missing.push("search");
       if (!cfg.has_composio) missing.push("composio");
 
       setMissingSteps(missing);
@@ -202,24 +195,6 @@ export default function SetupWizard() {
     await fetch("/api/system/config", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Token": token }, body: JSON.stringify({ key: "max_tool_iterations", value: maxIterations }) }).catch(() => {});
     setSaving(false);
     goToNextMissing();
-  }
-
-  async function saveSearch() {
-    setSaving(true); setError("");
-    const token = getToken();
-    try {
-      if (searchProvider) {
-        // Store selected provider name
-        await fetch("/api/system/config", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Token": token }, body: JSON.stringify({ key: "search_provider", value: searchProvider }) });
-        // Store the API key under appropriate credential name
-        if (searchApiKey.trim()) {
-          const credName = `${searchProvider.toUpperCase()}_API_KEY`;
-          await fetch("/api/credentials", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Token": token }, body: JSON.stringify({ name: credName, value: searchApiKey.trim() }) });
-        }
-      }
-      goToNextMissing();
-    } catch (err: any) { setError(err.message || "Failed"); }
-    finally { setSaving(false); }
   }
 
   async function saveComposio() {
@@ -422,49 +397,18 @@ export default function SetupWizard() {
             </div>
           )}
 
-          {/* STEP: Search API */}
-          {step === "search" && (
-            <div className="space-y-4">
-              <h2 className="text-sm font-bold">Search API (optional)</h2>
-              <p className="text-[10px] text-muted">Select one search provider for web search capabilities. You can only use one at a time.</p>
-              <div className="space-y-2">
-                {[
-                  { value: "tavily", label: "Tavily", desc: "AI-optimized search API. Best for agent use." },
-                  { value: "firecrawl", label: "Firecrawl", desc: "Web scraping + search. Good for structured data." },
-                  { value: "exa", label: "Exa", desc: "Neural search engine. Semantic results." },
-                  { value: "brave", label: "Brave Search", desc: "Privacy-focused search API. No tracking." },
-                ].map(opt => (
-                  <label key={opt.value} className={`flex items-center gap-3 rounded-sm border p-3 cursor-pointer ${searchProvider === opt.value ? "border-primary bg-primary/5" : "border-border hover:border-muted"}`}>
-                    <input type="radio" name="searchProvider" value={opt.value} checked={searchProvider === opt.value} onChange={() => setSearchProvider(opt.value)} className="accent-primary" />
-                    <div><p className="text-xs font-medium">{opt.label}</p><p className="text-[10px] text-muted">{opt.desc}</p></div>
-                  </label>
-                ))}
-              </div>
-              {searchProvider && (
-                <div className="pt-2 border-t border-border">
-                  <label className="text-[10px] text-muted block mb-1">{searchProvider.charAt(0).toUpperCase() + searchProvider.slice(1)} API Key</label>
-                  <input type="password" value={searchApiKey} onChange={e => setSearchApiKey(e.target.value)}
-                    placeholder={`${searchProvider.toUpperCase()}_API_KEY`}
-                    className="w-full rounded-sm border border-border bg-background px-3 py-2 text-xs outline-none focus:border-primary" />
-                </div>
-              )}
-              {error && <p className="text-[10px] text-danger">{error}</p>}
-              <div className="flex gap-2">
-                <button onClick={goToPrevMissing} className="rounded-sm border border-border px-4 py-2 text-xs text-muted hover:text-foreground">Back</button>
-                <button onClick={saveSearch} disabled={saving}
-                  className="flex-1 rounded-sm bg-primary px-4 py-2 text-xs font-semibold text-white hover:bg-primary-hover disabled:opacity-50">
-                  {saving ? "..." : searchProvider ? "Save & Continue" : "Skip"}
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* STEP: Composio */}
           {step === "composio" && (
             <div className="space-y-4">
-              <h2 className="text-sm font-bold">Composio (optional)</h2>
-              <p className="text-[10px] text-muted">200+ app integrations — GitHub, Slack, Gmail, etc.</p>
-              <input value={composioKey} onChange={e => setComposioKey(e.target.value)} placeholder="Composio API Key (Enter to skip)"
+              <h2 className="text-sm font-bold">Composio <span className="text-primary">(Highly Recommended)</span></h2>
+              <p className="text-[10px] text-muted">
+                1000+ app integrations — Gmail, GitHub, Slack, Notion, Google Drive + built-in search, code execution, and automation triggers.
+                Without Composio, the agent can only use basic native tools.
+              </p>
+              <div className="rounded-sm border border-primary/30 bg-primary/5 px-3 py-2 text-[9px] text-primary/80">
+                Composio provides OAuth connections, web search, code interpreter, RAG, and trigger automations — all through one API key.
+              </div>
+              <input value={composioKey} onChange={e => setComposioKey(e.target.value)} placeholder="Composio API Key"
                 className="w-full rounded-sm border border-border bg-background px-3 py-2 text-xs outline-none focus:border-primary"
                 onKeyDown={e => e.key === "Enter" && saveComposio()} />
               {error && <p className="text-[10px] text-danger">{error}</p>}

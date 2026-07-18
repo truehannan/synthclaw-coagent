@@ -300,12 +300,6 @@ async def setup_status(request: Request):
     # Composio
     has_composio = bool(cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY"))
 
-    # Search API
-    search_provider = mem.get_memory("config_search_provider") or ""
-    has_search = bool(search_provider and (
-        mem.get_credential(f"{search_provider.upper()}_API_KEY")
-    ))
-
     # Overall: configured means provider + model are set (minimum viable)
     configured = has_provider and has_model
 
@@ -319,8 +313,6 @@ async def setup_status(request: Request):
         "has_d1": has_d1,
         "interface_mode": interface_mode,
         "has_composio": has_composio,
-        "has_search": has_search,
-        "search_provider": search_provider,
     }
 
 
@@ -481,8 +473,12 @@ async def chat_run(msg: ChatMessage):
         elif text.startswith("  ──•") or text.startswith("  ──"):
             # Agent delegation step — extract agent role and task
             await event_queue.put({"type": "agent_step", "content": text})
+        elif "trigger" in text.lower() and any(x in text.lower() for x in ["creating", "deleting", "listing", "discovering"]):
+            await event_queue.put({"type": "tool_call", "tool": "trigger", "content": text})
         elif "composio" in text.lower() and ("connect" in text.lower() or "check" in text.lower()):
             await event_queue.put({"type": "tool_call", "tool": "composio", "content": text})
+        elif text.startswith("⚡") or text.startswith("🔍") or text.startswith("⚙️") or text.startswith("🗑️"):
+            await event_queue.put({"type": "tool_call", "tool": "action", "content": text})
         elif any(x in text.lower() for x in ["running", "executing", "searching", "fetching"]):
             await event_queue.put({"type": "tool_call", "tool": "system", "content": text})
         elif text.startswith("❌") or text.startswith("✗"):
@@ -948,14 +944,13 @@ async def system_config():
         "base_dir": str(cfg.BASE_DIR),
         "has_composio": bool(cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY")),
         "has_d1": bool(cfg.CF_D1_DATABASE_ID and cfg.CF_API_TOKEN) or bool(mem.get_memory("cf_d1_database_id")),
-        "search_provider": mem.get_memory("config_search_provider") or "",
     }
 
 
 @app.post("/api/system/config", dependencies=[Depends(verify_token)])
 async def update_system_config(item: ConfigUpdateItem):
     """Update a configuration value."""
-    allowed_keys = {"default_model", "max_tool_iterations", "max_history_messages", "max_rpm", "interface_mode", "storage_mode", "search_provider"}
+    allowed_keys = {"default_model", "max_tool_iterations", "max_history_messages", "max_rpm", "interface_mode", "storage_mode"}
     if item.key not in allowed_keys:
         raise HTTPException(status_code=400, detail=f"Cannot update key: {item.key}")
     mem.set_memory(f"config_{item.key}", item.value)
@@ -1174,7 +1169,19 @@ async def composio_connections():
     """List Composio connected accounts (fetched live from Composio API)."""
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
-        return {"connections": [], "available": False}
+        return {"connections": [], "available": False, "native_apps": []}
+
+    # Composio's own native apps — always available with a valid API key, no auth needed
+    NATIVE_APPS = [
+        {"id": "native:composio_search", "app": "Composio Search", "slug": "composio_search", "status": "active", "native": True, "description": "Web search powered by Composio"},
+        {"id": "native:codeinterpreter", "app": "Code Interpreter", "slug": "codeinterpreter", "status": "active", "native": True, "description": "Execute code in sandboxed environment"},
+        {"id": "native:filetool", "app": "File Tool", "slug": "filetool", "status": "active", "native": True, "description": "Read, write, and manage files"},
+        {"id": "native:shelltool", "app": "Shell Tool", "slug": "shelltool", "status": "active", "native": True, "description": "Execute shell commands"},
+        {"id": "native:ragtool", "app": "RAG Tool", "slug": "ragtool", "status": "active", "native": True, "description": "Retrieval-augmented generation search"},
+        {"id": "native:sqltool", "app": "SQL Tool", "slug": "sqltool", "status": "active", "native": True, "description": "Execute SQL queries"},
+        {"id": "native:embedtool", "app": "Embed Tool", "slug": "embedtool", "status": "active", "native": True, "description": "Generate text embeddings"},
+    ]
+
     try:
         import requests as req
         resp = req.get(
@@ -1205,11 +1212,12 @@ async def composio_connections():
                     "slug": app_slug,
                     "status": item.get("status", "unknown"),
                     "user_id": item.get("user_id", ""),
+                    "native": False,
                 })
-            return {"connections": connections, "available": True}
-        return {"connections": [], "available": True}
+            return {"connections": NATIVE_APPS + connections, "available": True, "native_apps": NATIVE_APPS}
+        return {"connections": NATIVE_APPS, "available": True, "native_apps": NATIVE_APPS}
     except Exception:
-        return {"connections": [], "available": True}
+        return {"connections": NATIVE_APPS, "available": True, "native_apps": NATIVE_APPS}
 
 
 @app.delete("/api/composio/disconnect/{connection_id}", dependencies=[Depends(verify_token)])
@@ -1241,6 +1249,98 @@ async def composio_disconnect(connection_id: str):
                 status_code=resp.status_code,
                 content={"error": f"Composio API error: {resp.status_code} - {resp.text[:200]}"}
             )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/composio/triggers", dependencies=[Depends(verify_token)])
+async def composio_triggers_list():
+    """List active Composio triggers (automations)."""
+    composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
+    if not composio_key:
+        return {"triggers": [], "available": False}
+    try:
+        import requests as req
+        resp = req.get(
+            "https://backend.composio.dev/api/v3/trigger_instances/active",
+            headers={"x-api-key": composio_key},
+            params={"user_ids": "conclave", "show_disabled": "true", "limit": 50},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            items = data.get("items", data.get("triggers", []))
+            if not isinstance(items, list):
+                items = []
+            triggers = []
+            for t in items:
+                triggers.append({
+                    "id": t.get("id", t.get("triggerId", "")),
+                    "slug": t.get("triggerName", t.get("slug", t.get("trigger_name", ""))),
+                    "status": t.get("status", "active"),
+                    "app": t.get("toolkit_slug", t.get("appName", "")),
+                    "config": t.get("trigger_config", t.get("triggerConfig", {})),
+                    "created": t.get("createdAt", "")[:10],
+                })
+            return {"triggers": triggers, "count": len(triggers), "available": True}
+        return {"triggers": [], "available": True}
+    except Exception:
+        return {"triggers": [], "available": True}
+
+
+@app.post("/api/composio/triggers", dependencies=[Depends(verify_token)])
+async def composio_triggers_create(request: Request):
+    """Create/update a Composio trigger."""
+    composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
+    if not composio_key:
+        return JSONResponse(status_code=400, content={"error": "Composio not configured"})
+    try:
+        body = await request.json()
+        slug = body.get("slug", "")
+        trigger_config = body.get("config", {})
+        connected_account_id = body.get("connected_account_id", "")
+        if not slug:
+            return JSONResponse(status_code=400, content={"error": "Trigger slug required"})
+
+        import requests as req
+        payload = {"user_id": "conclave"}
+        if connected_account_id:
+            payload["connected_account_id"] = connected_account_id
+        if trigger_config:
+            payload["trigger_config"] = trigger_config
+
+        resp = req.post(
+            f"https://backend.composio.dev/api/v3/trigger_instances/{slug}/upsert",
+            headers={"x-api-key": composio_key, "Content-Type": "application/json"},
+            json=payload,
+            timeout=15,
+        )
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            return {"success": True, "trigger_id": data.get("id", ""), "status": data.get("status", "active")}
+        return JSONResponse(status_code=resp.status_code, content={"error": resp.text[:300]})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.delete("/api/composio/triggers/{trigger_id}", dependencies=[Depends(verify_token)])
+async def composio_triggers_delete(trigger_id: str):
+    """Delete a Composio trigger by ID."""
+    composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
+    if not composio_key:
+        return JSONResponse(status_code=400, content={"error": "Composio not configured"})
+    try:
+        import requests as req
+        resp = req.delete(
+            f"https://backend.composio.dev/api/v3/trigger_instances/{trigger_id}",
+            headers={"x-api-key": composio_key},
+            timeout=15,
+        )
+        if resp.status_code in (200, 204):
+            return {"success": True, "deleted": trigger_id}
+        elif resp.status_code == 404:
+            return JSONResponse(status_code=404, content={"error": "Trigger not found"})
+        return JSONResponse(status_code=resp.status_code, content={"error": resp.text[:200]})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -1314,31 +1414,75 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 
 @app.post("/api/composio/connect/{toolkit}", dependencies=[Depends(verify_token)])
 async def composio_connect(toolkit: str, request: Request):
-    """Connect a Composio toolkit. Uses new SDK on server (Python 3.10+)."""
+    """Connect a Composio toolkit. Handles both OAuth (managed) and API key auth types."""
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         raise HTTPException(status_code=400, detail="Composio API key not configured")
-    try:
-        # Try new SDK first (Python 3.10+, composio>=1.0)
-        try:
-            from composio import Composio
-            client = Composio(api_key=composio_key)
-            # New SDK has create() + authorize()
-            if hasattr(client, 'create'):
-                session = client.create("conclave", {})
-                conn = session.authorize(toolkit, callback_url="")
-                url = getattr(conn, 'redirect_url', '') or getattr(conn, 'redirectUrl', '')
-                if url:
-                    return {"success": True, "redirectUrl": url}
-        except (ImportError, AttributeError, TypeError):
-            pass
 
-        # Fallback: direct v3 REST API
+    # Check if request body has user-provided credentials (for API key auth)
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    user_api_key = body.get("api_key", "")
+
+    try:
         import requests as req
         headers = {"x-api-key": composio_key, "Content-Type": "application/json"}
         base = "https://backend.composio.dev/api/v3"
 
-        # Create auth_config with correct v3 payload
+        # If user provided an API key, use custom auth flow
+        if user_api_key:
+            # Create auth_config with user's API key
+            create_resp = req.post(
+                f"{base}/auth_configs",
+                headers=headers,
+                json={
+                    "toolkit": {"slug": toolkit},
+                    "auth_config": {
+                        "type": "custom_auth",
+                        "credentials": {"api_key": user_api_key},
+                        "restrict_to_following_tools": [],
+                    },
+                },
+                timeout=10,
+            )
+            auth_config_id = ""
+            if create_resp.status_code in (200, 201):
+                data = create_resp.json()
+                if isinstance(data.get("auth_config"), dict):
+                    auth_config_id = data["auth_config"].get("id") or data["auth_config"].get("nanoid", "")
+                if not auth_config_id:
+                    auth_config_id = data.get("id") or data.get("nanoid") or data.get("auth_config_id", "")
+            elif create_resp.status_code == 409:
+                # Already exists — list and find it
+                list_resp = req.get(f"{base}/auth_configs", headers=headers, timeout=10)
+                if list_resp.status_code == 200:
+                    for ac in list_resp.json().get("items", []):
+                        tk = ac.get("toolkit_slug") or ""
+                        if not tk:
+                            tk_obj = ac.get("toolkit", "")
+                            tk = tk_obj.get("slug", "") if isinstance(tk_obj, dict) else str(tk_obj) if tk_obj else ""
+                        if tk.lower() == toolkit.lower():
+                            auth_config_id = ac.get("id") or ac.get("nanoid", "")
+                            break
+
+            if not auth_config_id:
+                return {"error": f"Failed to create auth config for '{toolkit}'", "detail": create_resp.text[:200]}
+
+            # Create connected account with user's credentials
+            link_resp = req.post(
+                f"{base}/connected_accounts/link",
+                headers=headers,
+                json={"auth_config_id": auth_config_id, "user_id": "conclave"},
+                timeout=15,
+            )
+            if link_resp.status_code in (200, 201):
+                return {"success": True, "message": f"Connected {toolkit} with API key"}
+            return {"error": f"Link failed: HTTP {link_resp.status_code}", "detail": link_resp.text[:300]}
+
+        # Standard OAuth flow — try Composio managed auth
         create_resp = req.post(
             f"{base}/auth_configs",
             headers=headers,
@@ -1356,7 +1500,6 @@ async def composio_connect(toolkit: str, request: Request):
         auth_config_id = ""
         if create_resp.status_code in (200, 201):
             data = create_resp.json()
-            # Response: {"toolkit": {...}, "auth_config": {"id": "ac_xxx", ...}}
             if isinstance(data.get("auth_config"), dict):
                 auth_config_id = data["auth_config"].get("id") or data["auth_config"].get("nanoid", "")
             if not auth_config_id:
@@ -1373,6 +1516,17 @@ async def composio_connect(toolkit: str, request: Request):
                     if tk.lower() == toolkit.lower():
                         auth_config_id = ac.get("id") or ac.get("nanoid", "")
                         break
+        elif create_resp.status_code == 400:
+            # Check if this is a "no managed auth" error — requires API key
+            err_text = create_resp.text
+            if "DefaultAuthConfigNotFound" in err_text or "managed credentials" in err_text.lower() or "306" in err_text:
+                return {
+                    "auth_type": "api_key",
+                    "requires_key": True,
+                    "toolkit": toolkit,
+                    "message": f"{toolkit} requires your own API key (Composio doesn't provide OAuth for this app).",
+                }
+            return {"error": f"Could not get auth_config for '{toolkit}'", "detail": err_text[:300]}
 
         if not auth_config_id:
             return {
@@ -1380,7 +1534,7 @@ async def composio_connect(toolkit: str, request: Request):
                 "detail": f"Create response ({create_resp.status_code}): {create_resp.text[:200]}",
             }
 
-        # Create link
+        # Create link (OAuth redirect)
         link_resp = req.post(
             f"{base}/connected_accounts/link",
             headers=headers,

@@ -34,7 +34,12 @@ export default function Integrations() {
   const [connecting, setConnecting] = useState("");
   const [connectedSlugs, setConnectedSlugs] = useState<Set<string>>(new Set());
   const [connectionMap, setConnectionMap] = useState<Map<string, string>>(new Map()); // slug -> connection_id
+  const [nativeApps, setNativeApps] = useState<any[]>([]);
   const [disconnecting, setDisconnecting] = useState("");
+  const [nativeSlugs, setNativeSlugs] = useState<Set<string>>(new Set());
+  const [apiKeyModal, setApiKeyModal] = useState<{ toolkit: string; message: string } | null>(null);
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [apiKeySaving, setApiKeySaving] = useState(false);
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedRef = useRef(false);
 
@@ -52,19 +57,23 @@ export default function Integrations() {
       const res = await composio.connections();
       const slugs = new Set<string>();
       const idMap = new Map<string, string>();
+      const natives = new Set<string>();
       for (const c of (res.connections || [])) {
         const key = (c.slug || c.app || "").toLowerCase();
+        if (c.native) natives.add(key);
         if (key) {
           slugs.add(key);
-          if (c.id) idMap.set(key, c.id);
+          if (c.id && !c.native) idMap.set(key, c.id);
         }
         if (c.app && c.app.toLowerCase() !== key) {
           slugs.add(c.app.toLowerCase());
-          if (c.id) idMap.set(c.app.toLowerCase(), c.id);
+          if (c.id && !c.native) idMap.set(c.app.toLowerCase(), c.id);
         }
       }
       setConnectedSlugs(slugs);
       setConnectionMap(idMap);
+      setNativeSlugs(natives);
+      setNativeApps(res.native_apps || []);
       setComposioAvailable(res.available !== false);
     } catch {}
   }
@@ -101,11 +110,15 @@ export default function Integrations() {
     setSearchParams({ page: String(page) });
   }
 
-  async function handleConnect(toolkit: string) {
+  async function handleConnect(toolkit: string, apiKey?: string) {
     setConnecting(toolkit);
     try {
-      const res = await composio.connect(toolkit);
-      if (res.redirectUrl) {
+      const res = await composio.connect(toolkit, apiKey);
+      if (res.requires_key) {
+        // This toolkit needs user's own API key
+        setApiKeyModal({ toolkit, message: res.message || `${toolkit} requires your API key.` });
+        setApiKeyInput("");
+      } else if (res.redirectUrl) {
         window.open(res.redirectUrl, "_blank");
         // Poll for connection completion after redirect
         setTimeout(() => loadConnections(), 5000);
@@ -113,13 +126,21 @@ export default function Integrations() {
       } else if (res.error) {
         alert(`Connection failed: ${res.error}\n${res.detail || ""}`);
       } else {
-        // Might have connected directly (API key auth)
+        // Connected directly (API key auth or no-auth)
+        setApiKeyModal(null);
         loadConnections();
       }
     } catch (err: any) {
       alert(`Error: ${err.message}`);
     }
     setConnecting("");
+  }
+
+  async function handleApiKeyConnect() {
+    if (!apiKeyModal || !apiKeyInput.trim()) return;
+    setApiKeySaving(true);
+    await handleConnect(apiKeyModal.toolkit, apiKeyInput.trim());
+    setApiKeySaving(false);
   }
 
   async function handleDisconnect(slug: string) {
@@ -162,6 +183,21 @@ export default function Integrations() {
                 className="w-full rounded-sm border border-border bg-background pl-9 pr-3 py-2 text-xs outline-none focus:border-primary" />
             </div>
           </div>
+
+          {/* Native Composio Apps — always connected */}
+          {nativeApps.length > 0 && (
+            <div className="px-4 pt-3 pb-1 border-b border-border">
+              <p className="text-[9px] font-semibold text-muted uppercase tracking-wider mb-2">Built-in Tools (Always Active)</p>
+              <div className="flex flex-wrap gap-1.5 pb-2">
+                {nativeApps.map((app: any) => (
+                  <div key={app.id} className="flex items-center gap-1.5 rounded-full border border-success/30 bg-success/5 px-2.5 py-1">
+                    <span className="h-1.5 w-1.5 rounded-full bg-success" />
+                    <span className="text-[9px] font-medium text-success">{app.app}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Tools grid */}
           <div className="flex-1 overflow-y-auto p-4">
@@ -216,7 +252,9 @@ export default function Integrations() {
                   )}
                   <div className="mt-2 flex items-center justify-between">
                     <span className="text-[8px] text-muted font-mono truncate max-w-[120px]">{slug}</span>
-                    {isConnected ? (
+                    {isConnected && nativeSlugs.has(slug.toLowerCase()) ? (
+                      <span className="text-[9px] text-success font-medium">Built-in</span>
+                    ) : isConnected ? (
                       <button onClick={() => handleDisconnect(slug)}
                         disabled={disconnecting === slug}
                         className="flex items-center gap-1 rounded-sm bg-danger/10 px-2 py-0.5 text-[9px] text-danger hover:bg-danger/20 disabled:opacity-50">
@@ -279,6 +317,38 @@ export default function Integrations() {
                 <span className="text-muted ml-1">({a.base_url})</span>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* API Key Modal — shown when toolkit requires user API key */}
+      {apiKeyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-sm rounded-sm border border-border bg-card p-5 shadow-lg mx-4">
+            <h3 className="text-sm font-bold text-foreground mb-1">API Key Required</h3>
+            <p className="text-[10px] text-muted mb-3">{apiKeyModal.message}</p>
+            <div className="space-y-3">
+              <input
+                type="password"
+                value={apiKeyInput}
+                onChange={e => setApiKeyInput(e.target.value)}
+                placeholder={`${apiKeyModal.toolkit} API Key`}
+                autoFocus
+                onKeyDown={e => e.key === "Enter" && handleApiKeyConnect()}
+                className="w-full rounded-sm border border-border bg-background px-3 py-2 text-xs outline-none focus:border-primary"
+              />
+              <div className="flex gap-2">
+                <button onClick={() => { setApiKeyModal(null); setApiKeyInput(""); }}
+                  className="rounded-sm border border-border px-4 py-2 text-xs text-muted hover:text-foreground">Cancel</button>
+                <button onClick={handleApiKeyConnect} disabled={!apiKeyInput.trim() || apiKeySaving}
+                  className="flex-1 rounded-sm bg-primary px-4 py-2 text-xs font-semibold text-white hover:bg-primary-hover disabled:opacity-50">
+                  {apiKeySaving ? "Connecting..." : "Connect with Key"}
+                </button>
+              </div>
+              <p className="text-[8px] text-muted">
+                This app doesn't support OAuth. Provide your own API key to connect.
+              </p>
+            </div>
           </div>
         </div>
       )}

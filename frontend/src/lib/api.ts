@@ -138,8 +138,13 @@ export const apis = {
 export const composio = {
   connections: () => request("/composio/connections"),
   tools: (page = 1, search = "", toolkit = "") => request(`/composio/tools?page=${page}&search=${encodeURIComponent(search)}&toolkit=${encodeURIComponent(toolkit)}`),
-  connect: (toolkit: string) => request(`/composio/connect/${toolkit}`, { method: "POST" }),
+  connect: (toolkit: string, apiKey?: string) => request(`/composio/connect/${toolkit}`, { method: "POST", body: JSON.stringify(apiKey ? { api_key: apiKey } : {}) }),
   disconnect: (connectionId: string) => request(`/composio/disconnect/${connectionId}`, { method: "DELETE" }),
+  triggers: {
+    list: () => request("/composio/triggers"),
+    create: (slug: string, config?: any, connectedAccountId?: string) => request("/composio/triggers", { method: "POST", body: JSON.stringify({ slug, config, connected_account_id: connectedAccountId }) }),
+    del: (triggerId: string) => request(`/composio/triggers/${triggerId}`, { method: "DELETE" }),
+  },
 };
 
 // ── MCP Servers ──────────────────────────────────────────────────────────────

@@ -1560,6 +1560,175 @@ def composio_list_connections() -> dict:
         return {"error": str(e)}
 
 
+# ── Composio Triggers (Automations) ──────────────────────────────────────────
+
+def composio_create_trigger(trigger_slug: str, trigger_config: str = "{}", connected_account_id: str = "") -> dict:
+    """Create or update a Composio trigger (automation).
+    Triggers listen for events from connected apps (new email, new commit, new message)
+    and send webhook payloads to your configured endpoint.
+    trigger_slug: the trigger type slug (e.g. 'GMAIL_NEW_EMAIL', 'GITHUB_PUSH_EVENT', 'SLACK_NEW_MESSAGE')
+    trigger_config: JSON string of trigger-specific configuration (e.g. filters)
+    connected_account_id: optional, specific connected account to use"""
+    from config import COMPOSIO_API_KEY
+    from memory import get_credential
+    api_key = get_credential("COMPOSIO_API_KEY") or COMPOSIO_API_KEY
+    if not api_key:
+        return {"error": "Composio not configured. Store COMPOSIO_API_KEY first."}
+
+    try:
+        headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+        body = {"user_id": "conclave"}
+        if connected_account_id:
+            body["connected_account_id"] = connected_account_id
+        # Parse trigger config
+        if trigger_config and trigger_config != "{}":
+            try:
+                body["trigger_config"] = json.loads(trigger_config) if isinstance(trigger_config, str) else trigger_config
+            except json.JSONDecodeError:
+                return {"error": "Invalid trigger_config JSON"}
+
+        resp = requests.post(
+            f"https://backend.composio.dev/api/v3/trigger_instances/{trigger_slug}/upsert",
+            headers=headers,
+            json=body,
+            timeout=15,
+        )
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            return {
+                "success": True,
+                "trigger_slug": trigger_slug,
+                "trigger_id": data.get("id", data.get("triggerId", "")),
+                "status": data.get("status", "active"),
+                "message": f"Trigger '{trigger_slug}' created/updated successfully.",
+            }
+        return {"error": f"Failed to create trigger: HTTP {resp.status_code}", "detail": resp.text[:300]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def composio_list_triggers() -> dict:
+    """List all active Composio triggers (automations) for this user.
+    Shows which event listeners are running."""
+    from config import COMPOSIO_API_KEY
+    from memory import get_credential
+    api_key = get_credential("COMPOSIO_API_KEY") or COMPOSIO_API_KEY
+    if not api_key:
+        return {"error": "Composio not configured. Store COMPOSIO_API_KEY first."}
+
+    try:
+        headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+        resp = requests.get(
+            "https://backend.composio.dev/api/v3/trigger_instances/active",
+            headers=headers,
+            params={"user_ids": "conclave", "show_disabled": "true", "limit": 50},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return {"error": f"Composio API error: {resp.status_code}"}
+
+        data = resp.json()
+        items = data.get("items", data.get("triggers", []))
+        if not isinstance(items, list):
+            items = []
+
+        triggers = []
+        for t in items:
+            triggers.append({
+                "id": t.get("id", t.get("triggerId", "")),
+                "slug": t.get("triggerName", t.get("slug", t.get("trigger_name", ""))),
+                "status": t.get("status", "active"),
+                "app": t.get("toolkit_slug", t.get("appName", "")),
+                "config": t.get("trigger_config", t.get("triggerConfig", {})),
+                "created": t.get("createdAt", "")[:10],
+            })
+
+        return {"triggers": triggers, "count": len(triggers)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def composio_delete_trigger(trigger_id: str) -> dict:
+    """Delete a Composio trigger (automation) by its ID.
+    trigger_id: the trigger instance ID (starts with 'ti_')"""
+    from config import COMPOSIO_API_KEY
+    from memory import get_credential
+    api_key = get_credential("COMPOSIO_API_KEY") or COMPOSIO_API_KEY
+    if not api_key:
+        return {"error": "Composio not configured. Store COMPOSIO_API_KEY first."}
+
+    try:
+        headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+        resp = requests.delete(
+            f"https://backend.composio.dev/api/v3/trigger_instances/{trigger_id}",
+            headers=headers,
+            timeout=15,
+        )
+        if resp.status_code in (200, 204):
+            return {"success": True, "deleted": trigger_id, "message": f"Trigger {trigger_id} deleted."}
+        elif resp.status_code == 404:
+            return {"error": f"Trigger '{trigger_id}' not found."}
+        return {"error": f"Delete failed: HTTP {resp.status_code}", "detail": resp.text[:200]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def composio_discover_triggers(app: str) -> dict:
+    """Discover available trigger types for an app.
+    CALL THIS before composio_create_trigger to find the correct trigger slug.
+    app: app name (e.g. 'gmail', 'github', 'slack', 'notion')
+    Returns: list of available trigger slugs with descriptions."""
+    from config import COMPOSIO_API_KEY
+    from memory import get_credential
+    api_key = get_credential("COMPOSIO_API_KEY") or COMPOSIO_API_KEY
+    if not api_key:
+        return {"error": "Composio not configured. Store COMPOSIO_API_KEY first."}
+
+    try:
+        headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+        # Use the tools endpoint filtered by app and type=trigger
+        resp = requests.get(
+            "https://backend.composio.dev/api/v3/trigger_instances/types",
+            headers=headers,
+            params={"toolkit_slugs": app, "limit": 20},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            # Fallback: search triggers via general search
+            resp = requests.get(
+                "https://backend.composio.dev/api/v3.1/tools",
+                headers=headers,
+                params={"search": f"{app} trigger", "limit": 15, "type": "trigger"},
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return {"error": f"Composio API error: {resp.status_code}"}
+
+        data = resp.json()
+        items = data.get("items", data) if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            items = []
+
+        triggers_found = []
+        for t in items[:20]:
+            triggers_found.append({
+                "slug": t.get("slug", t.get("name", t.get("enum", ""))),
+                "description": (t.get("description", "") or "")[:120],
+                "app": t.get("appName", t.get("toolkit_slug", app)),
+            })
+
+        if not triggers_found:
+            return {"triggers": [], "count": 0, "note": f"No triggers found for '{app}'. Try: gmail, github, slack, notion."}
+
+        return {
+            "triggers": triggers_found,
+            "count": len(triggers_found),
+            "usage": "Call composio_create_trigger(trigger_slug='SLUG', trigger_config='{}') to activate.",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── Skill management tools ─────────────────────────────────────────────────────
 
 def install_skill(source: str, name: str = "") -> dict:
@@ -2177,6 +2346,30 @@ TOOL_REGISTRY = {
         "description": "List all connected Composio app accounts with labels. Shows which integrations are active.",
         "params": {},
     },
+    "composio_create_trigger": {
+        "fn": composio_create_trigger,
+        "description": "Create/update a Composio trigger (automation). Listens for events from connected apps and fires webhooks. CALL composio_discover_triggers first to get the slug.",
+        "params": {
+            "trigger_slug": "str (e.g. GMAIL_NEW_EMAIL, GITHUB_PUSH_EVENT — get from composio_discover_triggers)",
+            "trigger_config": "str (optional, JSON config for trigger — e.g. filter criteria)",
+            "connected_account_id": "str (optional, specific account to use)",
+        },
+    },
+    "composio_list_triggers": {
+        "fn": composio_list_triggers,
+        "description": "List all active Composio triggers (automations). Shows which event listeners are running.",
+        "params": {},
+    },
+    "composio_delete_trigger": {
+        "fn": composio_delete_trigger,
+        "description": "Delete a Composio trigger (automation) by its ID.",
+        "params": {"trigger_id": "str (the trigger instance ID, starts with 'ti_')"},
+    },
+    "composio_discover_triggers": {
+        "fn": composio_discover_triggers,
+        "description": "REQUIRED before composio_create_trigger. Discovers available trigger types for an app. Shows what events you can listen to.",
+        "params": {"app": "str (app name: gmail, github, slack, notion, etc.)"},
+    },
     # ── Skill management tools ─────────────────────────────────────────
     "install_skill": {
         "fn": install_skill,
@@ -2262,6 +2455,8 @@ TOOL_GROUPS = {
         "register_api", "api_call", "list_apis",
         "composio_discover", "composio_check_connection", "composio_execute",
         "composio_connect", "composio_list_connections",
+        "composio_create_trigger", "composio_list_triggers", "composio_delete_trigger",
+        "composio_discover_triggers",
     ],
     "skills": [
         "install_skill", "uninstall_skill", "list_skills_with_sources", "reinstall_all_skills",
@@ -2277,7 +2472,7 @@ TOOL_GROUP_TRIGGERS = {
     "scheduling": ["remind", "schedule", "cron", "timer", "alarm", "daily", "hourly", "every", "recurring", "notification"],
     "credentials": ["key", "secret", "credential", "password", "token", "store", "encrypt", "email", "smtp", "telegram"],
     "data": ["database", "sqlite", "redis", "sql", "query", "table", "cache", "db"],
-    "integrations": ["composio", "gmail", "slack", "github", "notion", "api", "integration", "connect", "oauth", "stripe", "vercel", "cloudflare", "send email", "create issue", "discord", "linear", "hubspot", "calendar", "drive", "sheets", "trello", "jira", "asana"],
+    "integrations": ["composio", "gmail", "slack", "github", "notion", "api", "integration", "connect", "oauth", "stripe", "vercel", "cloudflare", "send email", "create issue", "discord", "linear", "hubspot", "calendar", "drive", "sheets", "trello", "jira", "asana", "trigger", "automation", "automate", "when", "webhook", "event", "listen"],
     "skills": ["skill", "install", "package", "clawhub", "uninstall", "plugin"],
 }
 
