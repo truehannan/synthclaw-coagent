@@ -467,20 +467,50 @@ async def chat_run(msg: ChatMessage):
         """Callback passed to run_agent — intercepts intermediate messages."""
         if not text:
             return
-        # Parse text content to detect what's happening
+        # Parse text content to detect what's happening and extract tool names
         if text.startswith("🔄") or text.startswith("📋"):
             await event_queue.put({"type": "progress", "content": text})
         elif text.startswith("  ──•") or text.startswith("  ──"):
-            # Agent delegation step — extract agent role and task
             await event_queue.put({"type": "agent_step", "content": text})
-        elif "trigger" in text.lower() and any(x in text.lower() for x in ["creating", "deleting", "listing", "discovering"]):
-            await event_queue.put({"type": "tool_call", "tool": "trigger", "content": text})
+        elif text.startswith("🔄 Creating trigger:"):
+            name = text.split(":", 1)[-1].strip()
+            await event_queue.put({"type": "tool_call", "tool": "Create Trigger", "content": text, "app": name.split("_")[0].lower() if "_" in name else ""})
+        elif text.startswith("🗑️ Deleting trigger:"):
+            await event_queue.put({"type": "tool_call", "tool": "Delete Trigger", "content": text})
+        elif text.startswith("📋 Listing active triggers"):
+            await event_queue.put({"type": "tool_call", "tool": "List Triggers", "content": text})
+        elif text.startswith("🔍 Discovering triggers"):
+            app = text.split(":")[-1].strip() if ":" in text else ""
+            await event_queue.put({"type": "tool_call", "tool": "Discover Triggers", "content": text, "app": app})
+        elif text.startswith("⚡ Executing:"):
+            slug = text.split(":", 1)[-1].strip()
+            # Extract app name from Composio tool slug (e.g. GMAIL_SEND_EMAIL → gmail)
+            app = slug.split("_")[0].lower() if "_" in slug else slug.lower()
+            await event_queue.put({"type": "tool_call", "tool": slug, "content": text, "app": app})
+        elif text.startswith("🔍 Searching:"):
+            query = text.split(":", 1)[-1].strip()
+            await event_queue.put({"type": "tool_call", "tool": "Web Search", "content": text, "args": query})
+        elif text.startswith("🔍 Discovering tools"):
+            app = text.split(":")[-1].strip() if ":" in text else ""
+            await event_queue.put({"type": "tool_call", "tool": "Discover Tools", "content": text, "app": app})
+        elif text.startswith("⚙️ Running:"):
+            cmd = text.split(":", 1)[-1].strip()
+            await event_queue.put({"type": "tool_call", "tool": "Shell", "content": text, "args": cmd})
         elif "composio" in text.lower() and ("connect" in text.lower() or "check" in text.lower()):
-            await event_queue.put({"type": "tool_call", "tool": "composio", "content": text})
-        elif text.startswith("⚡") or text.startswith("🔍") or text.startswith("⚙️") or text.startswith("🗑️"):
-            await event_queue.put({"type": "tool_call", "tool": "action", "content": text})
+            await event_queue.put({"type": "tool_call", "tool": "Check Connection", "content": text})
+        elif "not connected" in text.lower() or "please connect" in text.lower():
+            # Extract app name from text like "Please connect Gmail in the Integrations page"
+            import re as _re
+            app_match = _re.search(r"connect\s+(\w+)", text, _re.IGNORECASE)
+            app_name = app_match.group(1) if app_match else ""
+            await event_queue.put({
+                "type": "connect_required",
+                "content": text,
+                "app": app_name.lower(),
+                "app_name": app_name,
+            })
         elif any(x in text.lower() for x in ["running", "executing", "searching", "fetching"]):
-            await event_queue.put({"type": "tool_call", "tool": "system", "content": text})
+            await event_queue.put({"type": "tool_call", "tool": "System", "content": text})
         elif text.startswith("❌") or text.startswith("✗"):
             await event_queue.put({"type": "error", "message": text})
         else:
@@ -1353,33 +1383,42 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
         return {"items": [], "available": False, "total_pages": 0}
     try:
         import requests as req
-        params = {"limit": 100}
+        # Fetch ALL toolkits (apps) — limit=1000 gets everything (Composio has ~1000 apps)
+        # The /toolkits endpoint returns apps, NOT individual tools (which would be 20K+)
+        params = {"limit": 1000}
         if search:
             params["search"] = search
 
-        # Fetch toolkits (apps) — not individual tools (23K+)
         resp = req.get(
             "https://backend.composio.dev/api/v3/toolkits",
             headers={"x-api-key": composio_key},
             params=params,
-            timeout=15,
+            timeout=20,
         )
         if resp.status_code == 200:
             data = resp.json()
             raw_items = data.get("items", data.get("toolkits", []))
-            # Normalize fields + use Composio logo CDN as fallback
+            if not isinstance(raw_items, list):
+                raw_items = []
+            # Normalize fields + use Composio logo CDN
             items = []
             for item in raw_items:
                 slug = item.get("slug") or item.get("name", "")
+                if not slug:
+                    continue
+                # Skip items that look like individual tools (have "action" in slug or very long slugs with underscores)
+                if slug.count("_") > 2 and len(slug) > 40:
+                    continue
                 items.append({
                     "slug": slug,
                     "name": item.get("name") or item.get("display_name") or slug,
-                    "description": item.get("description") or item.get("short_description") or "",
+                    "description": (item.get("description") or item.get("short_description") or "")[:200],
                     "logo": item.get("logo") or item.get("icon") or item.get("logo_url") or f"https://logos.composio.dev/api/{slug}",
                     "tags": item.get("tags") or item.get("categories") or [],
+                    "no_auth": item.get("no_auth", False),
                 })
-            # Server-side pagination slice
-            page_size = 30
+            # Server-side pagination
+            page_size = 36
             total = len(items)
             start = (page - 1) * page_size
             end = start + page_size
@@ -1389,22 +1428,6 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
                 "total_pages": max(1, (total + page_size - 1) // page_size),
                 "current_page": page,
                 "total_items": total,
-                "available": True,
-            }
-        # Fallback: try /tools endpoint with toolkit grouping
-        resp2 = req.get(
-            "https://backend.composio.dev/api/v3/tools",
-            headers={"x-api-key": composio_key},
-            params={"page": page, "limit": 30, "search": search} if search else {"page": page, "limit": 30},
-            timeout=15,
-        )
-        if resp2.status_code == 200:
-            data = resp2.json()
-            return {
-                "items": data.get("items", []),
-                "total_pages": data.get("total_pages", 0),
-                "current_page": data.get("current_page", page),
-                "total_items": data.get("total_items", 0),
                 "available": True,
             }
         return {"items": [], "available": True, "total_pages": 0, "error": f"HTTP {resp.status_code}"}

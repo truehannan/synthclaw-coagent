@@ -40,6 +40,7 @@ export default function Integrations() {
   const [apiKeyModal, setApiKeyModal] = useState<{ toolkit: string; message: string } | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [apiKeySaving, setApiKeySaving] = useState(false);
+  const [filter, setFilter] = useState<"all" | "connected">("all");
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedRef = useRef(false);
 
@@ -174,13 +175,25 @@ export default function Integrations() {
 
       {composioAvailable ? (
         <div className="flex-1 overflow-hidden flex flex-col">
-          {/* Search */}
+          {/* Search + Filter */}
           <div className="px-4 py-3 border-b border-border">
-            <div className="relative max-w-md">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted" />
-              <input value={toolsSearch} onChange={e => handleSearch(e.target.value)}
-                placeholder="Search tools (gmail, github, slack, notion...)"
-                className="w-full rounded-sm border border-border bg-background pl-9 pr-3 py-2 text-xs outline-none focus:border-primary" />
+            <div className="flex items-center gap-3">
+              <div className="relative flex-1 max-w-md">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted" />
+                <input value={toolsSearch} onChange={e => handleSearch(e.target.value)}
+                  placeholder="Search apps (gmail, github, slack, notion...)"
+                  className="w-full rounded-sm border border-border bg-background pl-9 pr-3 py-2 text-xs outline-none focus:border-primary" />
+              </div>
+              <div className="flex rounded-sm border border-border overflow-hidden">
+                <button onClick={() => setFilter("all")}
+                  className={`px-3 py-1.5 text-[9px] font-medium ${filter === "all" ? "bg-primary text-white" : "text-muted hover:text-foreground"}`}>
+                  All ({totalItems})
+                </button>
+                <button onClick={() => setFilter("connected")}
+                  className={`px-3 py-1.5 text-[9px] font-medium border-l border-border ${filter === "connected" ? "bg-primary text-white" : "text-muted hover:text-foreground"}`}>
+                  Connected ({connectedSlugs.size})
+                </button>
+              </div>
             </div>
           </div>
 
@@ -222,7 +235,10 @@ export default function Integrations() {
               </div>
             )}
             <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
-              {tools.map(tool => {
+              {(filter === "connected"
+                ? tools.filter(t => connectedSlugs.has((t.slug || "").toLowerCase()) || connectedSlugs.has((t.name || "").toLowerCase()))
+                : tools
+              ).map(tool => {
                 const logo = tool.logo || tool.toolkit?.logo || "";
                 const name = tool.name || tool.toolkit?.name || tool.slug || "";
                 const slug = tool.slug || "";
@@ -279,8 +295,8 @@ export default function Integrations() {
               })}
             </div>
 
-            {/* Pagination */}
-            {totalPages > 1 && (
+            {/* Pagination — hide when showing connected filter */}
+            {totalPages > 1 && filter === "all" && (
               <div className="flex items-center justify-center gap-2 mt-4 py-3">
                 <button onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1}
                   className="rounded-sm border border-border px-3 py-1 text-[10px] text-muted hover:text-foreground disabled:opacity-30">Prev</button>
