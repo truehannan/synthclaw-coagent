@@ -1443,7 +1443,7 @@ async def composio_tools(page: int = 1, search: str = "", toolkit: str = ""):
 async def composio_connect(toolkit: str, request: Request):
     """Connect a Composio toolkit. Uses auth_config + Connect Link.
     OAuth: creates managed auth_config → link → redirect to consent
-    Non-OAuth: finds existing auth_config → link → redirect to credential input page"""
+    Non-OAuth: auto-creates auth_config via session → link → redirect to credential page"""
     composio_key = cfg.COMPOSIO_API_KEY or mem.get_credential("COMPOSIO_API_KEY") or ""
     if not composio_key:
         raise HTTPException(status_code=400, detail="Composio API key not configured")
@@ -1476,11 +1476,9 @@ async def composio_connect(toolkit: str, request: Request):
             if not auth_config_id:
                 auth_config_id = data.get("id") or data.get("nanoid") or data.get("auth_config_id", "")
         elif create_resp.status_code == 409:
-            # Already exists — find it via list
-            pass  # Fall through to list below
-        # 400 = non-OAuth app, no managed auth — fall through to list
+            pass  # Already exists — will find via list below
 
-        # Strategy 2: List existing auth_configs for this toolkit (works for ALL apps)
+        # Strategy 2: List existing auth_configs for this toolkit
         if not auth_config_id:
             list_resp = req.get(
                 "https://backend.composio.dev/api/v3.1/auth_configs",
@@ -1490,19 +1488,58 @@ async def composio_connect(toolkit: str, request: Request):
             )
             if list_resp.status_code == 200:
                 items = list_resp.json().get("items", [])
-                # Pick the first enabled auth_config
                 for ac in items:
                     if ac.get("status", "ENABLED") == "ENABLED":
                         auth_config_id = ac.get("id") or ac.get("nanoid", "")
                         break
-                # If none enabled, use first available
                 if not auth_config_id and items:
                     auth_config_id = items[0].get("id") or items[0].get("nanoid", "")
 
+        # Strategy 3: For non-OAuth apps with no auth_config — use a session to auto-create one
+        # Per Composio glossary: "Auth configs are created automatically by a session when needed"
+        if not auth_config_id:
+            # Create a temp session — this triggers Composio to auto-create auth_config for the toolkit
+            session_resp = req.post(
+                "https://backend.composio.dev/api/v3/tool_router/session",
+                headers=headers,
+                json={"user_id": "conclave", "toolkits": {"enabled": [toolkit]}},
+                timeout=10,
+            )
+            if session_resp.status_code in (200, 201):
+                session_data = session_resp.json()
+                session_id = session_data.get("session_id", "")
+
+                if session_id:
+                    # Now use session link — this handles ALL auth types
+                    link_resp = req.post(
+                        f"https://backend.composio.dev/api/v3/tool_router/session/{session_id}/link",
+                        headers=headers,
+                        json={"toolkit": toolkit},
+                        timeout=15,
+                    )
+                    if link_resp.status_code in (200, 201):
+                        data = link_resp.json()
+                        url = data.get("redirect_url") or data.get("redirectUrl") or data.get("url", "")
+                        if url:
+                            return {"success": True, "redirectUrl": url}
+                        return {"success": True, "message": f"Connected {toolkit}"}
+
+                # If session link failed, try listing auth_configs again (session may have created one)
+                list_resp2 = req.get(
+                    "https://backend.composio.dev/api/v3.1/auth_configs",
+                    headers=headers,
+                    params={"toolkit_slug": toolkit, "limit": 5},
+                    timeout=10,
+                )
+                if list_resp2.status_code == 200:
+                    items = list_resp2.json().get("items", [])
+                    if items:
+                        auth_config_id = items[0].get("id") or items[0].get("nanoid", "")
+
         if not auth_config_id:
             return {
-                "error": f"No auth config found for '{toolkit}'",
-                "detail": "Create one from the Composio dashboard: https://dashboard.composio.dev → Auth Configs → Create for this toolkit.",
+                "error": f"No auth config available for '{toolkit}'",
+                "detail": "Composio doesn't have a default configuration for this toolkit yet.",
             }
 
         # Create Connect Link — redirects user to Composio's hosted auth page
