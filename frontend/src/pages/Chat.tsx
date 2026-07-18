@@ -251,11 +251,6 @@ export default function Chat() {
             </button>
             <span className="text-[10px] text-muted truncate max-w-[200px]">{currentModel || "No model"}</span>
           </div>
-          <button onClick={toggleSociety} title="Agent Society"
-            className={`flex items-center gap-1.5 rounded-sm border px-2.5 py-1.5 text-[10px] font-medium ${showSociety ? "border-primary text-primary bg-primary/5" : "border-border text-muted hover:border-primary hover:text-primary"}`}>
-            <Brain className="h-3.5 w-3.5" />
-            <span>Agents</span>
-          </button>
         </div>
 
         {/* Messages + Events */}
@@ -420,16 +415,14 @@ export default function Chat() {
         </div>
       </div>
 
-      {/* Agent Society — Right Sidebar with Thread-Style */}
-      {showSociety && (
-        <div className="w-72 border-l border-border bg-card flex flex-col h-full overflow-hidden flex-shrink-0">
+      {/* Agent Society — Right Sidebar (always visible) */}
+      <div className="w-72 border-l border-border bg-card flex flex-col h-full overflow-hidden flex-shrink-0">
           {/* Sidebar header */}
           <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
             <div className="flex items-center gap-2">
               <Brain className="h-3.5 w-3.5 text-primary" />
               <span className="text-[10px] font-bold uppercase tracking-wider text-foreground">Agents</span>
             </div>
-            <button onClick={() => setShowSociety(false)} className="text-[9px] text-muted hover:text-foreground rounded-sm border border-border px-1.5 py-0.5">x</button>
           </div>
 
           {/* Status bar */}
@@ -521,7 +514,6 @@ export default function Chat() {
             <p className="text-[7px] text-muted/40 text-center">Real-time orchestration</p>
           </div>
         </div>
-      )}
     </div>
   );
 }

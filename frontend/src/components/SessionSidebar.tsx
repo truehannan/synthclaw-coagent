@@ -44,7 +44,7 @@ export default function SessionSidebar() {
       <div className="flex items-center justify-between px-2 py-1">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">Chats</span>
       </div>
-      <div className="mt-1 max-h-40 overflow-y-auto space-y-0.5">
+      <div className="mt-1 max-h-60 overflow-y-auto space-y-0.5">
         {list.map((s) => (
           <div key={s.id}
             className={`group flex items-center gap-1.5 rounded-sm px-2 py-1.5 text-[10px] cursor-pointer ${

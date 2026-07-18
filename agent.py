@@ -645,18 +645,37 @@ def _finalize_user_text(text: str) -> tuple[str, bool]:
     tool_patterns = (
         "exec_code(", "run_command(", "run_python(", "api_call(", "register_api(",
         "composio_check_connection(", "composio_execute(", "composio_discover(",
-        "composio_connect(", "composio_list_connections(",
+        "composio_connect(", "composio_list_connections(", "composio_create_trigger(",
+        "composio_list_triggers(", "composio_delete_trigger(", "composio_discover_triggers(",
         "google_search(", "web_search(", "remember(", "store_cred(", "get_cred(",
         "send_media(", "generate_image(", "ask_user(", "set_reminder(",
-        "read_file(", "write_file(", "list_dir(", "install_package(",
+        "read_file(", "write_file(", "list_files(", "list_dir(", "install_package(",
+        "install_skill(", "patch_file(", "search_files(", "http_request(",
+        "spawn_service(", "stop_service(", "service_status(",
+        "schedule_task(", "remove_cron(", "list_cron(",
+        "run_commands(", "read_files(", "write_files(",
+        "think(", "sqlite_query(", "kill_process(",
+        "download_url(", "scrape_page(", "scrape_selector(",
+        "tail_logs(", "watch_url(", "check_port(",
+        "send_email(", "send_telegram_message(",
+        '"name":', '"arguments":',
     )
     for line in lines:
         stripped = line.strip()
+        if not stripped:
+            clean_lines.append(line)
+            continue
         # Drop lines that look like bare function calls
         if any(p in stripped for p in tool_patterns):
             continue
         # Drop lines that are just function_name(...) pattern
         if re.match(r'^[a-z_]+\(.*\)\s*$', stripped):
+            continue
+        # Drop lines that are JSON-like tool call objects
+        if re.match(r'^\s*\{\s*"name"\s*:', stripped):
+            continue
+        # Drop lines that look like repeated tool_call blocks
+        if stripped.startswith('{') and '"name"' in stripped and '"arguments"' in stripped:
             continue
         clean_lines.append(line)
     t = "\n".join(clean_lines)
