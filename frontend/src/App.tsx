@@ -13,6 +13,7 @@ import Credentials from "@/pages/Credentials";
 import Skills from "@/pages/Skills";
 import Settings from "@/pages/Settings";
 import Integrations from "@/pages/Integrations";
+import Triggers from "@/pages/Triggers";
 import Channels from "@/pages/Channels";
 
 function AuthGate({ children }: { children: React.ReactNode }) {
@@ -72,6 +73,7 @@ export default function App() {
         <Route path="credentials" element={<Credentials />} />
         <Route path="skills" element={<Skills />} />
         <Route path="integrations" element={<Integrations />} />
+        <Route path="triggers" element={<Triggers />} />
         <Route path="channels" element={<Channels />} />
         <Route path="settings" element={<Settings />} />
       </Route>

@@ -5,7 +5,7 @@ import { chat, models, sessions, society, providers as providersApi, skills as s
 import type { Message } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import Mascot from "@/components/Mascot";
-import { ChatEvent, ThinkingIndicator, ToolCallCard, AgentBadge, PlanCard, ProgressCard, ErrorCard } from "@/components/ChatEvents";
+import { ChatEvent, ThinkingIndicator, ToolCallCard, AgentBadge, PlanCard, ProgressCard, ErrorCard, ConnectRequiredCard } from "@/components/ChatEvents";
 
 // Error Boundary to prevent entire chat from crashing
 class ChatItemBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
@@ -532,9 +532,11 @@ function renderEvent(event: ChatEvent) {
       case "agent_spawn":
         return <AgentBadge role={event.agent?.role || "agent"} task={event.agent?.task} />;
       case "tool_call":
-        return <ToolCallCard tool={event.tool || "unknown"} args={event.args} />;
+        return <ToolCallCard tool={event.tool || "unknown"} args={event.args} app={event.app} />;
       case "tool_result":
-        return <ToolCallCard tool={event.tool || "tool"} output={event.output} collapsed={false} />;
+        return <ToolCallCard tool={event.tool || "tool"} output={event.output} app={event.app} collapsed={false} />;
+      case "connect_required":
+        return <ConnectRequiredCard app={event.app || ""} appName={event.app_name || event.app || ""} />;
       case "plan":
         return <PlanCard steps={Array.isArray(event.steps) ? event.steps : []} />;
       case "text":
