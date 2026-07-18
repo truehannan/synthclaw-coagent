@@ -174,7 +174,7 @@ AVAILABLE_MODELS = [m for provider_models in MODEL_CATALOG.values() for m in pro
 
 MAX_TOOL_ITERATIONS = 200
 MAX_HISTORY_MESSAGES = 16
-CHECKPOINT_EVERY = 50          # save state + show Continue button after this many loop iterations
+CHECKPOINT_EVERY = 500          # save state + show Continue button after this many loop iterations
 MAX_RPM = int(_clean_env("MAX_RPM", "0") or "0")  # 0 = unlimited
 COMPOSIO_API_KEY = _clean_env("COMPOSIO_API_KEY")
 STORAGE_MODE = _clean_env("STORAGE_MODE", "local")  # local or cloudflare
