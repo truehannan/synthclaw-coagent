@@ -1325,9 +1325,9 @@ def composio_execute(tool_slug: str, args: str = "{}", connected_account_id: str
 
     try:
         body = {"arguments": json.loads(args) if isinstance(args, str) else args}
-        body["entity_id"] = "conclave"  # Always use single user
+        body["user_id"] = "conclave"  # User scoping — matches how connections are created
         if connected_account_id:
-            body["connectedAccountId"] = connected_account_id
+            body["connected_account_id"] = connected_account_id
         headers = {"x-api-key": api_key, "Content-Type": "application/json"}
         resp = requests.post(
             f"https://backend.composio.dev/api/v3.1/tools/execute/{tool_slug}",

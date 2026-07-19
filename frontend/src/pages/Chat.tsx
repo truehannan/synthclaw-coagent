@@ -81,8 +81,31 @@ export default function Chat() {
   async function loadHistory() {
     try {
       const res = await chat.history();
-      const msgs = (res.messages || []).map((m: Message) => ({ type: m.role as "user" | "assistant", content: m.content }));
-      setItems(msgs);
+      const items: ChatItem[] = [];
+      for (const m of (res.messages || [])) {
+        if (m.role === "user") {
+          items.push({ type: "user", content: m.content });
+        } else if (m.role === "assistant") {
+          // Parse persisted events from message content
+          const content = m.content || "";
+          const eventsMatch = content.match(/^<!--events:(.*?)-->\n/s);
+          if (eventsMatch) {
+            try {
+              const events = JSON.parse(eventsMatch[1]) as ChatEvent[];
+              for (const evt of events) {
+                items.push({ type: "event", event: evt });
+              }
+            } catch {}
+            const textContent = content.slice(eventsMatch[0].length);
+            if (textContent.trim()) {
+              items.push({ type: "assistant", content: textContent });
+            }
+          } else {
+            items.push({ type: "assistant", content });
+          }
+        }
+      }
+      setItems(items);
     } catch {}
   }
 
