@@ -1774,10 +1774,13 @@ async def run_agent(
 
             # Final reply — strip any <think> block before sending
             clean_reply, raw_json_detected = _finalize_user_text(reply)
-            try:                             # Fix #16: guard memory write failure
-                mem.save_message(chat_id, "assistant", clean_reply)
-            except Exception as me:
-                logger.error(f"mem.save_message failed: {me}")
+            if not send_fn:
+                # Only save here for non-web contexts (Telegram, CLI)
+                # Web API (send_fn present) saves with events prefix in api_server.py
+                try:
+                    mem.save_message(chat_id, "assistant", clean_reply)
+                except Exception as me:
+                    logger.error(f"mem.save_message failed: {me}")
             _maybe_store_long_term_memory(chat_id, user_message, clean_reply)
             _invalidate_context_cache(chat_id)
             ACTIVE_TASKS.pop(chat_id, None)

@@ -462,6 +462,12 @@ async def chat_run(msg: ChatMessage):
 
     chat_id = _get_active_chat_id()
     event_queue: _asyncio.Queue = _asyncio.Queue()
+    collected_events: list = []  # Collect events for DB persistence
+
+    async def _emit(event: dict):
+        """Put event in queue AND collect for persistence."""
+        collected_events.append(event)
+        await event_queue.put(event)
 
     async def send_fn(text: str):
         """Callback passed to run_agent — intercepts intermediate messages."""
@@ -469,52 +475,47 @@ async def chat_run(msg: ChatMessage):
             return
         # Parse text content to detect what's happening and extract tool names
         if text.startswith("🔄") or text.startswith("📋"):
-            await event_queue.put({"type": "progress", "content": text})
+            await _emit({"type": "progress", "content": text})
         elif text.startswith("  ──•") or text.startswith("  ──"):
-            await event_queue.put({"type": "agent_step", "content": text})
+            await _emit({"type": "agent_step", "content": text})
         elif text.startswith("🔄 Creating trigger:"):
             name = text.split(":", 1)[-1].strip()
-            await event_queue.put({"type": "tool_call", "tool": "Create Trigger", "content": text, "app": name.split("_")[0].lower() if "_" in name else ""})
+            await _emit({"type": "tool_call", "tool": "Create Trigger", "content": text, "app": name.split("_")[0].lower() if "_" in name else ""})
         elif text.startswith("🗑️ Deleting trigger:"):
-            await event_queue.put({"type": "tool_call", "tool": "Delete Trigger", "content": text})
+            await _emit({"type": "tool_call", "tool": "Delete Trigger", "content": text})
         elif text.startswith("📋 Listing active triggers"):
-            await event_queue.put({"type": "tool_call", "tool": "List Triggers", "content": text})
+            await _emit({"type": "tool_call", "tool": "List Triggers", "content": text})
         elif text.startswith("🔍 Discovering triggers"):
             app = text.split(":")[-1].strip() if ":" in text else ""
-            await event_queue.put({"type": "tool_call", "tool": "Discover Triggers", "content": text, "app": app})
+            await _emit({"type": "tool_call", "tool": "Discover Triggers", "content": text, "app": app})
         elif text.startswith("⚡ Executing:"):
             slug = text.split(":", 1)[-1].strip()
-            # Extract app name from Composio tool slug (e.g. GMAIL_SEND_EMAIL → gmail)
             app = slug.split("_")[0].lower() if "_" in slug else slug.lower()
-            await event_queue.put({"type": "tool_call", "tool": slug, "content": text, "app": app})
+            await _emit({"type": "tool_call", "tool": slug, "content": text, "app": app})
         elif text.startswith("🔍 Searching:"):
             query = text.split(":", 1)[-1].strip()
-            await event_queue.put({"type": "tool_call", "tool": "Web Search", "content": text, "args": query})
+            await _emit({"type": "tool_call", "tool": "Web Search", "content": text, "args": query})
         elif text.startswith("🔍 Discovering tools"):
             app = text.split(":")[-1].strip() if ":" in text else ""
-            await event_queue.put({"type": "tool_call", "tool": "Discover Tools", "content": text, "app": app})
+            await _emit({"type": "tool_call", "tool": "Discover Tools", "content": text, "app": app})
         elif text.startswith("⚙️ Running:"):
             cmd = text.split(":", 1)[-1].strip()
-            await event_queue.put({"type": "tool_call", "tool": "Shell", "content": text, "args": cmd})
+            await _emit({"type": "tool_call", "tool": "Shell", "content": text, "args": cmd})
         elif "composio" in text.lower() and ("connect" in text.lower() or "check" in text.lower()):
-            await event_queue.put({"type": "tool_call", "tool": "Check Connection", "content": text})
+            await _emit({"type": "tool_call", "tool": "Check Connection", "content": text})
         elif "not connected" in text.lower() or "please connect" in text.lower():
-            # Extract app name from text like "Please connect Gmail in the Integrations page"
             import re as _re
             app_match = _re.search(r"connect\s+(\w+)", text, _re.IGNORECASE)
             app_name = app_match.group(1) if app_match else ""
-            await event_queue.put({
-                "type": "connect_required",
-                "content": text,
-                "app": app_name.lower(),
-                "app_name": app_name,
-            })
+            await _emit({"type": "connect_required", "content": text, "app": app_name.lower(), "app_name": app_name})
         elif any(x in text.lower() for x in ["running", "executing", "searching", "fetching"]):
-            await event_queue.put({"type": "tool_call", "tool": "System", "content": text})
+            await _emit({"type": "tool_call", "tool": "System", "content": text})
         elif text.startswith("❌") or text.startswith("✗"):
-            await event_queue.put({"type": "error", "message": text})
+            await _emit({"type": "error", "message": text})
         else:
-            await event_queue.put({"type": "text", "content": text})
+            await _emit({"type": "text", "content": text})
+
+    collected_events = []  # Collect events for persistence
 
     async def run_agent_task():
         """Run the agent in background, push events to queue."""
@@ -534,6 +535,21 @@ async def chat_run(msg: ChatMessage):
 
             if reply:
                 await event_queue.put({"type": "done", "full": reply})
+                # Save events + reply to DB for history persistence
+                try:
+                    events_to_save = [e for e in collected_events if e.get("type") not in ("thinking",)]
+                    if events_to_save:
+                        events_json = json.dumps(events_to_save)
+                        full_content = f"<!--events:{events_json}-->\n{reply}"
+                    else:
+                        full_content = reply
+                    mem.save_message(chat_id, "assistant", full_content)
+                except Exception:
+                    # Fallback: save without events
+                    try:
+                        mem.save_message(chat_id, "assistant", reply)
+                    except Exception:
+                        pass
             else:
                 await event_queue.put({"type": "done", "full": "(No response)"})
 
@@ -1496,8 +1512,7 @@ async def composio_connect(toolkit: str, request: Request):
                     auth_config_id = items[0].get("id") or items[0].get("nanoid", "")
 
         # Strategy 3: Non-OAuth — create with type "user_credentials"
-        # This tells Composio the USER will provide their API key/bearer token at connect time
-        # The hosted Connect Link page will show input fields for the credentials
+        # User provides API key/bearer at connect time. Connect Link shows input fields.
         if not auth_config_id:
             create_resp2 = req.post(
                 "https://backend.composio.dev/api/v3.1/auth_configs",
@@ -1507,7 +1522,6 @@ async def composio_connect(toolkit: str, request: Request):
                     "auth_config": {
                         "type": "user_credentials",
                         "credentials": {},
-                        "restrict_to_following_tools": [],
                     },
                 },
                 timeout=10,
@@ -1519,7 +1533,7 @@ async def composio_connect(toolkit: str, request: Request):
                 if not auth_config_id:
                     auth_config_id = data.get("id") or data.get("nanoid") or data.get("auth_config_id", "")
             elif create_resp2.status_code == 409:
-                # Was just created between calls — find it
+                # Was just created — find it
                 list_resp2 = req.get(
                     "https://backend.composio.dev/api/v3.1/auth_configs",
                     headers=headers,
@@ -1530,11 +1544,40 @@ async def composio_connect(toolkit: str, request: Request):
                     items = list_resp2.json().get("items", [])
                     if items:
                         auth_config_id = items[0].get("id") or items[0].get("nanoid", "")
+            else:
+                # user_credentials failed — try with NO type (let Composio default)
+                create_resp3 = req.post(
+                    "https://backend.composio.dev/api/v3.1/auth_configs",
+                    headers=headers,
+                    json={"toolkit": {"slug": toolkit}},
+                    timeout=10,
+                )
+                if create_resp3.status_code in (200, 201):
+                    data = create_resp3.json()
+                    if isinstance(data.get("auth_config"), dict):
+                        auth_config_id = data["auth_config"].get("id") or data["auth_config"].get("nanoid", "")
+                    if not auth_config_id:
+                        auth_config_id = data.get("id") or data.get("nanoid") or data.get("auth_config_id", "")
+                elif create_resp3.status_code == 409:
+                    list_resp3 = req.get(
+                        "https://backend.composio.dev/api/v3.1/auth_configs",
+                        headers=headers,
+                        params={"toolkit_slug": toolkit, "limit": 5},
+                        timeout=10,
+                    )
+                    if list_resp3.status_code == 200:
+                        items = list_resp3.json().get("items", [])
+                        if items:
+                            auth_config_id = items[0].get("id") or items[0].get("nanoid", "")
 
         if not auth_config_id:
+            # Include the actual error from Composio for debugging
+            err_detail = ""
+            if create_resp.status_code == 400:
+                err_detail = f"managed_auth: {create_resp.text[:150]}"
             return {
                 "error": f"Could not create auth config for '{toolkit}'",
-                "detail": "Neither managed auth nor user_credentials auth could be set up for this toolkit.",
+                "detail": err_detail or "Auth config creation failed for all methods.",
             }
 
         # Create Connect Link — redirects user to Composio's hosted page
